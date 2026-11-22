@@ -1,0 +1,21 @@
+version: "3"
+
+tasks:
+  default:
+    desc: List the available root tasks
+    cmds:
+      - task --list
+
+  versions:
+    desc: Check the Go pin and display the local toolchain
+    cmds:
+      - |
+        set -eu
+        expected="$(awk '$1 == "go" { print "go" $2 }' go.mod)"
+        actual="$(GOTOOLCHAIN=local go env GOVERSION)"
+        if [ "$actual" != "$expected" ]; then
+          printf 'Expected %s, found %s. Enter the devenv shell first.\n' "$expected" "$actual" >&2
+          exit 1
+        fi
+        printf '%s\n' "$actual"
+        task --version
