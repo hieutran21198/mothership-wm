@@ -20,4 +20,18 @@ in
   packages = [ pkgs.go-task ];
   dotenv.enable = false;
   env.GOTOOLCHAIN = "local";
+
+  # Keep the unstable wlroots C ABI explicit and out of the default shell.
+  profiles.wm-native.module = {
+    packages = [
+      pkgs.pkg-config
+      pkgs.stdenv.cc
+      pkgs.wlroots_0_20
+      pkgs.wayland
+      pkgs.wayland-protocols
+      pkgs.pixman
+      pkgs.libxkbcommon
+    ];
+    env.CGO_ENABLED = "1";
+  };
 }

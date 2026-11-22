@@ -19,3 +19,18 @@ tasks:
         fi
         printf '%s\n' "$actual"
         task --version
+
+  wm:test:
+    desc: Test WM startup policy without wlroots or a desktop session
+    cmds:
+      - go test ./apps/wm
+
+  wm:build:
+    desc: Build the nested-only WM in the wm-native devenv profile
+    cmds:
+      - |
+        if ! pkg-config --exists wlroots-0.20 wayland-client wayland-server wayland-protocols pixman-1 xkbcommon; then
+          printf '%s\n' 'Missing native build dependencies; enter the wm-native devenv profile.' >&2
+          exit 1
+        fi
+        CGO_ENABLED=1 go build -tags wlroots -o bin/mothership-wm ./apps/wm
