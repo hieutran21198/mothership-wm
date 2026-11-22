@@ -10,6 +10,8 @@ Artifact for its operation, payload and errors rather than duplicating them.
 
 - [Focus a Domain](focus-domain.md): design accepted local command and WM handoff.
 
+- [Subscribe to desktopd state](stream-desktopd-state.md): draft.
+
 ## Template
 
 ```markdown

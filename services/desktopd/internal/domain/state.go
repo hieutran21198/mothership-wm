@@ -6,6 +6,13 @@ import (
 	"sort"
 )
 
+var (
+	ErrStaleSession  = errors.New("unknown WM session")
+	ErrUnknownWindow = errors.New("unknown Window ID")
+	ErrUnknownDomain = errors.New("unknown Domain")
+	ErrDomainFull    = errors.New("Domain already has two live members")
+)
+
 // State is used by one serialized owner. Domain names are independent of any
 // WM; a Session is discarded in its entirety when its WM disconnects.
 type State struct {
@@ -24,14 +31,29 @@ type Window struct {
 	Mapped    bool
 }
 
-func (s *State) Create(name string) {
+func (s *State) Create(name string) bool {
+	if s.Exists(name) {
+		return false
+	}
 	if s.names == nil {
 		s.names = make(map[string]bool)
 	}
 	s.names[name] = true
+	return true
 }
 
 func (s *State) Exists(name string) bool { return s.names[name] }
+
+func (s *State) Names() []string {
+	names := make([]string, 0, len(s.names))
+	for name := range s.names {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (s *Session) Get(id uint64) Window { return s.windows[id] }
 
 func NewSession(id string) *Session {
 	return &Session{ID: id, windows: make(map[uint64]Window)}
@@ -63,14 +85,14 @@ func (s *Session) Remove(id uint64) bool {
 
 func (s *State) Assign(session *Session, sessionID string, id uint64, name string) error {
 	if session == nil || session.ID != sessionID {
-		return errors.New("unknown WM session")
+		return ErrStaleSession
 	}
 	w, exists := session.windows[id]
 	if !exists {
-		return errors.New("unknown Window ID")
+		return ErrUnknownWindow
 	}
 	if !s.Exists(name) {
-		return errors.New("unknown Domain")
+		return ErrUnknownDomain
 	}
 	if w.Domain == name {
 		return nil
@@ -82,7 +104,7 @@ func (s *State) Assign(session *Session, sessionID string, id uint64, name strin
 		}
 	}
 	if count >= 2 {
-		return errors.New("Domain already has two live members")
+		return ErrDomainFull
 	}
 	session.epoch++
 	w.Domain, w.Epoch = name, session.epoch

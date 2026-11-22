@@ -9,13 +9,20 @@ import (
 	"mothership-wm/services/desktopd/internal/domain"
 )
 
-var ErrUnavailable = errors.New("WM is not ready")
+var (
+	ErrUnavailable       = errors.New("WM is not ready")
+	ErrUnknownDomain     = domain.ErrUnknownDomain
+	ErrSubscriptionLimit = errors.New("too many subscribers")
+)
 
 type Service struct {
-	mu     sync.Mutex
-	names  domain.State
-	active *domain.Session
-	ready  bool
+	mu          sync.Mutex
+	names       domain.State
+	active      *domain.Session
+	ready       bool
+	selection   Selection
+	revision    uint64
+	subscribers map[chan Update]struct{}
 }
 
 func (s *Service) Connect(id string) *domain.Session {
@@ -32,7 +39,14 @@ func (s *Service) Disconnect(conn *domain.Session) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active == conn {
+		wasReady := s.ready
 		s.active, s.ready = nil, false
+		if wasReady {
+			if s.selection.Kind == SelectionAcknowledged {
+				s.selection = Selection{Kind: SelectionUnknown}
+			}
+			s.publish(Update{Kind: WMChanged, Selection: s.currentSelection()})
+		}
 	}
 }
 
@@ -43,31 +57,53 @@ func (s *Service) Ready(conn *domain.Session) bool {
 		return false
 	}
 	s.ready = true
+	s.selection = Selection{Kind: SelectionNotSelected}
+	s.publish(Update{Kind: WMChanged, Session: conn.ID, WMReady: true, Selection: s.selection})
 	return true
 }
 
 func (s *Service) WindowAdded(conn *domain.Session, id uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ready && s.active == conn && conn.Add(id)
+	if !s.ready || s.active != conn || !conn.Add(id) {
+		return false
+	}
+	s.publish(Update{Kind: WindowUpdated, Window: conn.Get(id)})
+	return true
 }
 
 func (s *Service) WindowMapping(conn *domain.Session, id uint64, visible bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ready && s.active == conn && conn.SetMapped(id, visible)
+	if !s.ready || s.active != conn {
+		return false
+	}
+	before := conn.Get(id)
+	if !conn.SetMapped(id, visible) {
+		return false
+	}
+	if before.Mapped != visible {
+		s.publish(Update{Kind: WindowUpdated, Window: conn.Get(id)})
+	}
+	return true
 }
 
 func (s *Service) WindowClosed(conn *domain.Session, id uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.ready && s.active == conn && conn.Remove(id)
+	if !s.ready || s.active != conn || !conn.Remove(id) {
+		return false
+	}
+	s.publish(Update{Kind: WindowClosed, Window: domain.Window{ID: id}})
+	return true
 }
 
 func (s *Service) Create(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.names.Create(name)
+	if s.names.Create(name) {
+		s.publish(Update{Kind: DomainCreated, Domain: name})
+	}
 }
 
 func (s *Service) Assign(sessionID string, id uint64, name string) error {
@@ -76,23 +112,21 @@ func (s *Service) Assign(sessionID string, id uint64, name string) error {
 	if !s.ready {
 		return ErrUnavailable
 	}
-	return s.names.Assign(s.active, sessionID, id, name)
-}
-
-func (s *Service) List() (string, []domain.Window, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.ready {
-		return "", nil, ErrUnavailable
+	before := s.active.Get(id)
+	if err := s.names.Assign(s.active, sessionID, id, name); err != nil {
+		return err
 	}
-	return s.active.ID, s.active.Windows(), nil
+	if after := s.active.Get(id); after != before {
+		s.publish(Update{Kind: WindowUpdated, Window: after})
+	}
+	return nil
 }
 
 func (s *Service) ResolveDomain(name string) (string, []domain.Window, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.names.Exists(name) {
-		return "", nil, errors.New("unknown Domain")
+		return "", nil, ErrUnknownDomain
 	}
 	if !s.ready {
 		return "", nil, ErrUnavailable

@@ -3,6 +3,7 @@ package unixapi
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -15,12 +16,16 @@ import (
 	"mothership-wm/services/desktopd/internal/domain"
 )
 
+var errOutcomeUnknown = errors.New("WM disconnected before acknowledging; outcome unknown")
+
 type wmPeer struct {
 	conn    *net.UnixConn
 	session *domain.Session
 	ready   bool
 	done    chan struct{}
-	applied chan uint64
+	applied chan struct{}
+	pending uint64
+	name    string
 }
 
 type desktop struct {
@@ -62,13 +67,11 @@ func (d *desktop) handle(ctx context.Context, c *net.UnixConn) {
 		return
 	}
 	args := strings.Fields(packet)
-	if len(args) == 2 && args[0] == "wm" && len(args[1]) == 32 {
-		if _, err := hex.DecodeString(args[1]); err == nil {
-			d.track(ctx, c, args[1])
-			return
-		}
+	if len(args) == 2 && args[0] == "wm" && validSession(args[1]) {
+		d.track(ctx, c, args[1])
+		return
 	}
-	_ = domainipc.Write(c, d.command(args))
+	d.request(ctx, c, packet)
 }
 
 func (d *desktop) track(ctx context.Context, c *net.UnixConn, session string) {
@@ -85,11 +88,15 @@ func (d *desktop) track(ctx context.Context, c *net.UnixConn, session string) {
 		return
 	}
 	w := &wmPeer{conn: c, session: appSession,
-		done: make(chan struct{}), applied: make(chan uint64, 1)}
+		done: make(chan struct{})}
 	d.wm = w
 	d.mu.Unlock()
 	defer func() {
 		d.mu.Lock()
+		if w.pending != 0 {
+			d.service.MarkFocusUnknown(w.session)
+			w.pending = 0
+		}
 		d.service.Disconnect(w.session)
 		d.wm = nil
 		close(w.done)
@@ -127,12 +134,13 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 	}
 	switch a[0] {
 	case "applied":
-		select {
-		case w.applied <- id:
-			return true
-		default:
+		if id != w.pending || w.applied == nil {
 			return false
 		}
+		d.service.AcknowledgeFocus(w.session, w.name)
+		w.pending = 0
+		close(w.applied)
+		return true
 	case "new":
 		return d.service.WindowAdded(w.session, id)
 	case "map", "unmap":
@@ -155,68 +163,27 @@ func validWord(s string) bool {
 	return true
 }
 
-func (d *desktop) command(a []string) string {
-	if len(a) == 0 {
-		return "err expected a command"
+func validSession(id string) bool {
+	if len(id) != 32 {
+		return false
 	}
-	for _, s := range a {
-		if !validWord(s) {
-			return "err invalid command argument"
-		}
-	}
-	if a[0] == "focus" && len(a) == 2 {
-		return d.focus(a[1])
-	}
-	switch {
-	case a[0] == "create" && len(a) == 2:
-		d.service.Create(a[1])
-		return "ok"
-	case a[0] == "assign" && len(a) == 4:
-		id, err := strconv.ParseUint(a[2], 10, 64)
-		if err != nil {
-			return "err invalid Window ID"
-		}
-		if err := d.service.Assign(a[1], id, a[3]); err != nil {
-			return "err " + err.Error()
-		}
-		return "ok"
-	case a[0] == "list" && len(a) == 1:
-		session, windows, err := d.service.List()
-		if err != nil {
-			return "err " + err.Error()
-		}
-		var out strings.Builder
-		fmt.Fprintf(&out, "session %s", session)
-		for _, v := range windows {
-			mapping := "unmapped"
-			if v.Mapped {
-				mapping = "mapped"
-			}
-			line := fmt.Sprintf("\nwindow %d %s %s", v.ID, mapping, v.Domain)
-			if out.Len()+len(line) > domainipc.MaxPacket {
-				return "err too many live windows to list"
-			}
-			out.WriteString(strings.TrimRight(line, " "))
-		}
-		return out.String()
-	default:
-		return "err expected list, create, assign or focus"
-	}
+	_, err := hex.DecodeString(id)
+	return err == nil
 }
 
-func (d *desktop) focus(domain string) string {
+func (d *desktop) focus(name string) error {
 	d.focusMu.Lock()
 	defer d.focusMu.Unlock()
 	d.mu.Lock()
-	session, members, err := d.service.ResolveDomain(domain)
+	session, members, err := d.service.ResolveDomain(name)
 	if err != nil {
 		d.mu.Unlock()
-		return "err " + err.Error()
+		return err
 	}
 	w := d.wm
 	if w == nil || w.session.ID != session {
 		d.mu.Unlock()
-		return "err WM disconnected"
+		return app.ErrUnavailable
 	}
 	d.next++
 	serial := d.next
@@ -224,29 +191,33 @@ func (d *desktop) focus(domain string) string {
 	for _, v := range members {
 		packet += fmt.Sprintf(" %d %d", v.ID, v.Epoch)
 	}
+	applied := make(chan struct{})
+	w.pending, w.name, w.applied = serial, name, applied
 	d.mu.Unlock()
-	if err := domainipc.Write(w.conn, packet); err != nil {
-		w.conn.Close()
-		return "err WM disconnected before acknowledging; outcome unknown"
-	}
-	timer := time.NewTimer(domainipc.Timeout)
-	defer timer.Stop()
-	select {
-	case received := <-w.applied:
-		if received == serial {
-			return "ok"
-		}
-	case <-timer.C:
-	case <-w.done:
-		// An acknowledgement can arrive immediately before EOF.
+
+	if err := domainipc.Write(w.conn, packet); err == nil {
+		timer := time.NewTimer(domainipc.Timeout)
+		defer timer.Stop()
 		select {
-		case received := <-w.applied:
-			if received == serial {
-				return "ok"
-			}
-		default:
+		case <-applied:
+			return nil
+		case <-timer.C:
+		case <-w.done:
 		}
 	}
-	w.conn.Close()
-	return "err WM disconnected before acknowledging; outcome unknown"
+	// Serialize acknowledgement versus timeout/disconnect. Once an outcome
+	// is declared unknown, a late packet cannot report a successful selection.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	select {
+	case <-applied:
+		return nil
+	default:
+	}
+	if w.pending == serial {
+		w.pending = 0
+		d.service.MarkFocusUnknown(w.session)
+	}
+	_ = w.conn.Close()
+	return errOutcomeUnknown
 }

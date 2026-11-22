@@ -37,3 +37,5 @@ bin/mothership-desktopd focus A
 
 Replace the uppercase values with the IDs shown in `list`. Use Ctrl+C in
 each process’s terminal to stop it. No daemon is installed to run at login.
+
+Other local clients use the [desktopd JSON socket contract](../../docs/architecture/desktopd-client-ipc.md).

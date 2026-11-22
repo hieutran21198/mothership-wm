@@ -10,6 +10,8 @@ Each criterion names the Flow scenario that demonstrates it.
 
 - [Switch the main view between Domains](focus-domain.md): design accepted for review.
 
+- [Stream Domain state to local clients](stream-desktopd-state.md): draft.
+
 ## Template
 
 ```markdown

@@ -1,0 +1,125 @@
+package app
+
+import "mothership-wm/services/desktopd/internal/domain"
+
+const (
+	SelectionNotSelected  = "not_selected"
+	SelectionAcknowledged = "acknowledged"
+	SelectionUnknown      = "unknown"
+
+	WMChanged        = "wm.changed"
+	DomainCreated    = "domain.created"
+	WindowUpdated    = "window.updated"
+	WindowClosed     = "window.closed"
+	SelectionChanged = "selection.changed"
+
+	queueSize      = 16
+	maxSubscribers = 16
+)
+
+type Selection struct {
+	Kind   string
+	Domain string
+}
+
+type Snapshot struct {
+	Revision  uint64
+	WMReady   bool
+	Session   string
+	Domains   []string
+	Windows   []domain.Window
+	Selection Selection
+}
+
+type Update struct {
+	Revision  uint64
+	Kind      string
+	WMReady   bool
+	Session   string
+	Domain    string
+	Window    domain.Window
+	Selection Selection
+}
+
+// Snapshot returns a copy of the current view, including when WM is absent.
+func (s *Service) Snapshot() Snapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot()
+}
+
+func (s *Service) snapshot() Snapshot {
+	v := Snapshot{
+		Revision: s.revision, WMReady: s.ready, Domains: s.names.Names(),
+		Windows: make([]domain.Window, 0), Selection: s.currentSelection(),
+	}
+	if s.ready {
+		v.Session, v.Windows = s.active.ID, s.active.Windows()
+	}
+	return v
+}
+
+func (s *Service) currentSelection() Selection {
+	if s.selection.Kind == "" {
+		return Selection{Kind: SelectionNotSelected}
+	}
+	return s.selection
+}
+
+// Subscribe captures a complete view and registers its following deltas under
+// one lock. A closed channel means the client should take a fresh snapshot.
+func (s *Service) Subscribe() (Snapshot, <-chan Update, func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.subscribers) >= maxSubscribers {
+		return Snapshot{}, nil, nil, ErrSubscriptionLimit
+	}
+	ch := make(chan Update, queueSize)
+	if s.subscribers == nil {
+		s.subscribers = make(map[chan Update]struct{})
+	}
+	s.subscribers[ch] = struct{}{}
+	return s.snapshot(), ch, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.drop(ch)
+	}, nil
+}
+
+// publish is called under the same lock as its mutation. It never waits for
+// a socket or a consumer; a subscriber that misses a delta is disconnected.
+func (s *Service) publish(update Update) {
+	s.revision++
+	update.Revision = s.revision
+	for ch := range s.subscribers {
+		select {
+		case ch <- update:
+		default:
+			s.drop(ch)
+		}
+	}
+}
+
+func (s *Service) drop(ch chan Update) {
+	if _, ok := s.subscribers[ch]; ok {
+		delete(s.subscribers, ch)
+		close(ch)
+	}
+}
+
+func (s *Service) AcknowledgeFocus(conn *domain.Session, name string) {
+	s.setSelection(conn, Selection{Kind: SelectionAcknowledged, Domain: name})
+}
+
+func (s *Service) MarkFocusUnknown(conn *domain.Session) {
+	s.setSelection(conn, Selection{Kind: SelectionUnknown})
+}
+
+func (s *Service) setSelection(conn *domain.Session, selection Selection) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ready && s.active == conn && s.selection != selection {
+		s.selection = selection
+		s.publish(Update{Kind: SelectionChanged, Selection: selection})
+	}
+}

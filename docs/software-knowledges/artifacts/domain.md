@@ -15,3 +15,23 @@ Domain does not own seats.
 
 For this slice membership is in memory only. No persistence, app rules,
 agent or public API. See the [FocusDomain Flow](../flows/focus-domain.md).
+
+## Local client contract
+
+Desktop clients can subscribe over [desktopd’s private Unix socket](../../architecture/desktopd-client-ipc.md).
+desktopd owns the snapshot: Domain names, live Window refs with mapping and
+membership, WM availability, and the current WM session’s selection state
+(not selected, last acknowledged, or unknown). An acknowledgement describes
+the applied projection, not the current keyboard target.
+
+Register the subscription and capture its initial snapshot at the same
+revision boundary. Send the snapshot first, then push ordered updates
+from the next revision on the same connection, with no gap between them.
+On disconnect or a missing revision, the client marks its view stale and
+subscribes again for a fresh snapshot. A slow or stalled subscriber cannot
+block WM or desktopd commands: keep its queue bounded and disconnect it
+rather than silently dropping an update.
+
+Reuse the existing create, assign and select commands. Validate the same
+live session and Window ID for all clients. Publish a new selection as
+acknowledged only after WM applies it.

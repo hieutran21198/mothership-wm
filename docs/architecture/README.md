@@ -13,7 +13,7 @@ event sourcing, or one daemon per domain in the first milestone.
 | --- | --- | --- |
 | WM | Live windows, input, focus, geometry, camera and render | Wayland to clients; a local control socket to desktopd |
 | Panel | Dock, palette and UI state | Wayland layer-shell for placement; local control to desktopd |
-| Flow in desktopd | Flow names and membership; resolution of semantic commands | Local control socket to WM; no Wayland dependency |
+| desktopd | Domain names, live Window membership and resolution of Domain commands | Local control socket to WM; no Wayland dependency |
 
 Commands ask for work. Events describe completed state changes. A reconnect
 takes a snapshot before consuming updates. Window IDs are scoped to a WM
