@@ -2,8 +2,9 @@
 
 Go owns startup and the parent selection; a cgo adapter uses the explicit
 wlroots Wayland backend. The [first slice](../../docs/software-knowledges/goals/boot-nested-wayland-compositor.md)
-is one nested output and one real xdg-shell client. Two-window focus/pan,
-keyboard or pointer routing, the Panel, and desktopd are not part of this slice.
+is one nested output and one xdg-shell client. The [focus slice](../../docs/software-knowledges/goals/focus-nested-windows.md)
+adds two fixed side-by-side slots and one local human seat. Camera movement,
+general layout, the Panel and desktopd are outside this slice.
 
 ## Build and check
 
@@ -21,9 +22,9 @@ headers. The native build produces `bin/mothership-wm`.
 
 ## Manual acceptance
 
-Only run this in a session approved for the test. For Niri acceptance, start
-from a terminal in Niri and leave it running. Run `bin/mothership-wm` to open
-the nested output. It prints a child `WAYLAND_DISPLAY` after submitting the
+Only run this in a session approved for the test. Start from a terminal in
+the existing COSMIC session and leave that session running. Run
+`bin/mothership-wm` to open the nested output. It prints a child `WAYLAND_DISPLAY` after submitting the
 initial output buffer. A different parent can be named with
 `--parent <socket-name-or-absolute-path>`; the backend never switches to
 DRM, X11, or headless mode.
@@ -36,3 +37,13 @@ inside the nested output, then stop Mothership with Ctrl+C and verify that
 the child socket disappears and the same parent is still usable. Follow the
 [Flow scenarios](../../docs/software-knowledges/flows/boot-nested-wayland-compositor.md)
 for the failure check. A successful CLI test is not native acceptance.
+
+## Two-window focus check
+
+Use the same child socket command to start two separate disposable instances of
+one native Wayland app that visibly responds to typing. Do not use an existing
+single-instance app that forwards requests to its already-running process.
+The WM reports `WINDOW_MAPPED=<id> SLOT=<slot>` in the launch terminal. Check
+two distinct IDs and two side-by-side windows. Click A, type harmless text,
+then click B and do the same. Close B while focused and check that the next
+key goes to A. Keep the host shell and clipboard out of the test.

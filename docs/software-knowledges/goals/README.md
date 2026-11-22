@@ -4,6 +4,10 @@ A Goal states an outcome, not a sequence of steps or a delivery task. Update
 the existing Goal if the criteria change; link it from its supporting Flows.
 Each criterion names the Flow scenario that demonstrates it.
 
+- [Open a nested Wayland compositor](boot-nested-wayland-compositor.md): complete
+  for one client on COSMIC.
+- [Focus one of two nested windows](focus-nested-windows.md): implemented; physical click-through unverified.
+
 ## Template
 
 ```markdown

@@ -1,6 +1,6 @@
 # Boot the WM inside a Wayland session
 
-**Accepted scope: one nested client on COSMIC.** Supports [Open a nested Wayland compositor](../goals/boot-nested-wayland-compositor.md).
+**Complete scope: one nested client on COSMIC.** Supports [Open a nested Wayland compositor](../goals/boot-nested-wayland-compositor.md).
 The developer starts the WM as an ordinary nested app under a running COSMIC
 session and runs a separate real xdg-shell test client. The parent's active
 session and configuration stay in place.
@@ -41,12 +41,18 @@ Covers G-WM-BOOT-4.
 
 ## Verification
 
-The COSMIC run checked F-WM-BOOT-1 and F-WM-BOOT-2 with one disposable native
-client. A capture of only the nested window matched its four-color marker;
-after teardown the child socket was gone and the same parent answered a
-Wayland roundtrip. The isolated startup-cancel test covered a stalled Unix
-peer. F-WM-BOOT-3 states the expected failure behavior, not a claim that
-every unavailable backend or output failure was exercised.
+The native COSMIC run exercised one disposable xdg-shell client. No capture
+or personal desktop content was retained.
+
+| Scope | Result |
+| --- | --- |
+| F-WM-BOOT-1 | Passed on COSMIC. The client acknowledged configure, submitted a 320×240 four-color buffer and received a frame callback. Capture of the nested window alone found all four colors at the expected pixel counts. |
+| F-WM-BOOT-2 | Passed on COSMIC. WM and client exited cleanly, the distinct child socket was removed, and the same parent socket answered a Wayland roundtrip. |
+| F-WM-BOOT-3 | Startup-policy tests exercised missing parent selection and refusal to retry with another backend. An incompatible real parent and a failed real output were not injected into COSMIC. |
+| Desktop Session DS-3 | A native startup-cancel test used an inert local Unix peer that withheld its reply. Cancellation unblocked startup without reporting readiness; this did not simulate a hung real desktop. |
+
+Niri, direct DRM, input routing, focus, camera and multi-client behavior were
+not part of this run.
 
 See [WM build and test instructions](../../../apps/wm/README.md#build-and-check)
 for the current pinned native environment.

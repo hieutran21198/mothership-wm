@@ -7,6 +7,8 @@ can enforce it. A Flow may depend on those rules without owning them. Use
 
 - [Desktop Session](desktop-session.md): nested WM lifecycle, readiness and teardown.
 
+- [Window](window.md): identity, focus and input rules for nested windows.
+
 ## Template
 
 ```markdown

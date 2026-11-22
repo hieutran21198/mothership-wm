@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -20,6 +21,8 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
+
+#include "nested-seat.h"
 
 enum control_phase {
 	STARTING,
@@ -67,6 +70,8 @@ void mothership_control_interrupt(struct mothership_control *control) {
 	}
 }
 
+struct xdg_view;
+
 struct nested {
 	struct wl_display *server;
 	struct wlr_backend *backend;
@@ -74,6 +79,9 @@ struct nested {
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *background;
 	struct wlr_scene *scene;
+	struct nested_seat *seat;
+	struct xdg_view *slots[2];
+	uint64_t next_window_id;
 	struct wl_listener backend_destroy;
 	struct wl_listener output_destroy;
 	struct wl_listener frame;
@@ -86,9 +94,12 @@ struct nested {
 };
 
 struct xdg_view {
+	struct nested *wm;
 	struct wlr_xdg_toplevel *toplevel;
-	struct wl_listener commit;
-	struct wl_listener destroy;
+	struct wlr_scene_tree *tree;
+	uint64_t id;
+	int slot;
+	struct wl_listener map, unmap, commit, destroy, tree_destroy;
 };
 
 static void stop(struct nested *wm, const char *reason) {
@@ -142,6 +153,61 @@ static void on_frame(struct wl_listener *listener, void *data) {
 	}
 }
 
+static void place_view(struct xdg_view *view) {
+	if (view == NULL || view->slot < 0 || view->tree == NULL || view->wm->output == NULL) {
+		return;
+	}
+	int width, height;
+	wlr_output_effective_resolution(view->wm->output, &width, &height);
+	int middle = width / 2;
+	int left = view->slot == 0 ? 0 : middle;
+	int right = view->slot == 0 ? middle : width;
+	if (right <= left || height <= 0) {
+		wlr_scene_node_set_enabled(&view->tree->node, false);
+		return;
+	}
+	/* Fixed two slots for this slice, not a general layout. Respect logical
+	 * output coordinates and clip even clients that ignore requested size. */
+	struct wlr_box clip = {
+		.x = view->toplevel->base->geometry.x,
+		.y = view->toplevel->base->geometry.y,
+		.width = right - left,
+		.height = height,
+	};
+	wlr_scene_node_set_position(&view->tree->node, left, 0);
+	wlr_scene_subsurface_tree_set_clip(&view->tree->node, &clip);
+	wlr_scene_node_set_enabled(&view->tree->node, true);
+}
+
+static struct nested_hit hit_view(void *data, double x, double y) {
+	struct nested *wm = data;
+	struct nested_hit hit = {0};
+	if (wm->cleaning || wm->output == NULL) {
+		return hit;
+	}
+	struct wlr_scene_node *node = wlr_scene_node_at(&wm->scene->tree.node,
+		x, y, &hit.x, &hit.y);
+	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {
+		return hit;
+	}
+	struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(
+		wlr_scene_buffer_from_node(node));
+	if (surface == NULL) {
+		return hit;
+	}
+	for (struct wlr_scene_tree *tree = node->parent; tree != NULL; tree = tree->node.parent) {
+		for (int i = 0; i < 2; ++i) {
+			struct xdg_view *view = wm->slots[i];
+			if (view != NULL && view->tree == tree) {
+				hit.surface = surface->surface;
+				hit.toplevel = view->toplevel->base->surface;
+				return hit;
+			}
+		}
+	}
+	return hit;
+}
+
 static void on_resize(struct wl_listener *listener, void *data) {
 	struct nested *wm = wl_container_of(listener, wm, resize);
 	const struct wlr_output_event_request_state *request = data;
@@ -149,7 +215,54 @@ static void on_resize(struct wl_listener *listener, void *data) {
 		stop(wm, "parent resize could not be applied to the nested output");
 		return;
 	}
-	wlr_scene_rect_set_size(wm->background, wm->output->width, wm->output->height);
+	int width, height;
+	wlr_output_effective_resolution(wm->output, &width, &height);
+	wlr_scene_rect_set_size(wm->background, width, height);
+	place_view(wm->slots[0]);
+	place_view(wm->slots[1]);
+	nested_seat_refresh(wm->seat);
+}
+
+static void on_view_map(struct wl_listener *listener, void *data) {
+	struct xdg_view *view = wl_container_of(listener, view, map);
+	for (int i = 0; i < 2; ++i) {
+		if (view->wm->slots[i] == NULL) {
+			view->slot = i;
+			view->wm->slots[i] = view;
+			place_view(view);
+			nested_seat_refresh(view->wm->seat);
+			fprintf(stderr, "WINDOW_MAPPED=%" PRIu64 " SLOT=%d\n", view->id, i);
+			return;
+		}
+	}
+}
+
+static void remove_view(struct xdg_view *view) {
+	if (view->slot < 0) {
+		return;
+	}
+	struct nested *wm = view->wm;
+	struct xdg_view *other = wm->slots[1 - view->slot];
+	wm->slots[view->slot] = NULL;
+	view->slot = -1;
+	if (view->tree != NULL) {
+		wlr_scene_node_set_enabled(&view->tree->node, false);
+	}
+	struct wlr_surface *fallback = other != NULL && !wm->cleaning &&
+		other->tree != NULL && other->tree->node.enabled ?
+		other->toplevel->base->surface : NULL;
+	nested_seat_forget(wm->seat, view->toplevel->base->surface, fallback);
+}
+
+static void on_view_unmap(struct wl_listener *listener, void *data) {
+	struct xdg_view *view = wl_container_of(listener, view, unmap);
+	remove_view(view);
+}
+
+static void on_view_tree_destroy(struct wl_listener *listener, void *data) {
+	struct xdg_view *view = wl_container_of(listener, view, tree_destroy);
+	wl_list_remove(&listener->link);
+	view->tree = NULL;
 }
 
 static void on_view_commit(struct wl_listener *listener, void *data) {
@@ -158,13 +271,21 @@ static void on_view_commit(struct wl_listener *listener, void *data) {
 	if (view->toplevel->base->initial_commit) {
 		wlr_xdg_surface_schedule_configure(view->toplevel->base);
 	}
+	place_view(view);
 }
 
 static void on_view_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct xdg_view *view = wl_container_of(listener, view, destroy);
+	remove_view(view);
+	wl_list_remove(&view->map.link);
+	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->commit.link);
 	wl_list_remove(&view->destroy.link);
+	if (view->tree != NULL) {
+		wl_list_remove(&view->tree_destroy.link);
+		wlr_scene_node_destroy(&view->tree->node);
+	}
 	free(view);
 }
 
@@ -176,14 +297,26 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 		wl_resource_post_no_memory(toplevel->resource);
 		return;
 	}
-	if (wlr_scene_xdg_surface_create(&wm->scene->tree, toplevel->base) == NULL) {
+	view->tree = wlr_scene_xdg_surface_create(&wm->scene->tree, toplevel->base);
+	if (view->tree == NULL) {
 		free(view);
 		wl_resource_post_no_memory(toplevel->resource);
 		return;
 	}
+	view->wm = wm;
 	view->toplevel = toplevel;
+	view->id = ++wm->next_window_id;
+	view->slot = -1;
+	wlr_scene_node_set_enabled(&view->tree->node, false);
+	view->tree_destroy.notify = on_view_tree_destroy;
+	wl_signal_add(&view->tree->node.events.destroy, &view->tree_destroy);
+	struct wlr_surface *surface = toplevel->base->surface;
+	view->map.notify = on_view_map;
+	wl_signal_add(&surface->events.map, &view->map);
+	view->unmap.notify = on_view_unmap;
+	wl_signal_add(&surface->events.unmap, &view->unmap);
 	view->commit.notify = on_view_commit;
-	wl_signal_add(&toplevel->base->surface->events.commit, &view->commit);
+	wl_signal_add(&surface->events.commit, &view->commit);
 	view->destroy.notify = on_view_destroy;
 	wl_signal_add(&toplevel->events.destroy, &view->destroy);
 }
@@ -290,6 +423,13 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, cons
 	}
 	wlr_output_create_global(wm.output, wm.server);
 
+	*reason = "could not create the nested input seat";
+	wm.seat = nested_seat_create(wm.server, parent,
+		wlr_wl_output_get_surface(wm.output), hit_view, &wm);
+	if (wm.seat == NULL) {
+		goto done;
+	}
+
 	*reason = "could not bind a distinct child Wayland socket in XDG_RUNTIME_DIR";
 	const char *socket = wl_display_add_socket_auto(wm.server);
 	if (socket == NULL) {
@@ -314,6 +454,7 @@ done:
 	if (wm.server != NULL) {
 		wl_display_destroy_clients(wm.server);
 	}
+	nested_seat_destroy(wm.seat);
 	if (wm.toplevel.notify != NULL) {
 		wl_list_remove(&wm.toplevel.link);
 	}

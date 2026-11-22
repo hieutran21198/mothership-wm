@@ -5,6 +5,9 @@ promises change. Name who executes each step and where work commits locally;
 a cross-part call does not imply a shared transaction. Link the receiving
 Artifact for its operation, payload and errors rather than duplicating them.
 
+- [Boot the WM inside a Wayland session](boot-nested-wayland-compositor.md).
+- [Route input between two nested windows](focus-nested-windows.md): isolated protocol acceptance.
+
 ## Template
 
 ```markdown
