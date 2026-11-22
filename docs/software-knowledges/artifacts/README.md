@@ -5,6 +5,8 @@ service or table. Document a model, lifecycle or rule here when its own part
 can enforce it. A Flow may depend on those rules without owning them. Use
 [architecture](../../architecture/README.md) for implementation boundaries.
 
+- [Desktop Session](desktop-session.md): nested WM lifecycle, readiness and teardown.
+
 ## Template
 
 ```markdown

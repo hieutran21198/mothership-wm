@@ -1,7 +1,7 @@
 # Boot the WM inside a Wayland session
 
-**Draft for owner review.** Supports [Open a nested Wayland compositor](../goals/boot-nested-wayland-compositor.md).
-The developer starts the WM as an ordinary nested app under a running Niri
+**Accepted scope: one nested client on COSMIC.** Supports [Open a nested Wayland compositor](../goals/boot-nested-wayland-compositor.md).
+The developer starts the WM as an ordinary nested app under a running COSMIC
 session and runs a separate real xdg-shell test client. The parent's active
 session and configuration stay in place.
 
@@ -13,13 +13,13 @@ session and configuration stay in place.
 | Stop | Developer → WM | End the test run normally. Release the child connections, socket, and nested output without stopping or reconfiguring the parent. |
 
 State is local to the WM; there is no database transaction or cross-service
-contract. If startup stops partway through, release resources already acquired.
-Never fall back to a direct DRM/seat backend, X11, or headless mode. A detached
-client that never maps is not startup acceptance.
+contract. Follow the [Desktop Session rules](../artifacts/desktop-session.md) for
+ownership, readiness and teardown. A child socket or frame callback alone
+does not prove the client's pixels appeared in the parent window.
 
 ### F-WM-BOOT-1
 
-**Given** a running Niri parent and a compatible nested backend, **when** the
+**Given** a running COSMIC parent and a compatible nested backend, **when** the
 developer starts the WM and connects an xdg-shell client only to its new socket,
 **then** the parent and child sockets differ and the test client's content
 appears inside the nested output rather than as a separate parent window.
@@ -39,13 +39,14 @@ output that cannot initialize, **when** the developer starts the WM,
 socket or output. It does not attempt to take over the desktop.
 Covers G-WM-BOOT-4.
 
-## Build prerequisite to confirm
+## Verification
 
-Before native implementation, verify the Go pin and cgo compiler, select a
-compatible wlroots release in the project shell, and build against that release's
-versioned pkg-config module, matching headers and libraries, and required
-libwayland development libraries. If the build generates protocol code, also
-use the shell's Wayland scanner and stable xdg-shell XML. The repository does
-not yet pin a wlroots ABI; confirm the Wayland backend and its API against
-the selected release before writing the binding. Do not add a runtime
-autodetection fallback to compensate for missing or mismatched packages.
+The COSMIC run checked F-WM-BOOT-1 and F-WM-BOOT-2 with one disposable native
+client. A capture of only the nested window matched its four-color marker;
+after teardown the child socket was gone and the same parent answered a
+Wayland roundtrip. The isolated startup-cancel test covered a stalled Unix
+peer. F-WM-BOOT-3 states the expected failure behavior, not a claim that
+every unavailable backend or output failure was exercised.
+
+See [WM build and test instructions](../../../apps/wm/README.md#build-and-check)
+for the current pinned native environment.

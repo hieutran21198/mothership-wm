@@ -5,6 +5,8 @@ changes. Keep technical choices and their rationale in
 [architecture](../../architecture/README.md). Link to Goals for outcomes,
 Flows for behavior, and Artifacts for domain rules.
 
+- [Mothership WM system overview](mothership-wm.md): actors, current slice, and planned parts.
+
 ## Template
 
 ```markdown
