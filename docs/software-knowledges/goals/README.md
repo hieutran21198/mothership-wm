@@ -1,0 +1,18 @@
+# Goals
+
+A Goal states an outcome, not a sequence of steps or a delivery task. Update
+the existing Goal if the criteria change; link it from its supporting Flows.
+Each criterion names the Flow scenario that demonstrates it.
+
+## Template
+
+```markdown
+# <outcome>
+<actor> needs <outcome> because <need or constraint>.
+
+| Criterion | Observable success | Proven by |
+| --- | --- | --- |
+| <criterion label> | <result the actor can verify> | <Flow scenario link> |
+```
+
+Use labels that allow a reviewer to trace the criterion to its scenario.
