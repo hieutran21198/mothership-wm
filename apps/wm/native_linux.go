@@ -11,15 +11,21 @@ struct mothership_control *mothership_control_create(int parent_fd, int stop_wri
 void mothership_control_destroy(struct mothership_control *control);
 int mothership_control_serve(struct mothership_control *control);
 void mothership_control_interrupt(struct mothership_control *control);
-int mothership_wm_run(struct mothership_control *control, int stop_read_fd, const char **reason);
+int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int domain_fd, const char **reason);
 */
 import "C"
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
+	"syscall"
+	"time"
+
+	"mothership-wm/internal/domainipc"
 )
 
 type nativeControl struct {
@@ -56,7 +62,7 @@ func (c nativeControl) watch(ctx context.Context) func() {
 	}
 }
 
-func launchNested(ctx context.Context, parentPath string) error {
+func launchNested(ctx context.Context, parentPath, domainPath string) error {
 	// Pass an explicit connection fd. libwayland's normal connect API can
 	// otherwise prefer the inherited WAYLAND_SOCKET over the selected path.
 	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", parentPath)
@@ -83,9 +89,51 @@ func launchNested(ctx context.Context, parentPath string) error {
 	defer control.close()
 	defer control.watch(ctx)()
 
+	var domainFD C.int = -1
+	if domainPath != "" {
+		peer, err := connectDesktop(ctx, domainPath)
+		if err != nil {
+			return fmt.Errorf("connect to desktopd: %w", err)
+		}
+		defer peer.Close()
+		domainFD = C.int(peer.Fd())
+	}
+
 	var reason *C.char
-	if C.mothership_wm_run(control.handle, C.int(readStop.Fd()), &reason) != 0 {
+	if C.mothership_wm_run(control.handle, C.int(readStop.Fd()), domainFD, &reason) != 0 {
 		return fmt.Errorf("nested Wayland backend: %s", C.GoString(reason))
 	}
 	return nil
+}
+
+func connectDesktop(ctx context.Context, path string) (*os.File, error) {
+	c, err := domainipc.Dial(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	stop := context.AfterFunc(ctx, func() { c.Close() })
+	defer stop()
+	var nonce [16]byte
+	rand.Read(nonce[:])
+	if err := domainipc.Write(c, "wm "+hex.EncodeToString(nonce[:])); err != nil {
+		return nil, err
+	}
+	_ = c.SetReadDeadline(time.Now().Add(domainipc.Timeout))
+	reply, err := domainipc.Read(c)
+	if err != nil {
+		return nil, err
+	}
+	if reply != "ok" {
+		return nil, fmt.Errorf("registration refused: %s", reply)
+	}
+	f, err := c.File()
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.SetNonblock(int(f.Fd()), true); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }

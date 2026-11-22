@@ -3,8 +3,8 @@
 A Go window manager and desktop shell for Linux/Wayland. One 2D canvas, with
 windows organized into intentional flows rather than separate workspaces.
 
-**Status: project scaffold only.** No native binaries, compositor, CI workflow,
-or desktop integration yet.
+**Status:** nested Wayland WM and a local Domain service. No desktop
+session replacement, Panel integration or CI workflow yet.
 
 ## Development
 
@@ -17,14 +17,14 @@ task versions
 ```
 
 `go.mod` is the Go version authority. The initial Nix input lock is carried
-over from the Platform toolchain, using the same input definitions. The
-Mothership shell has not yet been evaluated with those inputs. There is no
+over from the Platform toolchain, using the same input definitions. There is no
 Node.js, AWS, Terraform, deployment profile, or automatic hook setup.
 
 ## Project layout
 
 - [apps/wm](apps/wm/README.md): compositor and window policy.
 - [apps/panel](apps/panel/README.md): GTK4 shell surface and command palette.
+- [services/desktopd](services/desktopd/README.md): live Domain assignments and view selection.
 - [services/flow](services/flow/README.md): flow membership and command routing.
 - [docs/architecture](docs/architecture/README.md): system boundaries and first milestones.
 

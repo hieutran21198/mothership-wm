@@ -34,3 +34,13 @@ tasks:
           exit 1
         fi
         CGO_ENABLED=1 go build -tags wlroots -o bin/mothership-wm ./apps/wm
+
+  desktopd:build:
+    desc: Build the private local Domain daemon and command client
+    cmds:
+      - go build -o bin/mothership-desktopd ./services/desktopd/cmd/desktopd
+
+  desktopd:test:
+    desc: Test local Domain policy and protocol
+    cmds:
+      - go test ./services/desktopd/... ./internal/domainipc

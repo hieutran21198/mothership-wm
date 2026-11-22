@@ -6,7 +6,9 @@ Each criterion names the Flow scenario that demonstrates it.
 
 - [Open a nested Wayland compositor](boot-nested-wayland-compositor.md): complete
   for one client on COSMIC.
-- [Focus one of two nested windows](focus-nested-windows.md): implemented; physical click-through unverified.
+- [Focus one of two nested windows](focus-nested-windows.md): complete for two nested windows on COSMIC.
+
+- [Switch the main view between Domains](focus-domain.md): design accepted for review.
 
 ## Template
 

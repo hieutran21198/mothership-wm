@@ -10,9 +10,11 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"mothership-wm/internal/domainipc"
 )
 
-type nestedLauncher func(context.Context, string) error
+type nestedLauncher func(context.Context, string, string) error
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -26,6 +28,7 @@ func run(ctx context.Context, args []string, getenv func(string) string, launch 
 	flags := flag.NewFlagSet("mothership-wm", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	parent := flags.String("parent", getenv("WAYLAND_DISPLAY"), "parent Wayland socket name or absolute path")
+	domain := flags.Bool("desktopd", false, "connect to the private desktopd in XDG_RUNTIME_DIR")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -41,7 +44,15 @@ func run(ctx context.Context, args []string, getenv func(string) string, launch 
 		fmt.Fprintf(stderr, "mothership-wm: %v\n", err)
 		return 1
 	}
-	if err := launch(ctx, path); err != nil {
+	var domainPath string
+	if *domain {
+		domainPath, err = domainipc.Path(getenv("XDG_RUNTIME_DIR"))
+		if err != nil {
+			fmt.Fprintf(stderr, "mothership-wm: %v\n", err)
+			return 1
+		}
+	}
+	if err := launch(ctx, path, domainPath); err != nil {
 		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 			return 0
 		}

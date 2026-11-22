@@ -122,7 +122,7 @@ func TestNativeStartupCancelUnblocksRoundtrip(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- launchNested(ctx, path) }()
+	go func() { done <- launchNested(ctx, path, "") }()
 
 	peer, err := listener.AcceptUnix()
 	if err != nil {

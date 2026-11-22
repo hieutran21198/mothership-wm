@@ -1,7 +1,6 @@
 # Focus one of two nested windows
 
-**Implemented.** COSMIC rendering and isolated protocol routing passed;
-physical click-through on COSMIC has not been exercised.
+**Complete:** two nested windows on COSMIC.
 
 A developer needs to operate two disposable Wayland windows inside one nested
 COSMIC session, even when they belong to the same app, and continue using the
@@ -17,6 +16,6 @@ Builds on [one-client nested boot](boot-nested-wayland-compositor.md). This
 slice does not cover camera pan or zoom, general window layout, Panel,
 desktopd, cross-session identity or direct DRM.
 
-See [verification](../flows/focus-nested-windows.md#verification) for the checks and limits.
+See the [focus Flow](../flows/focus-nested-windows.md) for acceptance scenarios.
 
 Tracking: [GitHub issue #1](https://github.com/hieutran21198/mothership-wm/issues/1).

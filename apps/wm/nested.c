@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
@@ -72,6 +73,11 @@ void mothership_control_interrupt(struct mothership_control *control) {
 
 struct xdg_view;
 
+struct domain_member {
+	uint64_t id;
+	uint64_t epoch;
+};
+
 struct nested {
 	struct wl_display *server;
 	struct wlr_backend *backend;
@@ -82,6 +88,12 @@ struct nested {
 	struct nested_seat *seat;
 	struct xdg_view *slots[2];
 	uint64_t next_window_id;
+	struct wl_list views;
+	struct domain_member members[2];
+	uint64_t focus_order;
+	bool domain_active;
+	int domain_fd;
+	struct wl_event_source *domain_source;
 	struct wl_listener backend_destroy;
 	struct wl_listener output_destroy;
 	struct wl_listener frame;
@@ -98,7 +110,10 @@ struct xdg_view {
 	struct wlr_xdg_toplevel *toplevel;
 	struct wlr_scene_tree *tree;
 	uint64_t id;
+	uint64_t epoch, focused_at;
+	bool mapped;
 	int slot;
+	struct wl_list link;
 	struct wl_listener map, unmap, commit, destroy, tree_destroy;
 };
 
@@ -223,8 +238,183 @@ static void on_resize(struct wl_listener *listener, void *data) {
 	nested_seat_refresh(wm->seat);
 }
 
+static void domain_disconnect(struct nested *wm) {
+	if (wm->domain_source != NULL) {
+		wl_event_source_remove(wm->domain_source);
+		wm->domain_source = NULL;
+	}
+	if (wm->domain_fd >= 0) {
+		shutdown(wm->domain_fd, SHUT_RDWR);
+		wm->domain_fd = -1;
+	}
+}
+
+static bool domain_send(struct nested *wm, const char *event, uint64_t id) {
+	if (wm->domain_fd < 0) {
+		return false;
+	}
+	char packet[64];
+	int n = id == 0 ? snprintf(packet, sizeof(packet), "%s", event) :
+		snprintf(packet, sizeof(packet), "%s %" PRIu64, event, id);
+	ssize_t sent;
+	do {
+		sent = send(wm->domain_fd, packet, n, MSG_NOSIGNAL | MSG_DONTWAIT);
+	} while (sent < 0 && errno == EINTR);
+	if (sent != n) {
+		domain_disconnect(wm);
+		return false;
+	}
+	return true;
+}
+
+static struct xdg_view *find_view(struct nested *wm, uint64_t id) {
+	struct xdg_view *view;
+	wl_list_for_each(view, &wm->views, link) {
+		if (view->id == id) {
+			return view;
+		}
+	}
+	return NULL;
+}
+
+static void remember_focus(void *data, struct wlr_surface *surface) {
+	struct nested *wm = data;
+	if (!wm->domain_active) {
+		return;
+	}
+	for (int i = 0; i < 2; ++i) {
+		struct xdg_view *view = wm->slots[i];
+		if (view != NULL && view->toplevel->base->surface == surface) {
+			view->focused_at = ++wm->focus_order;
+			return;
+		}
+	}
+}
+
+static struct wlr_surface *domain_target(struct nested *wm) {
+	struct xdg_view *best = NULL;
+	for (int i = 0; i < 2; ++i) {
+		struct xdg_view *view = wm->slots[i];
+		if (view != NULL && view->tree != NULL && view->tree->node.enabled &&
+				view->focused_at != 0 &&
+				(best == NULL || view->focused_at > best->focused_at)) {
+			best = view;
+		}
+	}
+	return best == NULL ? NULL : best->toplevel->base->surface;
+}
+
+static bool show_domain_member(struct xdg_view *view) {
+	for (int i = 0; i < 2; ++i) {
+		if (view->id != view->wm->members[i].id) {
+			continue;
+		}
+		if (view->epoch != view->wm->members[i].epoch) {
+			view->epoch = view->wm->members[i].epoch;
+			view->focused_at = 0;
+		}
+		if (view->mapped && view->tree != NULL) {
+			view->slot = i;
+			view->wm->slots[i] = view;
+			place_view(view);
+			return true;
+		}
+	}
+	return false;
+}
+
+static uint64_t domain_number(char *token) {
+	if (token == NULL || *token == '\0') {
+		return 0;
+	}
+	for (char *p = token; *p != '\0'; ++p) {
+		if (*p < '0' || *p > '9') {
+			return 0;
+		}
+	}
+	errno = 0;
+	uintmax_t value = strtoumax(token, NULL, 10);
+	return errno == 0 && value <= UINT64_MAX ? (uint64_t)value : 0;
+}
+
+static int on_domain_fd(int fd, uint32_t mask, void *data) {
+	struct nested *wm = data;
+	if (!(mask & WL_EVENT_READABLE)) {
+		domain_disconnect(wm);
+		return 0;
+	}
+	char buf[160];
+	ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT | MSG_TRUNC);
+	if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
+		return 0;
+	}
+	if (n <= 0 || n >= sizeof(buf) || memchr(buf, '\0', n) != NULL) {
+		domain_disconnect(wm);
+		return 0;
+	}
+	buf[n] = '\0';
+	char *tail, *op = strtok_r(buf, " ", &tail);
+	if (op == NULL || strcmp(op, "focus") != 0) {
+		domain_disconnect(wm);
+		return 0;
+	}
+	uint64_t serial = domain_number(strtok_r(NULL, " ", &tail));
+	if (serial == 0) {
+		domain_disconnect(wm);
+		return 0;
+	}
+	struct domain_member members[2] = {0};
+	for (int i = 0; i < 2; ++i) {
+		char *id = strtok_r(NULL, " ", &tail);
+		if (id == NULL) {
+			break;
+		}
+		members[i].id = domain_number(id);
+		members[i].epoch = domain_number(strtok_r(NULL, " ", &tail));
+		if (members[i].id == 0 || members[i].epoch == 0 ||
+				(i > 0 && members[i].id == members[0].id)) {
+			domain_disconnect(wm);
+			return 0;
+		}
+	}
+	if (strtok_r(NULL, " ", &tail) != NULL) {
+		domain_disconnect(wm);
+		return 0;
+	}
+	/* The event loop owns both visible slots and input. No parent event can
+	 * be delivered between hiding the old view and selecting the new target. */
+	for (int i = 0; i < 2; ++i) {
+		struct xdg_view *view = wm->slots[i];
+		if (view != NULL) {
+			if (view->tree != NULL) {
+				wlr_scene_node_set_enabled(&view->tree->node, false);
+			}
+			view->slot = -1;
+		}
+		wm->slots[i] = NULL;
+	}
+	memcpy(wm->members, members, sizeof(members));
+	wm->domain_active = true;
+	for (int i = 0; i < 2; ++i) {
+		struct xdg_view *view = find_view(wm, members[i].id);
+		if (view != NULL) {
+			show_domain_member(view);
+		}
+	}
+	nested_seat_switch(wm->seat, domain_target(wm));
+	domain_send(wm, "applied", serial);
+	return 0;
+}
+
 static void on_view_map(struct wl_listener *listener, void *data) {
 	struct xdg_view *view = wl_container_of(listener, view, map);
+	view->mapped = true;
+	domain_send(view->wm, "map", view->id);
+	if (view->wm->domain_active) {
+		show_domain_member(view);
+		nested_seat_refresh(view->wm->seat);
+		return;
+	}
 	for (int i = 0; i < 2; ++i) {
 		if (view->wm->slots[i] == NULL) {
 			view->slot = i;
@@ -251,12 +441,19 @@ static void remove_view(struct xdg_view *view) {
 	struct wlr_surface *fallback = other != NULL && !wm->cleaning &&
 		other->tree != NULL && other->tree->node.enabled ?
 		other->toplevel->base->surface : NULL;
+	if (wm->domain_active) {
+		fallback = wm->cleaning ? NULL : domain_target(wm);
+	}
 	nested_seat_forget(wm->seat, view->toplevel->base->surface, fallback);
 }
 
 static void on_view_unmap(struct wl_listener *listener, void *data) {
 	struct xdg_view *view = wl_container_of(listener, view, unmap);
+	view->mapped = false;
 	remove_view(view);
+	if (!view->wm->cleaning) {
+		domain_send(view->wm, "unmap", view->id);
+	}
 }
 
 static void on_view_tree_destroy(struct wl_listener *listener, void *data) {
@@ -278,6 +475,10 @@ static void on_view_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct xdg_view *view = wl_container_of(listener, view, destroy);
 	remove_view(view);
+	if (!view->wm->cleaning) {
+		domain_send(view->wm, "close", view->id);
+	}
+	wl_list_remove(&view->link);
 	wl_list_remove(&view->map.link);
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->commit.link);
@@ -319,14 +520,17 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&surface->events.commit, &view->commit);
 	view->destroy.notify = on_view_destroy;
 	wl_signal_add(&toplevel->events.destroy, &view->destroy);
+	wl_list_insert(wm->views.prev, &view->link);
+	domain_send(wm, "new", view->id);
 }
 
-int mothership_wm_run(struct mothership_control *control, int stop_read_fd, const char **reason) {
+int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int domain_fd, const char **reason) {
 	if (atomic_load(&control->phase) == STARTUP_INTERRUPTED) {
 		*reason = NULL;
 		return 0;
 	}
-	struct nested wm = {0};
+	struct nested wm = { .domain_fd = domain_fd };
+	wl_list_init(&wm.views);
 	struct wl_display *parent = NULL;
 	struct wlr_renderer *renderer = NULL;
 	struct wlr_allocator *allocator = NULL;
@@ -425,7 +629,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, cons
 
 	*reason = "could not create the nested input seat";
 	wm.seat = nested_seat_create(wm.server, parent,
-		wlr_wl_output_get_surface(wm.output), hit_view, &wm);
+		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, &wm);
 	if (wm.seat == NULL) {
 		goto done;
 	}
@@ -434,6 +638,14 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, cons
 	const char *socket = wl_display_add_socket_auto(wm.server);
 	if (socket == NULL) {
 		goto done;
+	}
+	if (wm.domain_fd >= 0) {
+		*reason = "could not watch the desktopd control connection";
+		wm.domain_source = wl_event_loop_add_fd(loop, wm.domain_fd,
+			WL_EVENT_READABLE, on_domain_fd, &wm);
+		if (wm.domain_source == NULL || !domain_send(&wm, "ready", 0)) {
+			goto done;
+		}
 	}
 	/* Only the winner of this transition may announce readiness. A later
 	 * cancellation is handled by the stop source in the event loop. */
@@ -451,6 +663,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, cons
 done:
 	wm.stopping = true;
 	wm.cleaning = true;
+	domain_disconnect(&wm);
 	if (wm.server != NULL) {
 		wl_display_destroy_clients(wm.server);
 	}

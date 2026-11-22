@@ -28,19 +28,8 @@ target and the next key goes only to A. If no eligible window remains, the
 WM clears keyboard focus. This does not define ordering among multiple
 fallback targets. Covers G-WM-FOCUS-3 and WIN-3.
 
-## Verification
+## Acceptance record
 
-- **F-WM-FOCUS-1, real COSMIC:** two disposable SHM xdg-shell clients published
-  the same app ID, got the nested keyboard keymap and produced distinct frames.
-  WM logged IDs 1 and 2. Capture of only the nested window found 76,800 marked
-  pixels in each of two separate regions (A: x=0–319; B: x=400–719).
-- **F-WM-FOCUS-2, isolated Wayland parent:** synthetic clicks and keys sent to the
-  actual WM process reached only the selected client, including repeated A/B
-  switching and a new pointer enter followed by a click without motion.
-- **F-WM-FOCUS-3, isolated Wayland parent:** focused B unmap, explicit close and
-  abrupt disconnect each restored focus to A. Remapping B kept its ID; with no
-  visible window, no key was delivered.
-- WM and disposable clients exited and its child socket disappeared. The same
-  COSMIC listener remained. No input was injected into the real desktop and no
-  display capture was retained. Physical pointer appearance and click-through
-  on COSMIC, Niri, direct DRM and camera behavior are not covered.
+Execution evidence and the completion checklist are kept in
+[GitHub issue #1](https://github.com/hieutran21198/mothership-wm/issues/1).
+The scenarios above define scope; they do not report the run.

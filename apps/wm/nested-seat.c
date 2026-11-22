@@ -3,6 +3,7 @@
 #include "nested-seat.h"
 
 #include <stdint.h>
+#include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -22,6 +23,11 @@ struct nested_seat {
 	struct wl_surface *output;
 	struct wlr_surface *selected;
 	nested_hit_test hit_test;
+	nested_selected select_window;
+	bool domain_mode;
+	bool keys_held[KEY_MAX + 1], keys_blocked[KEY_MAX + 1];
+	bool buttons_held[KEY_MAX + 1], buttons_blocked[KEY_MAX + 1];
+	size_t blocked_count;
 	void *data;
 	double x, y;
 	uint32_t parent_name;
@@ -59,12 +65,43 @@ void nested_seat_refresh(struct nested_seat *seat) {
 	}
 }
 
+void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target) {
+	if (seat == NULL) {
+		return;
+	}
+	seat->domain_mode = true;
+	memcpy(seat->keys_blocked, seat->keys_held, sizeof(seat->keys_held));
+	memcpy(seat->buttons_blocked, seat->buttons_held, sizeof(seat->buttons_held));
+	seat->blocked_count = 0;
+	for (size_t i = 0; i <= KEY_MAX; ++i) {
+		seat->blocked_count += seat->keys_blocked[i];
+	}
+	// Cancel active grabs before clearing focus. A button released after
+	// switching must not end a click/drag on either group's clients.
+	wlr_seat_pointer_end_grab(seat->child);
+	wlr_seat_keyboard_end_grab(seat->child);
+	wlr_seat_pointer_clear_focus(seat->child);
+	wlr_seat_keyboard_clear_focus(seat->child);
+	seat->child->pointer_state.button_count = 0;
+	seat->child->pointer_state.grab_serial = 0;
+	seat->keyboard.num_keycodes = 0;
+	seat->keyboard.modifiers.depressed = 0;
+	seat->keyboard.modifiers.latched = 0;
+	seat->selected = target;
+	keyboard_focus(seat);
+	pointer_focus(seat);
+}
+
 void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 		struct wlr_surface *fallback) {
 	if (seat == NULL) {
 		return;
 	}
 	if (seat->selected == gone) {
+		if (seat->domain_mode) {
+			nested_seat_switch(seat, fallback);
+			return;
+		}
 		seat->selected = fallback;
 		keyboard_focus(seat);
 	}
@@ -109,6 +146,18 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	if (!seat->pointer_inside) {
 		return;
 	}
+	if (button > KEY_MAX) {
+		return;
+	}
+	bool was_held = seat->buttons_held[button];
+	seat->buttons_held[button] = state == WL_POINTER_BUTTON_STATE_PRESSED;
+	if (seat->buttons_blocked[button]) {
+		seat->buttons_blocked[button] = seat->buttons_held[button];
+		return;
+	}
+	if (seat->domain_mode && !was_held && !seat->buttons_held[button]) {
+		return;
+	}
 	struct nested_hit hit = pointer_focus(seat);
 	/* Empty space has no input target. Cross-window drags are out of scope. */
 	if (hit.surface == NULL) {
@@ -116,6 +165,7 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	}
 	if (state == WL_POINTER_BUTTON_STATE_PRESSED && hit.toplevel != NULL) {
 		seat->selected = hit.toplevel;
+		seat->select_window(seat->data, hit.toplevel);
 		keyboard_focus(seat);
 	}
 	wlr_seat_pointer_notify_button(seat->child, time, button, state);
@@ -189,9 +239,21 @@ static void keyboard_enter(void *data, struct wl_keyboard *keys, uint32_t serial
 	struct nested_seat *seat = data;
 	seat->keyboard_inside = surface == seat->output;
 	seat->keyboard.num_keycodes = 0;
+	memset(seat->keys_held, 0, sizeof(seat->keys_held));
+	memset(seat->keys_blocked, 0, sizeof(seat->keys_blocked));
+	seat->blocked_count = 0;
 	if (seat->keyboard_inside) {
 		uint32_t *key;
 		wl_array_for_each(key, held) {
+			if (*key > KEY_MAX) {
+				continue;
+			}
+			seat->keys_held[*key] = true;
+			if (seat->domain_mode) {
+				seat->keys_blocked[*key] = true;
+				seat->blocked_count++;
+				continue;
+			}
 			struct wlr_keyboard_key_event e = {
 				.keycode = *key, .state = WL_KEYBOARD_KEY_STATE_PRESSED,
 			};
@@ -214,7 +276,19 @@ static void keyboard_leave(void *data, struct wl_keyboard *keys, uint32_t serial
 static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 		uint32_t time, uint32_t key, uint32_t state) {
 	struct nested_seat *seat = data;
-	if (!seat->keyboard_inside || !seat->has_keymap) {
+	if (!seat->keyboard_inside || !seat->has_keymap || key > KEY_MAX) {
+		return;
+	}
+	bool was_held = seat->keys_held[key];
+	seat->keys_held[key] = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+	if (seat->keys_blocked[key]) {
+		if (!seat->keys_held[key]) {
+			seat->keys_blocked[key] = false;
+			seat->blocked_count--;
+		}
+		return;
+	}
+	if (seat->domain_mode && !was_held && !seat->keys_held[key]) {
 		return;
 	}
 	struct wlr_keyboard_key_event e = { .time_msec = time, .keycode = key, .state = state };
@@ -226,6 +300,9 @@ static void keyboard_modifiers(void *data, struct wl_keyboard *keys, uint32_t se
 		uint32_t depressed, uint32_t latched, uint32_t locked, uint32_t group) {
 	struct nested_seat *seat = data;
 	if (seat->has_keymap) {
+		if (seat->blocked_count > 0) {
+			depressed = latched = 0;
+		}
 		wlr_keyboard_notify_modifiers(&seat->keyboard, depressed, latched, locked, group);
 		if (seat->keyboard_inside) {
 			wlr_seat_keyboard_notify_modifiers(seat->child, &seat->keyboard.modifiers);
@@ -253,6 +330,8 @@ static void drop_pointer(struct nested_seat *seat) {
 		seat->pointer = NULL;
 	}
 	seat->pointer_inside = false;
+	memset(seat->buttons_held, 0, sizeof(seat->buttons_held));
+	memset(seat->buttons_blocked, 0, sizeof(seat->buttons_blocked));
 	wlr_seat_pointer_notify_clear_focus(seat->child);
 }
 
@@ -268,6 +347,9 @@ static void drop_keyboard(struct nested_seat *seat) {
 	seat->keyboard_inside = false;
 	seat->has_keymap = false;
 	seat->keyboard.num_keycodes = 0;
+	memset(seat->keys_held, 0, sizeof(seat->keys_held));
+	memset(seat->keys_blocked, 0, sizeof(seat->keys_blocked));
+	seat->blocked_count = 0;
 	wlr_seat_keyboard_notify_clear_focus(seat->child);
 	wlr_seat_set_keyboard(seat->child, NULL);
 }
@@ -333,7 +415,7 @@ static const struct wl_registry_listener registry_listener = {
 
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
-		nested_hit_test hit_test, void *data) {
+		nested_hit_test hit_test, nested_selected selected, void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -346,6 +428,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	wlr_keyboard_init(&seat->keyboard, &keyboard_impl, "nested-wayland");
 	seat->output = output;
 	seat->hit_test = hit_test;
+	seat->select_window = selected;
 	seat->data = data;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {

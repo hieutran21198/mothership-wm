@@ -7,6 +7,6 @@ import (
 	"errors"
 )
 
-func launchNested(context.Context, string) error {
+func launchNested(context.Context, string, string) error {
 	return errors.New("native backend not built; use the wm-native devenv profile and build with -tags wlroots")
 }

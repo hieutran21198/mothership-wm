@@ -4,7 +4,9 @@ Go owns startup and the parent selection; a cgo adapter uses the explicit
 wlroots Wayland backend. The [first slice](../../docs/software-knowledges/goals/boot-nested-wayland-compositor.md)
 is one nested output and one xdg-shell client. The [focus slice](../../docs/software-knowledges/goals/focus-nested-windows.md)
 adds two fixed side-by-side slots and one local human seat. Camera movement,
-general layout, the Panel and desktopd are outside this slice.
+general layout and the Panel are outside this slice. Start without desktopd
+for standalone two-window behavior. Use [desktopd](../../services/desktopd/README.md)
+with `--desktopd` for Domain views.
 
 ## Build and check
 

@@ -8,6 +8,8 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Boot the WM inside a Wayland session](boot-nested-wayland-compositor.md).
 - [Route input between two nested windows](focus-nested-windows.md): isolated protocol acceptance.
 
+- [Focus a Domain](focus-domain.md): design accepted local command and WM handoff.
+
 ## Template
 
 ```markdown

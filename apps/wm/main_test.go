@@ -17,7 +17,7 @@ func TestMissingParentFailsEvenWithOtherBackendsAvailable(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	code := run(context.Background(), nil, func(k string) string { return env[k] },
-		func(context.Context, string) error {
+		func(context.Context, string, string) error {
 			t.Fatal("launcher was called without a selected parent")
 			return nil
 		}, &stderr)
@@ -44,7 +44,7 @@ func TestNestedParentSelection(t *testing.T) {
 			var stderr bytes.Buffer
 			var got string
 			code := run(context.Background(), tt.args, func(k string) string { return env[k] },
-				func(_ context.Context, path string) error {
+				func(_ context.Context, path, _ string) error {
 					got = path
 					return nil
 				}, &stderr)
@@ -63,7 +63,7 @@ func TestRejectInvalidOrUnexpectedBackend(t *testing.T) {
 		env := map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1"}
 		var stderr bytes.Buffer
 		code := run(context.Background(), args, func(k string) string { return env[k] },
-			func(context.Context, string) error {
+			func(context.Context, string, string) error {
 				t.Fatalf("invalid flags %q reached launcher", args)
 				return nil
 			}, &stderr)
@@ -86,7 +86,7 @@ func TestNestedFailureDoesNotRetry(t *testing.T) {
 	var stderr bytes.Buffer
 	calls := 0
 	code := run(context.Background(), nil, func(k string) string { return env[k] },
-		func(context.Context, string) error {
+		func(context.Context, string, string) error {
 			calls++
 			return errors.New("output failed")
 		}, &stderr)
@@ -101,7 +101,7 @@ func TestCancellationIsAQuietExit(t *testing.T) {
 	env := map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1"}
 	var stderr bytes.Buffer
 	code := run(ctx, nil, func(k string) string { return env[k] },
-		func(ctx context.Context, _ string) error { return ctx.Err() }, &stderr)
+		func(ctx context.Context, _, _ string) error { return ctx.Err() }, &stderr)
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("got code=%d stderr=%q", code, stderr.String())
 	}
