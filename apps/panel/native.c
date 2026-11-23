@@ -18,7 +18,7 @@ extern void panelAction(int, char *, char *);
 
 static GtkWindow *window;
 static GtkWidget *title, *status, *entry, *nodes, *windows;
-static GtkWidget *create, *move, *fly, *home;
+static GtkWidget *create, *move, *fly, *home, *terminal, *files;
 static GtkWidget *form, *entry_button;
 static gboolean showing, expanded, region_pending;
 static GMainLoop *loop;
@@ -44,6 +44,8 @@ static void refresh_actions(void) {
 	gtk_widget_set_sensitive(move, enabled && node && selected(windows) != NULL);
 	gtk_widget_set_sensitive(fly, enabled && node);
 	gtk_widget_set_sensitive(home, enabled);
+	gtk_widget_set_sensitive(terminal, enabled);
+	gtk_widget_set_sensitive(files, enabled);
 	gtk_widget_set_sensitive(entry, enabled);
 }
 
@@ -352,6 +354,8 @@ int panel_init(void) {
 	move = button("Attach / Move", 2, actions);
 	fly = button("Fly to Node", 3, actions);
 	home = button("Home", 4, actions);
+	terminal = button("Terminal", 5, actions);
+	files = button("File Manager", 6, actions);
 	status = gtk_label_new("");
 	gtk_label_set_xalign(GTK_LABEL(status), 0);
 	gtk_label_set_ellipsize(GTK_LABEL(status), PANGO_ELLIPSIZE_END);
@@ -369,4 +373,13 @@ void panel_run(void) {
 	loop = g_main_loop_new(NULL, FALSE);
 	g_main_loop_run(loop);
 	g_main_loop_unref(loop);
+}
+
+static gboolean quit_loop(gpointer data) {
+	g_main_loop_quit(loop);
+	return G_SOURCE_REMOVE;
+}
+
+void panel_quit(void) {
+	g_idle_add(quit_loop, NULL);
 }

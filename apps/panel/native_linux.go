@@ -15,16 +15,19 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"unsafe"
 
 	"mothership-wm/internal/domainipc"
 )
 
 var active *controller
+var apps *appLauncher
 
 func main() {
 	nested := flag.String("nested", "", "distinct child Wayland socket reported by Mothership")
@@ -47,11 +50,17 @@ func main() {
 	if C.panel_init() == 0 {
 		fail(fmt.Errorf("could not open native Command Center in the nested WM"))
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	active = &controller{ctx: ctx, path: path, show: showNative}
+	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
 	go active.run()
+	go func() {
+		<-ctx.Done()
+		C.panel_quit()
+	}()
 	C.panel_run()
+	cancel()
+	apps.owned.Wait()
 }
 
 func fail(err error) {
@@ -93,5 +102,7 @@ func panelAction(op C.int, a, b *C.char) {
 		active.submit(domainipc.FocusMethod, domainipc.DomainBody{Domain: name})
 	case 4:
 		active.submit(domainipc.HomeMethod, domainipc.Empty{})
+	case C.int(openTerminal), C.int(openFiles):
+		apps.start(appAction(op))
 	}
 }

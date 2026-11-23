@@ -20,8 +20,14 @@ Create a named Node, select a live Window ID and a destination, then
 or Escape during text entry releases input back to the current view. Closing the
 managed WM also closes its nested Command Center.
 
+**Terminal** starts an installed Ghostty with single-instance mode off.
+**File Manager** starts installed COSMIC Files without daemonizing.
+Neither is installed by this project. Each opens in Home / Inbox; use the
+existing Attach / Move control if you want it in a Node. These actions do
+not change your view or run arbitrary commands. The apps remain ordinary
+Linux apps with access to your normal files, not sandboxes.
 
-To add a disposable native application for a test, use the
+To add another disposable native application for a test, use the
 `MOTHERSHIP_WAYLAND` absolute socket path printed by the launcher:
 
 ```sh
@@ -29,4 +35,4 @@ env -u WAYLAND_SOCKET -u DISPLAY WAYLAND_DISPLAY=YOUR_PRINTED_PATH YOUR_TEST_APP
 ```
 
 Do not export the child's socket to the host session. The launch command
-does not start applications for you.
+does not open apps automatically.

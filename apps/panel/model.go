@@ -157,6 +157,15 @@ func (c *controller) subscribe() error {
 	}
 }
 
+func (c *controller) report(message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.online {
+		c.message = message
+		c.render()
+	}
+}
+
 func (c *controller) submit(method string, body any) {
 	c.mu.Lock()
 	if !c.online || !c.state.WMReady || c.pending {
