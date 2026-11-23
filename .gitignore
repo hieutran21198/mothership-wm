@@ -5,3 +5,7 @@
 /.env
 /.env.local
 /bin/
+/apps/wm/parent-*-client.h
+/apps/wm/parent-*-protocol.c
+/apps/wm/generated-map-pointer.*
+/apps/panel/generated-map-pointer.*

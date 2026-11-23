@@ -13,6 +13,8 @@
 #include <wlr/types/wlr_seat.h>
 #include <xkbcommon/xkbcommon.h>
 
+struct pending_axis { bool pending; uint32_t time; double delta; int32_t discrete; };
+
 struct nested_seat {
 	struct wlr_seat *child;
 	struct wlr_keyboard keyboard;
@@ -27,6 +29,9 @@ struct nested_seat {
 	nested_cursor_move move_cursor;
 	nested_move_start start_move;
 	nested_move_update update_move;
+	nested_map_scroll map_scroll;
+	struct pending_axis axes[2];
+	enum wl_pointer_axis_source axis_source;
 	bool moving;
 	bool domain_mode;
 	bool keys_held[KEY_MAX + 1], keys_blocked[KEY_MAX + 1];
@@ -103,7 +108,7 @@ void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool
 	keyboard_focus(seat);
 }
 
-void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target) {
+void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bool keep_panel) {
 	if (seat == NULL) {
 		return;
 	}
@@ -112,14 +117,16 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target) {
 		seat->update_move(seat->data, false, seat->x, seat->y);
 		seat->moving = false;
 	}
-	isolate_keys(seat);
+	// The explicit Map View action can carry the already-focused shell
+	// across projection. No app focus is kept and no shell focus is granted.
+	if (!keep_panel || !seat->panel_focus) isolate_keys(seat);
 	memcpy(seat->buttons_blocked, seat->buttons_held, sizeof(seat->buttons_held));
 	// A button released after switching cannot complete an old grab.
 	wlr_seat_pointer_end_grab(seat->child);
 	wlr_seat_pointer_clear_focus(seat->child);
 	seat->child->pointer_state.button_count = 0;
 	seat->child->pointer_state.grab_serial = 0;
-	seat->panel_focus = NULL;
+	if (!keep_panel) seat->panel_focus = NULL;
 	seat->selected = target;
 	keyboard_focus(seat);
 	pointer_focus(seat);
@@ -132,7 +139,7 @@ void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 	}
 	if (seat->selected == gone) {
 		if (seat->domain_mode) {
-			nested_seat_switch(seat, fallback);
+			nested_seat_switch(seat, fallback, false);
 			return;
 		}
 		seat->selected = fallback;
@@ -249,19 +256,53 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	wlr_seat_pointer_notify_button(seat->child, time, button, state);
 }
 
-static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time,
-		uint32_t axis, wl_fixed_t value) {
-	/* Scrolling and gesture behavior are outside the focus slice. */
+static void flush_axis(struct nested_seat *seat,unsigned orientation) {
+	struct pending_axis e=seat->axes[orientation];
+	seat->axes[orientation]=(struct pending_axis){0};
+	if (!e.pending || !seat->pointer_inside || seat->moving) return;
+	if (orientation==WL_POINTER_AXIS_VERTICAL_SCROLL && seat->keyboard_inside &&
+			seat->panel_focus && seat->map_scroll(seat->data,seat->panel_focus,seat->x,seat->y,e.delta)) return;
+	if (pointer_focus(seat).surface)
+		wlr_seat_pointer_notify_axis(seat->child,e.time,orientation,e.delta,e.discrete,
+			seat->axis_source,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+}
+
+static void pointer_axis(void *data, struct wl_pointer *pointer,uint32_t time,uint32_t axis,wl_fixed_t value) {
+	struct nested_seat *seat=data;
+	if (axis>=2) return;
+	seat->axes[axis].pending=true;
+	seat->axes[axis].time=time;
+	seat->axes[axis].delta+=wl_fixed_to_double(value);
+	if (wl_pointer_get_version(pointer)<WL_POINTER_FRAME_SINCE_VERSION) {
+		flush_axis(seat,axis);
+		wlr_seat_pointer_notify_frame(seat->child);
+	}
 }
 
 static void pointer_frame(void *data, struct wl_pointer *pointer) {
-	struct nested_seat *seat = data;
+	(void)pointer;
+	struct nested_seat *seat=data;
+	flush_axis(seat,0);flush_axis(seat,1);
+	seat->axis_source=WL_POINTER_AXIS_SOURCE_WHEEL;
 	wlr_seat_pointer_notify_frame(seat->child);
 }
 
-static void pointer_axis_source(void *data, struct wl_pointer *p, uint32_t source) {}
-static void pointer_axis_stop(void *data, struct wl_pointer *p, uint32_t time, uint32_t axis) {}
-static void pointer_axis_discrete(void *data, struct wl_pointer *p, uint32_t axis, int32_t discrete) {}
+static void pointer_axis_source(void *data,struct wl_pointer *p,uint32_t source) {
+	(void)p;
+	struct nested_seat *seat=data;
+	seat->axis_source=source;
+}
+static void pointer_axis_stop(void *data,struct wl_pointer *p,uint32_t time,uint32_t axis) {
+	struct nested_seat *seat=data;
+	if (axis>=2) return;
+	if (seat->axes[axis].pending) flush_axis(seat,axis);
+	pointer_axis(data,p,time,axis,0);
+}
+static void pointer_axis_discrete(void *data,struct wl_pointer *p,uint32_t axis,int32_t discrete) {
+	(void)p;
+	struct nested_seat *seat=data;
+	if (axis<2) seat->axes[axis].discrete=(int32_t)((int64_t)discrete*120);
+}
 
 static const struct wl_pointer_listener pointer_listener = {
 	.enter = pointer_enter, .leave = pointer_leave, .motion = pointer_motion,
@@ -494,7 +535,7 @@ static const struct wl_registry_listener registry_listener = {
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
 		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
-		nested_move_start start_move, nested_move_update update_move, void *data) {
+		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -511,6 +552,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->move_cursor = move_cursor;
 	seat->start_move = start_move;
 	seat->update_move = update_move;
+	seat->map_scroll=scroll;
 	seat->data = data;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {

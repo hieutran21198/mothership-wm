@@ -19,6 +19,8 @@ Each criterion names the Flow scenario that demonstrates it.
 - [Open a terminal or file manager from Command Center](open-native-apps.md).
 - [Enter Nodes from Overview and choose a layout](view-node-layouts.md).
 
+- [Show a configurable Center Map HUD](show-center-map.md).
+
 ## Template
 
 ```markdown

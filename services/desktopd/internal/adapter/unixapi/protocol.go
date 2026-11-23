@@ -20,7 +20,7 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 	}
 	badBody := func() { sendFailure(c, req.ID, "invalid_body", "invalid request body") }
 	switch req.Method {
-	case domainipc.SnapshotMethod, domainipc.SubscribeMethod, domainipc.HomeMethod, domainipc.OverviewMethod:
+	case domainipc.SnapshotMethod, domainipc.SubscribeMethod, domainipc.HomeMethod, domainipc.OverviewMethod, domainipc.MapShowMethod, domainipc.MapHideMethod:
 		if _, err := domainipc.Decode[domainipc.Empty](req.Body); err != nil {
 			badBody()
 			return
@@ -28,6 +28,9 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 		switch req.Method {
 		case domainipc.SubscribeMethod:
 			d.subscribe(ctx, c, req.ID)
+		case domainipc.MapShowMethod, domainipc.MapHideMethod:
+			d.service.SetMapVisible(req.Method == domainipc.MapShowMethod)
+			sendSuccess(c, req.ID)
 		case domainipc.SnapshotMethod:
 			sendSnapshot(c, req.ID, d.service.Snapshot())
 		case domainipc.HomeMethod, domainipc.OverviewMethod:
@@ -142,7 +145,7 @@ func windowWire(w domain.Window) domainipc.Window {
 
 func sendSnapshot(c *net.UnixConn, id uint64, s app.Snapshot) bool {
 	wire := domainipc.Snapshot{
-		Revision: s.Revision, WMReady: s.WMReady, Session: s.Session, Domains: s.Domains,
+		Revision: s.Revision, WMReady: s.WMReady, Session: s.Session, Domains: s.Domains, MapVisible: s.MapVisible,
 		Windows: make([]domainipc.Window, 0, len(s.Windows)), Selection: selectionWire(s.Selection),
 	}
 	for _, w := range s.Windows {
@@ -170,6 +173,8 @@ func eventWire(u app.Update) domainipc.Event {
 		body = domainipc.WindowClosedBody{WindowID: u.Window.ID}
 	case app.SelectionChanged:
 		body = selectionWire(u.Selection)
+	case app.MapVisibilityChanged:
+		body = domainipc.MapVisibility{Visible: u.MapVisible}
 	}
 	raw, _ := json.Marshal(body)
 	return domainipc.Event{Revision: u.Revision, Event: u.Kind, Body: raw}

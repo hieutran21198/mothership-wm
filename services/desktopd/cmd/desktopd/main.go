@@ -24,7 +24,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Println("usage: mothership-desktopd serve | list | create DOMAIN | assign SESSION WINDOW DOMAIN | focus DOMAIN | home")
+		fmt.Println("usage: mothership-desktopd serve | list | create DOMAIN | assign SESSION WINDOW DOMAIN | focus DOMAIN | home | overview | map show | map hide")
 		return nil
 	}
 	path, err := domainipc.Path(os.Getenv("XDG_RUNTIME_DIR"))
@@ -41,7 +41,10 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Println("DESKTOPD_READY")
-		return unixapi.Serve(ctx, l, &app.Service{})
+		service := &app.Service{}
+		// Map visibility is independent of the acknowledged app projection.
+		service.SetMapVisible(true)
+		return unixapi.Serve(ctx, l, service)
 	}
 	reply, err := unixapi.Request(ctx, path, args)
 	if err != nil {

@@ -22,6 +22,7 @@ has either a `body` or an `error` with `code` and `message`.
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
 | `home` | `{}` | `{}` after WM acknowledgement |
 | `overview` | `{}` | `{}` after clearing the app projection in WM |
+| `map.show` / `map.hide` | `{}` | `{}` after updating the HUD visibility preference only |
 | `layout` | `{"domain":"Dev","mode":"float"}` | `{}` after applying the mode in the currently selected Node |
 | `stack.next` | `{"domain":"Dev"}` | `{}` after advancing only the current Node's Stack |
 
@@ -44,7 +45,9 @@ snapshot or full subscription limit returns `snapshot_too_large` or
 ## Snapshot and event stream
 
 The snapshot has `revision`, `wm_ready`, `domains`, `windows`,
-`selection`, and `session` when WM is ready. Each window has `id`,
+`selection`, and `session` when WM is ready. `map_visible` is omitted when
+false. A native session starts with this preference enabled, but the HUD
+draws only in Overview. It does not affect selection. Each window has `id`,
 `mapped`, and `domain` when assigned. The selection has `state`
 (`not_selected`, `acknowledged`, or `unknown`) and includes `domain`
 only for an acknowledged named Domain. Confirmed Home is
@@ -66,6 +69,7 @@ The subscription emits one snapshot response and then objects of the form
 | `window.updated` | Complete window entry; replace by window ID, or insert it. |
 | `window.closed` | `window_id`; remove that entry. |
 | `selection.changed` | Complete selection; replace it. |
+| `map.visibility.changed` | `visible`; update the paint-only HUD without changing selection. Repeated requests for the same state emit no event. |
 | `wm.changed` | `wm_ready`, optional `session`, and complete `selection`; clear prior window entries. |
 
 Use a different connection for commands. Each update follows the previous

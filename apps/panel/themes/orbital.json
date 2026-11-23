@@ -1,0 +1,14 @@
+{
+  "background": "#172C42",
+  "opacity": 0,
+  "grid": "#324C62",
+  "text": "#EDF5FB",
+  "border_color": "#6F91AC9F",
+  "stroke": "#759BB0",
+  "font_family": "Sans",
+  "font_size": 13,
+  "pan_speed_percent": 100,
+  "icons": {
+    "Dev": "dev-marker.svg"
+  }
+}

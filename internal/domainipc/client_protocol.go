@@ -18,6 +18,9 @@ const (
 	OverviewMethod  = "overview"
 	LayoutMethod    = "layout"
 	NextMethod      = "stack.next"
+	MapShowMethod   = "map.show"
+	MapHideMethod   = "map.hide"
+	MapChangedEvent = "map.visibility.changed"
 )
 
 type Request struct {
@@ -38,6 +41,9 @@ type Failure struct {
 }
 
 type Empty struct{}
+type MapVisibility struct {
+	Visible bool `json:"visible"`
+}
 
 type DomainBody struct {
 	Domain string `json:"domain"`
@@ -78,12 +84,13 @@ type Window struct {
 }
 
 type Snapshot struct {
-	Revision  uint64    `json:"revision"`
-	WMReady   bool      `json:"wm_ready"`
-	Session   string    `json:"session,omitempty"`
-	Domains   []string  `json:"domains"`
-	Windows   []Window  `json:"windows"`
-	Selection Selection `json:"selection"`
+	Revision   uint64    `json:"revision"`
+	WMReady    bool      `json:"wm_ready"`
+	Session    string    `json:"session,omitempty"`
+	Domains    []string  `json:"domains"`
+	Windows    []Window  `json:"windows"`
+	MapVisible bool      `json:"map_visible,omitempty"`
+	Selection  Selection `json:"selection"`
 }
 
 type Event struct {

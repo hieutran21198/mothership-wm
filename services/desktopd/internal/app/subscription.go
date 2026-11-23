@@ -7,11 +7,12 @@ const (
 	SelectionAcknowledged = "acknowledged"
 	SelectionUnknown      = "unknown"
 
-	WMChanged        = "wm.changed"
-	DomainCreated    = "domain.created"
-	WindowUpdated    = "window.updated"
-	WindowClosed     = "window.closed"
-	SelectionChanged = "selection.changed"
+	WMChanged            = "wm.changed"
+	DomainCreated        = "domain.created"
+	WindowUpdated        = "window.updated"
+	WindowClosed         = "window.closed"
+	SelectionChanged     = "selection.changed"
+	MapVisibilityChanged = "map.visibility.changed"
 
 	queueSize      = 16
 	maxSubscribers = 16
@@ -25,22 +26,24 @@ type Selection struct {
 }
 
 type Snapshot struct {
-	Revision  uint64
-	WMReady   bool
-	Session   string
-	Domains   []string
-	Windows   []domain.Window
-	Selection Selection
+	MapVisible bool
+	Revision   uint64
+	WMReady    bool
+	Session    string
+	Domains    []string
+	Windows    []domain.Window
+	Selection  Selection
 }
 
 type Update struct {
-	Revision  uint64
-	Kind      string
-	WMReady   bool
-	Session   string
-	Domain    string
-	Window    domain.Window
-	Selection Selection
+	MapVisible bool
+	Revision   uint64
+	Kind       string
+	WMReady    bool
+	Session    string
+	Domain     string
+	Window     domain.Window
+	Selection  Selection
 }
 
 // Snapshot returns a copy of the current view, including when WM is absent.
@@ -52,13 +55,23 @@ func (s *Service) Snapshot() Snapshot {
 
 func (s *Service) snapshot() Snapshot {
 	v := Snapshot{
-		Revision: s.revision, WMReady: s.ready, Domains: s.names.Names(),
+		Revision: s.revision, WMReady: s.ready, Domains: s.names.Names(), MapVisible: s.mapVisible,
 		Windows: make([]domain.Window, 0), Selection: s.currentSelection(),
 	}
 	if s.ready {
 		v.Session, v.Windows = s.active.ID, s.active.Windows()
 	}
 	return v
+}
+
+// SetMapVisible changes only the panel presentation preference.
+func (s *Service) SetMapVisible(visible bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mapVisible != visible {
+		s.mapVisible = visible
+		s.publish(Update{Kind: MapVisibilityChanged, MapVisible: visible})
+	}
 }
 
 func (s *Service) currentSelection() Selection {

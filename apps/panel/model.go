@@ -26,10 +26,10 @@ type controller struct {
 }
 
 type view struct {
-	title, message, node, mode string
-	domains                    []string
-	windows                    []windowRow
-	enabled, overview          bool
+	title, message, node, mode    string
+	domains                       []string
+	windows                       []windowRow
+	enabled, overview, mapVisible bool
 }
 
 type windowRow struct{ key, label string }
@@ -51,7 +51,7 @@ func (c *controller) render() {
 			title = "View outcome unknown"
 		}
 	}
-	v := view{title: title, message: c.message, enabled: c.online && s.WMReady && !c.pending}
+	v := view{title: title, message: c.message, enabled: c.online && s.WMReady && !c.pending, mapVisible: c.online && s.WMReady && s.MapVisible}
 	if c.online && s.Selection.State == "acknowledged" {
 		v.node, v.mode = s.Selection.Domain, s.Selection.Mode
 		v.overview = s.Selection.View == "overview"
@@ -172,7 +172,15 @@ func (c *controller) report(message string) {
 	}
 }
 
+func (c *controller) openMap(enterOverview bool) {
+	c.submitAfter(domainipc.MapShowMethod, domainipc.Empty{}, enterOverview)
+}
+
 func (c *controller) submit(method string, body any) {
+	c.submitAfter(method, body, false)
+}
+
+func (c *controller) submitAfter(method string, body any, enterOverview bool) {
 	c.mu.Lock()
 	if !c.online || !c.state.WMReady || c.pending {
 		c.mu.Unlock()
@@ -181,13 +189,26 @@ func (c *controller) submit(method string, body any) {
 	c.pending = true
 	c.next++
 	id := c.next
+	if enterOverview {
+		c.next++
+	}
 	c.message = "Applying…"
 	c.render()
 	c.mu.Unlock()
 
 	go func() {
-		_, _, done, err := connection(c.ctx, c.path, method, id, body)
-		defer done()
+		var err error
+		if enterOverview {
+			_, _, done, status := connection(c.ctx, c.path, domainipc.OverviewMethod, id, domainipc.Empty{})
+			done()
+			err = status
+			id++
+		}
+		if err == nil {
+			_, _, done, status := connection(c.ctx, c.path, method, id, body)
+			done()
+			err = status
+		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.pending = false
@@ -245,6 +266,12 @@ func reduce(s *domainipc.Snapshot, e domainipc.Event) error {
 				break
 			}
 		}
+	case domainipc.MapChangedEvent:
+		v, err := domainipc.Decode[domainipc.MapVisibility](e.Body)
+		if err != nil {
+			return err
+		}
+		s.MapVisible = v.Visible
 	case "selection.changed":
 		v, err := domainipc.Decode[domainipc.Selection](e.Body)
 		if err != nil {

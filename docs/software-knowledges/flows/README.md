@@ -19,6 +19,8 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Open native apps inside the nested session](open-native-apps.md).
 - [Navigate Overview and lay out a Node](view-node-layouts.md).
 
+- [Show and hide the Center Map](show-center-map.md).
+
 ## Template
 
 ```markdown

@@ -99,3 +99,43 @@ func TestSlowSubscriberDoesNotBlockOrLoseFastClient(t *testing.T) {
 		t.Fatalf("unexpected replay/change: %+v", h)
 	}
 }
+
+func TestMapVisibilityDoesNotAlterNodeView(t *testing.T) {
+	var s Service
+	wm := s.Connect("test")
+	if !s.Ready(wm, true) {
+		t.Fatal("WM not ready")
+	}
+	s.Create("Dev")
+	s.AcknowledgeView(wm, Selection{Kind: SelectionAcknowledged, Domain: "Dev", Mode: "tiling"})
+	if !s.WindowAdded(wm, 4) || !s.WindowMapping(wm, 4, true) {
+		t.Fatal("window setup")
+	}
+	original, events, closeStream, err := s.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStream()
+	if original.MapVisible {
+		t.Fatal("map should start hidden")
+	}
+	for _, visible := range []bool{true, false, true} {
+		prior := s.Snapshot()
+		s.SetMapVisible(visible)
+		s.SetMapVisible(visible)
+		next := s.Snapshot()
+		if next.Revision != prior.Revision+1 || next.Selection != original.Selection || next.Session != original.Session ||
+			next.MapVisible != visible || len(next.Domains) != 1 || next.Domains[0] != "Dev" ||
+			len(next.Windows) != 1 || next.Windows[0] != original.Windows[0] {
+			t.Fatalf("visibility changed view or duplicated revision: %+v", next)
+		}
+		select {
+		case event := <-events:
+			if event.Kind != MapVisibilityChanged || event.MapVisible != visible || event.Revision != next.Revision {
+				t.Fatalf("wrong event: %+v", event)
+			}
+		default:
+			t.Fatal("missing event")
+		}
+	}
+}

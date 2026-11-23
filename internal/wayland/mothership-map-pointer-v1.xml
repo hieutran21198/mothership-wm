@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="mothership_map_pointer_v1">
+  <interface name="mothership_map_pointer_v1" version="1">
+    <description summary="nested Map View wheel routing">
+      The accepted Command Center surface can enable vertical wheel events
+      inside the mapped, focused Map View. Coordinates are logical and local
+      to the nested viewport. There is no global pointer observer or grab.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="watch">
+      <arg name="command_center" type="object" interface="wl_surface"/>
+    </request>
+    <request name="set_zoom">
+      <description summary="route vertical wheel to the visible map during navigation"/>
+      <arg name="enabled" type="uint"/><arg name="margin" type="uint"/>
+    </request>
+    <event name="zoom">
+      <arg name="x" type="fixed"/><arg name="y" type="fixed"/>
+      <arg name="delta" type="fixed"/>
+    </event>
+  </interface>
+</protocol>

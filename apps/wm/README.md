@@ -20,7 +20,14 @@ devenv shell --profile wm-native -- task wm:build
 The default check tests Go startup policy only. The native profile selects
 wlroots 0.20.2 from the locked package set and uses the `wlroots-0.20` pkg-config
 module. It also provides the cgo compiler, libwayland and Wayland protocol
-headers. The native build produces `bin/mothership-wm`.
+headers. The native task generates private parent bindings from those pinned
+protocols and builds `bin/mothership-wm`.
+
+The parent window keeps size and input in logical coordinates. Where the
+parent offers fractional-scale and viewporter, the WM uses its preferred
+scale for physical buffers and informs nested clients via Wayland so they
+can draw at that resolution. Without both protocols, the nested output
+keeps its 1× fallback. No host scale setting is modified.
 
 ## Manual acceptance
 

@@ -45,3 +45,20 @@ func TestReducePreservesIdentityAndSelection(t *testing.T) {
 		t.Fatalf("new session kept stale refs: %+v", s)
 	}
 }
+
+func TestMapVisibilityEventLeavesSelectionAlone(t *testing.T) {
+	original := domainipc.Selection{State: "acknowledged", Domain: "Dev", Mode: "tiling"}
+	s := domainipc.Snapshot{Revision: 7, Selection: original, Domains: []string{"Dev", "Review"}}
+	if err := reduce(&s, domainipc.Event{Revision: 8, Event: domainipc.MapChangedEvent, Body: []byte(`{"visible":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if !s.MapVisible || s.Selection != original || s.Revision != 8 || s.Domains[0] != "Dev" {
+		t.Fatalf("wrong view after event: %+v", s)
+	}
+	if err := reduce(&s, domainipc.Event{Revision: 9, Event: domainipc.MapChangedEvent, Body: []byte(`{"visible":false}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if s.MapVisible || s.Selection != original || s.Revision != 9 {
+		t.Fatalf("wrong view after hide: %+v", s)
+	}
+}

@@ -11,14 +11,15 @@ event sourcing, or one daemon per domain in the first milestone.
 
 | Part | Owns | Connects over |
 | --- | --- | --- |
-| WM | Live windows, input, focus, geometry, camera and render | Wayland to clients; a local control socket to desktopd |
-| Panel | Dock, palette and UI state | Wayland layer-shell for placement; local control to desktopd |
+| WM | Live windows, input, focus, window geometry and output composition | Wayland to clients; a local control socket to desktopd |
+| Panel | Dock, palette, Map camera and UI state | Wayland layer-shell for placement; local control to desktopd |
 | desktopd | Domain names, live Window membership and resolution of Domain commands | Local control socket to WM; no Wayland dependency |
 
 Commands ask for work. Events describe completed state changes. A reconnect
 takes a snapshot before consuming updates. Window IDs are scoped to a WM
-session; neither PID nor title is a durable key. Frame timing, pixel buffers
-and pointer motion stay in the compositor. A panel or desktopd failure must
+session; neither PID nor title is a durable key. Frame timing and pixel buffers stay on the drawing path; desktopd does not
+receive pointer motion. See [Center Map rendering and input](center-map-rendering.md)
+for the scoped Wayland wheel route. A panel or desktopd failure must
 not stop basic window management.
 
 ## First milestones

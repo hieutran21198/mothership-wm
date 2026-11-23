@@ -3,7 +3,7 @@
 package main
 
 /*
-#cgo pkg-config: gtk4
+#cgo pkg-config: gtk4 librsvg-2.0 epoxy wayland-client
 #cgo LDFLAGS: -lgtk4-layer-shell
 #include <stdlib.h>
 #include "native.h"
@@ -28,6 +28,7 @@ import (
 
 var active *controller
 var apps *appLauncher
+var mapSettingsPath string
 
 func main() {
 	nested := flag.String("nested", "", "distinct child Wayland socket reported by Mothership")
@@ -47,9 +48,15 @@ func main() {
 	}
 	_ = os.Setenv("WAYLAND_DISPLAY", socket)
 	runtime.LockOSThread()
+	if os.Getenv("GSK_RENDERER") == "" {
+		// Keep the GTK compositor on OpenGL rather than selecting Vulkan.
+		_ = os.Setenv("GSK_RENDERER", "gl")
+	}
 	if C.panel_init() == 0 {
 		fail(fmt.Errorf("could not open native Command Center in the nested WM"))
 	}
+	configureWallpaper()
+	configureMap()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	active = &controller{ctx: ctx, path: path, show: showNative}
 	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
@@ -87,7 +94,98 @@ func showNative(v view) {
 	if v.overview {
 		overview = 1
 	}
-	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], enabled, overview)
+	var mapVisible C.int
+	if v.mapVisible {
+		mapVisible = 1
+	}
+	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], enabled, overview, mapVisible)
+}
+
+func configureWallpaper() {
+	path := os.Getenv("MOTHERSHIP_WALLPAPER_CONFIG")
+	warn := func(f string, a ...any) { fmt.Fprintf(os.Stderr, "mothership-wallpaper: "+f+"\n", a...) }
+	cfg := loadWallpaperConfig(path, warn)
+	data, err := readWallpaper(path, cfg.Path)
+	var contain C.int
+	if cfg.Mode == "contain" {
+		contain = 1
+	}
+	fallback := func() {
+		data := defaultMapWallpaper
+		if C.wallpaper_set((*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)), contain) == 0 {
+			warn("bundled wallpaper unavailable; using procedural backdrop")
+		}
+	}
+	switch {
+	case err != nil:
+		warn("image %q: %v; using bundled wallpaper", cfg.Path, err)
+		fallback()
+	default:
+		if C.wallpaper_set((*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)), contain) == 0 {
+			warn("image is not a renderable PNG; using bundled wallpaper")
+			fallback()
+		}
+	}
+	C.wallpaper_show()
+}
+
+func configureMap() {
+	path := os.Getenv("MOTHERSHIP_MAP_THEME")
+	warn := func(f string, a ...any) { fmt.Fprintf(os.Stderr, "mothership-center-map: "+f+"\n", a...) }
+	theme := loadMapTheme(path, warn)
+	colors := []string{theme.Background, theme.Grid, theme.Text, theme.Stroke, theme.BorderColor}
+	cs := make([]*C.char, len(colors))
+	for i, color := range colors {
+		cs[i] = C.CString(color)
+		defer C.free(unsafe.Pointer(cs[i]))
+	}
+	C.map_hud_configure(cs[0], C.double(theme.Opacity), cs[1], cs[2], cs[3], cs[4])
+	settings := defaultMapSettings(theme.BorderColor)
+	if dir, err := os.UserConfigDir(); err == nil {
+		mapSettingsPath = filepath.Join(dir, "mothership-wm", "center-map.json")
+		settings, err = loadMapSettings(mapSettingsPath, settings)
+		if err != nil {
+			warn("settings: %v; using theme defaults", err)
+		}
+	}
+	border := C.CString(settings.BorderColor)
+	var frosted, showFPS C.int
+	if settings.Frosted {
+		frosted = 1
+	}
+	if settings.ShowFPS {
+		showFPS = 1
+	}
+	C.panel_set_map_settings(border, C.int(settings.OuterMargin), C.int(settings.InnerPadding), frosted, C.int(settings.Animation), showFPS, C.int(theme.PanSpeed), C.int(settings.PanSpeedOverride), maxMapMargin, maxMapPadding)
+	C.free(unsafe.Pointer(border))
+	family := C.CString(theme.FontFamily)
+	if C.map_hud_set_font(family, C.double(theme.FontSize)) == 0 {
+		warn("font family %q is not available; using Sans", theme.FontFamily)
+	}
+	C.free(unsafe.Pointer(family))
+	for node, asset := range theme.Icons {
+		data, err := readMapIcon(path, asset)
+		if err != nil {
+			warn("node %q icon %q: %v; using diamond", node, asset, err)
+			continue
+		}
+		name, svg := C.CString(node), C.CBytes(data)
+		ok := C.map_hud_icon(name, (*C.uchar)(svg), C.size_t(len(data)))
+		C.free(unsafe.Pointer(name))
+		C.free(svg)
+		if ok == 0 {
+			warn("node %q icon %q is not a renderable SVG; using diamond", node, asset)
+		}
+	}
+}
+
+//export panelSaveMapSettings
+func panelSaveMapSettings(border *C.char, outer, inner, frosted, animation, showFPS, panOverride C.int) *C.char {
+	settings := mapSettings{BorderColor: C.GoString(border), OuterMargin: int(outer), InnerPadding: int(inner), Frosted: frosted != 0, Animation: int(animation), ShowFPS: showFPS != 0, PanSpeedOverride: int(panOverride)}
+	if err := saveMapSettings(mapSettingsPath, settings); err != nil {
+		return C.CString("Could not save settings: " + err.Error())
+	}
+	return nil
 }
 
 //export panelAction
@@ -108,8 +206,6 @@ func panelAction(op C.int, a, b *C.char) {
 		active.submit(domainipc.HomeMethod, domainipc.Empty{})
 	case C.int(openTerminal), C.int(openFiles):
 		apps.start(appAction(op))
-	case 7:
-		active.submit(domainipc.OverviewMethod, domainipc.Empty{})
 	case 8, 9, 10:
 		modes := []string{domainipc.Stack, domainipc.Float, domainipc.Tiling}
 		active.submit(domainipc.LayoutMethod, domainipc.LayoutBody{Domain: name, Mode: modes[int(op)-8]})
@@ -117,5 +213,9 @@ func panelAction(op C.int, a, b *C.char) {
 		active.submit(domainipc.NextMethod, domainipc.DomainBody{Domain: name})
 	case 12:
 		active.submit(domainipc.FocusMethod, domainipc.DomainBody{Domain: name})
+	case 13:
+		active.openMap(name == "overview")
+	case 14:
+		active.submit(domainipc.MapHideMethod, domainipc.Empty{})
 	}
 }

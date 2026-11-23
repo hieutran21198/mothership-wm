@@ -33,6 +33,8 @@ tasks:
           printf '%s\n' 'Missing native build dependencies; enter the wm-native devenv profile.' >&2
           exit 1
         fi
+        ./apps/wm/generate-parent-protocols.sh
+        ./internal/wayland/generate-map-pointer.sh wm
         CGO_ENABLED=1 go build -tags wlroots -o bin/mothership-wm ./apps/wm
 
   desktopd:build:
@@ -53,6 +55,7 @@ tasks:
   panel:build:
     desc: Build the native GTK4 Command Center
     cmds:
+      - ./internal/wayland/generate-map-pointer.sh panel
       - CGO_ENABLED=1 go build -tags panel -o bin/mothership-command-center ./apps/panel
 
   mothership:run:

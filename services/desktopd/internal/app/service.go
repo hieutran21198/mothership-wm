@@ -22,6 +22,7 @@ type Service struct {
 	active      *domain.Session
 	ready       bool
 	selection   Selection
+	mapVisible  bool
 	layouts     map[string]string
 	revision    uint64
 	subscribers map[chan Update]struct{}

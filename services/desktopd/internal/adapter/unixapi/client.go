@@ -16,7 +16,7 @@ import (
 // JSON request/response contract as other desktopd clients.
 func Request(ctx context.Context, path string, args []string) (string, error) {
 	if len(args) == 0 {
-		return "", errors.New("expected list, create, assign, focus or home")
+		return "", errors.New("expected list, create, assign, focus, home, overview or map show|hide")
 	}
 	for _, s := range args {
 		if !validWord(s) {
@@ -26,7 +26,14 @@ func Request(ctx context.Context, path string, args []string) (string, error) {
 	method := args[0]
 	var body any
 	switch {
-	case method == "home" && len(args) == 1:
+	case method == "map" && len(args) == 2 && (args[1] == "show" || args[1] == "hide"):
+		if args[1] == "show" {
+			method = domainipc.MapShowMethod
+		} else {
+			method = domainipc.MapHideMethod
+		}
+		body = domainipc.Empty{}
+	case (method == "home" || method == "overview") && len(args) == 1:
 		body = domainipc.Empty{}
 	case method == "list" && len(args) == 1:
 		method, body = domainipc.SnapshotMethod, domainipc.Empty{}
@@ -42,7 +49,7 @@ func Request(ctx context.Context, path string, args []string) (string, error) {
 		}
 		body = domainipc.AssignBody{Session: args[1], WindowID: id, Domain: args[3]}
 	default:
-		return "", errors.New("expected list, create, assign, focus or home")
+		return "", errors.New("expected list, create, assign, focus, home, overview or map show|hide")
 	}
 	c, err := domainipc.Dial(ctx, path)
 	if err != nil {
