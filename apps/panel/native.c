@@ -19,6 +19,8 @@ extern void panelAction(int, char *, char *);
 static GtkWindow *window;
 static GtkWidget *title, *status, *entry, *nodes, *windows;
 static GtkWidget *create, *move, *fly, *home;
+static GtkWidget *form, *entry_button;
+static gboolean showing, expanded, region_pending;
 static GMainLoop *loop;
 static int enabled;
 static char *last_nodes, *last_windows;
@@ -58,6 +60,63 @@ static void return_keys(void) {
 	gtk_window_set_focus(window, NULL);
 }
 
+static void schedule_region(void);
+
+static gboolean set_input_region(gpointer data) {
+	region_pending = FALSE;
+	GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(window));
+	if (surface == NULL) {
+		return G_SOURCE_REMOVE;
+	}
+	if (expanded) {
+		gdk_surface_set_input_region(surface, NULL);
+	} else {
+		graphene_rect_t bounds;
+		if (!gtk_widget_compute_bounds(entry_button, GTK_WIDGET(window), &bounds) ||
+				bounds.size.width <= 0 || bounds.size.height <= 0) {
+			schedule_region();
+			return G_SOURCE_REMOVE;
+		}
+		cairo_rectangle_int_t rect = {
+			(int)bounds.origin.x, (int)bounds.origin.y,
+			(int)bounds.size.width, (int)bounds.size.height,
+		};
+		cairo_region_t *region = cairo_region_create_rectangle(&rect);
+		gdk_surface_set_input_region(surface, region);
+		cairo_region_destroy(region);
+	}
+	gtk_widget_queue_draw(GTK_WIDGET(window));
+	return G_SOURCE_REMOVE;
+}
+
+static gboolean after_layout(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
+	// GTK sets a default input region during layout. Apply the shell's
+	// narrow collapsed region once after that work, not every frame.
+	g_idle_add(set_input_region, NULL);
+	return G_SOURCE_REMOVE;
+}
+
+static void schedule_region(void) {
+	if (!region_pending) {
+		region_pending = TRUE;
+		gtk_widget_add_tick_callback(GTK_WIDGET(window), after_layout, NULL, NULL);
+	}
+}
+
+static void set_expanded(gboolean value) {
+	expanded = value;
+	if (!value) {
+		return_keys();
+	}
+	gtk_widget_set_visible(form, value);
+	gtk_widget_set_visible(entry_button, !value);
+	schedule_region();
+}
+
+static void toggle_center(GtkButton *button, gpointer data) {
+	set_expanded(GPOINTER_TO_INT(data));
+}
+
 static void open_input(GtkGestureClick *gesture, int presses, double x, double y, gpointer data) {
 	gtk_layer_set_keyboard_mode(window, KEYS_ON_DEMAND);
 }
@@ -65,7 +124,7 @@ static void open_input(GtkGestureClick *gesture, int presses, double x, double y
 static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 		GdkModifierType mods, gpointer data) {
 	if (key == GDK_KEY_Escape) {
-		return_keys();
+		set_expanded(FALSE);
 		return TRUE;
 	}
 	return FALSE;
@@ -161,6 +220,11 @@ static gboolean apply_update(gpointer data) {
 	}
 	enabled = u->enabled;
 	refresh_actions();
+	if (!showing && enabled) {
+		showing = TRUE;
+		gtk_window_present(window);
+		schedule_region();
+	}
 	free_update(u);
 	return G_SOURCE_REMOVE;
 }
@@ -218,6 +282,7 @@ int panel_init(void) {
 	gtk_window_set_title(window, "Mothership Command Center");
 	gtk_window_set_default_size(window, 520, 254);
 	gtk_window_set_resizable(window, FALSE);
+	gtk_window_set_decorated(window, FALSE);
 	gtk_layer_init_for_window(window);
 	gtk_layer_set_namespace(window, "mothership-command-center");
 	gtk_layer_set_anchor(window, RIGHT_EDGE, TRUE);
@@ -226,12 +291,28 @@ int panel_init(void) {
 	gtk_layer_set_margin(window, BOTTOM_EDGE, 12);
 	gtk_layer_set_keyboard_mode(window, KEYS_NONE);
 
-	GtkWidget *form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+	GtkCssProvider *skin = gtk_css_provider_new();
+	gtk_css_provider_load_from_string(skin,
+		"window.mothership-shell { background: transparent; }"
+		".mothership-controls { background: @window_bg_color; border-radius: 10px; padding: 8px; }");
+	gtk_style_context_add_provider_for_display(gdk_display_get_default(),
+		GTK_STYLE_PROVIDER(skin), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref(skin);
+	gtk_widget_add_css_class(GTK_WIDGET(window), "mothership-shell");
+	GtkWidget *overlay = gtk_overlay_new();
+	gtk_window_set_child(window, overlay);
+	form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+	gtk_widget_add_css_class(form, "mothership-controls");
 	gtk_widget_set_margin_start(form, 12);
 	gtk_widget_set_margin_end(form, 12);
 	gtk_widget_set_margin_top(form, 8);
 	gtk_widget_set_margin_bottom(form, 8);
-	gtk_window_set_child(window, form);
+	gtk_overlay_set_child(GTK_OVERLAY(overlay), form);
+	entry_button = gtk_button_new_with_label("Command Center");
+	gtk_widget_set_halign(entry_button, GTK_ALIGN_END);
+	gtk_widget_set_valign(entry_button, GTK_ALIGN_END);
+	g_signal_connect(entry_button, "clicked", G_CALLBACK(toggle_center), GINT_TO_POINTER(TRUE));
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay), entry_button);
 	GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 	gtk_box_append(GTK_BOX(form), bar);
 	GtkWidget *heading = gtk_label_new("Command Center");
@@ -241,7 +322,9 @@ int panel_init(void) {
 	gtk_widget_set_hexpand(title, TRUE);
 	gtk_label_set_xalign(GTK_LABEL(title), 0);
 	gtk_box_append(GTK_BOX(bar), title);
-	button("Return keys", 0, bar);
+	GtkWidget *hide = gtk_button_new_with_label("Hide");
+	g_signal_connect(hide, "clicked", G_CALLBACK(toggle_center), GINT_TO_POINTER(FALSE));
+	gtk_box_append(GTK_BOX(bar), hide);
 
 	GtkWidget *create_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 	gtk_box_append(GTK_BOX(form), create_row);
@@ -278,12 +361,12 @@ int panel_init(void) {
 	gtk_widget_add_controller(GTK_WIDGET(window), keys);
 	g_signal_connect(window, "close-request", G_CALLBACK(close_window), NULL);
 	refresh_actions();
+	set_expanded(FALSE);
 	return 1;
 }
 
 void panel_run(void) {
 	loop = g_main_loop_new(NULL, FALSE);
-	gtk_window_present(window);
 	g_main_loop_run(loop);
 	g_main_loop_unref(loop);
 }

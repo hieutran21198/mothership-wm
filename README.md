@@ -3,8 +3,22 @@
 A Go window manager and desktop shell for Linux/Wayland. One 2D canvas, with
 windows organized into intentional flows rather than separate workspaces.
 
-**Status:** nested Wayland WM and a local Domain service. No desktop
-session replacement, Panel integration or CI workflow yet.
+**Status:** native Shell, nested Wayland WM and a local Domain service. No
+desktop session replacement or CI workflow.
+
+## Run inside COSMIC
+
+From the repository root in the existing session:
+
+```sh
+devenv shell --offline -- task mothership:run
+```
+
+This builds and starts the three local parts, opens Home and shows the
+**Command Center** entry. Close the outer Mothership window or press Ctrl+C in
+the launch terminal to end this private nested session.
+The [local Shell guide](apps/panel/COMMAND_CENTER.md) covers the controls
+and disposable application testing.
 
 ## Development
 

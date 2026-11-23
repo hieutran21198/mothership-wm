@@ -54,3 +54,11 @@ tasks:
     desc: Build the native GTK4 Command Center
     cmds:
       - CGO_ENABLED=1 go build -tags panel -o bin/mothership-command-center ./apps/panel
+
+  mothership:run:
+    desc: Build and run one private nested native Shell session
+    cmds:
+      - devenv shell --offline --profile wm-native -- task wm:build desktopd:build
+      - devenv shell --offline --profile panel-native -- task panel:build
+      - go build -o bin/mothership ./cmd/mothership
+      - exec ./bin/mothership

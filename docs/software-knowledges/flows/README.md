@@ -15,6 +15,8 @@ Artifact for its operation, payload and errors rather than duplicating them.
 
 - [Create a Node, move a window and Fly](use-command-center.md).
 
+- [Launch and close a nested Shell](launch-native-shell.md).
+
 ## Template
 
 ```markdown

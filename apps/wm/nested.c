@@ -133,7 +133,7 @@ struct shell_panel {
 	struct wlr_layer_surface_v1 *layer;
 	struct wlr_scene_layer_surface_v1 *scene;
 	bool wants_keyboard;
-	struct wl_listener commit, unmap, destroy;
+	struct wl_listener commit, map, unmap, destroy;
 };
 
 static void position_panel(struct shell_panel *panel) {
@@ -166,6 +166,13 @@ static void panel_commit(struct wl_listener *listener, void *data) {
 	}
 }
 
+static void panel_map(struct wl_listener *listener, void *data) {
+	(void)listener;
+	(void)data;
+	puts("SHELL_READY");
+	fflush(stdout);
+}
+
 static void panel_unmap(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, unmap);
@@ -179,6 +186,7 @@ static void panel_destroy(struct wl_listener *listener, void *data) {
 	nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
 	panel->wm->panel = NULL;
 	wl_list_remove(&panel->commit.link);
+	wl_list_remove(&panel->map.link);
 	wl_list_remove(&panel->unmap.link);
 	wl_list_remove(&panel->destroy.link);
 	free(panel);
@@ -210,6 +218,8 @@ static void on_new_panel(struct wl_listener *listener, void *data) {
 	panel->layer = layer;
 	panel->commit.notify = panel_commit;
 	wl_signal_add(&layer->surface->events.commit, &panel->commit);
+	panel->map.notify = panel_map;
+	wl_signal_add(&layer->surface->events.map, &panel->map);
 	panel->unmap.notify = panel_unmap;
 	wl_signal_add(&layer->surface->events.unmap, &panel->unmap);
 	panel->destroy.notify = panel_destroy;
@@ -942,6 +952,10 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	*reason = wm.failure;
 
 done:
+	if (wm.ready && wm.failure == NULL && *reason == NULL) {
+		puts("WM_STOPPING");
+		fflush(stdout);
+	}
 	wm.stopping = true;
 	wm.cleaning = true;
 	domain_disconnect(&wm);

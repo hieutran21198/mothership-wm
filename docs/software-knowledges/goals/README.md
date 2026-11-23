@@ -15,6 +15,8 @@ Each criterion names the Flow scenario that demonstrates it.
 
 - [Organize open windows from Command Center](use-command-center.md).
 
+- [Launch Mothership Shell in COSMIC](launch-native-shell.md).
+
 ## Template
 
 ```markdown

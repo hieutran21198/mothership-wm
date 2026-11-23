@@ -40,6 +40,7 @@ func run(ctx context.Context, args []string) error {
 		if err := os.Chmod(path, 0600); err != nil {
 			return err
 		}
+		fmt.Println("DESKTOPD_READY")
 		return unixapi.Serve(ctx, l, &app.Service{})
 	}
 	reply, err := unixapi.Request(ctx, path, args)
