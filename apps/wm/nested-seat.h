@@ -11,6 +11,7 @@ struct nested_seat;
 struct nested_hit {
 	struct wlr_surface *surface;
 	struct wlr_surface *toplevel;
+	struct wlr_surface *panel_keyboard;
 	double x, y;
 };
 
@@ -23,6 +24,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 	struct wlr_surface *fallback);
 void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target);
+void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool acquire);
 void nested_seat_refresh(struct nested_seat *seat);
 void nested_seat_destroy(struct nested_seat *seat);
 

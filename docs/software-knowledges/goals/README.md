@@ -13,6 +13,8 @@ Each criterion names the Flow scenario that demonstrates it.
 - [Stream Domain state to local clients](stream-desktopd-state.md): draft.
 - [Use Home to find unassigned windows](use-home-inbox.md).
 
+- [Organize open windows from Command Center](use-command-center.md).
+
 ## Template
 
 ```markdown

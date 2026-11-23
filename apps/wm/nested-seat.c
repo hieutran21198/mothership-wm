@@ -21,7 +21,7 @@ struct nested_seat {
 	struct wl_pointer *pointer;
 	struct wl_keyboard *keys;
 	struct wl_surface *output;
-	struct wlr_surface *selected;
+	struct wlr_surface *selected, *panel_focus;
 	nested_hit_test hit_test;
 	nested_selected select_window;
 	bool domain_mode;
@@ -38,8 +38,9 @@ static const struct wlr_keyboard_impl keyboard_impl = { .name = "nested-wayland"
 
 static void keyboard_focus(struct nested_seat *seat) {
 	struct wlr_keyboard *kb = &seat->keyboard;
-	if (seat->keyboard_inside && seat->has_keymap && seat->selected != NULL) {
-		wlr_seat_keyboard_notify_enter(seat->child, seat->selected,
+	struct wlr_surface *target = seat->panel_focus != NULL ? seat->panel_focus : seat->selected;
+	if (seat->keyboard_inside && seat->has_keymap && target != NULL) {
+		wlr_seat_keyboard_notify_enter(seat->child, target,
 			kb->keycodes, kb->num_keycodes, &kb->modifiers);
 	} else {
 		wlr_seat_keyboard_notify_clear_focus(seat->child);
@@ -65,28 +66,52 @@ void nested_seat_refresh(struct nested_seat *seat) {
 	}
 }
 
+static void isolate_keys(struct nested_seat *seat) {
+	memcpy(seat->keys_blocked, seat->keys_held, sizeof(seat->keys_held));
+	seat->blocked_count = 0;
+	for (size_t i = 0; i <= KEY_MAX; ++i) {
+		seat->blocked_count += seat->keys_blocked[i];
+	}
+	wlr_seat_keyboard_end_grab(seat->child);
+	wlr_seat_keyboard_clear_focus(seat->child);
+	seat->keyboard.num_keycodes = 0;
+	seat->keyboard.modifiers.depressed = 0;
+	seat->keyboard.modifiers.latched = 0;
+}
+
+void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool acquire) {
+	if (seat == NULL || panel == NULL) {
+		return;
+	}
+	if (acquire) {
+		// Layer-shell requests alone do not take focus: the physical pointer
+		// must currently be over that layer's input surface.
+		if (!seat->pointer_inside ||
+				seat->hit_test(seat->data, seat->x, seat->y).panel_keyboard != panel ||
+				seat->panel_focus == panel) {
+			return;
+		}
+	} else if (seat->panel_focus != panel) {
+		return;
+	}
+	isolate_keys(seat);
+	seat->panel_focus = acquire ? panel : NULL;
+	keyboard_focus(seat);
+}
+
 void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target) {
 	if (seat == NULL) {
 		return;
 	}
 	seat->domain_mode = true;
-	memcpy(seat->keys_blocked, seat->keys_held, sizeof(seat->keys_held));
+	isolate_keys(seat);
 	memcpy(seat->buttons_blocked, seat->buttons_held, sizeof(seat->buttons_held));
-	seat->blocked_count = 0;
-	for (size_t i = 0; i <= KEY_MAX; ++i) {
-		seat->blocked_count += seat->keys_blocked[i];
-	}
-	// Cancel active grabs before clearing focus. A button released after
-	// switching must not end a click/drag on either group's clients.
+	// A button released after switching cannot complete an old grab.
 	wlr_seat_pointer_end_grab(seat->child);
-	wlr_seat_keyboard_end_grab(seat->child);
 	wlr_seat_pointer_clear_focus(seat->child);
-	wlr_seat_keyboard_clear_focus(seat->child);
 	seat->child->pointer_state.button_count = 0;
 	seat->child->pointer_state.grab_serial = 0;
-	seat->keyboard.num_keycodes = 0;
-	seat->keyboard.modifiers.depressed = 0;
-	seat->keyboard.modifiers.latched = 0;
+	seat->panel_focus = NULL;
 	seat->selected = target;
 	keyboard_focus(seat);
 	pointer_focus(seat);
@@ -163,10 +188,18 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	if (hit.surface == NULL) {
 		return;
 	}
-	if (state == WL_POINTER_BUTTON_STATE_PRESSED && hit.toplevel != NULL) {
-		seat->selected = hit.toplevel;
-		seat->select_window(seat->data, hit.toplevel);
-		keyboard_focus(seat);
+	if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		if (hit.toplevel != NULL) {
+			if (seat->panel_focus != NULL) {
+				isolate_keys(seat);
+				seat->panel_focus = NULL;
+			}
+			seat->selected = hit.toplevel;
+			seat->select_window(seat->data, hit.toplevel);
+			keyboard_focus(seat);
+		} else if (hit.panel_keyboard != NULL) {
+			nested_seat_panel(seat, hit.panel_keyboard, true);
+		}
 	}
 	wlr_seat_pointer_notify_button(seat->child, time, button, state);
 }

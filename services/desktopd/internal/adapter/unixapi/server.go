@@ -184,14 +184,20 @@ func (d *desktop) assign(session string, id uint64, name string) error {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
 	d.mu.Lock()
-	changed, err := d.service.Assign(session, id, name)
+	change, err := d.service.Assign(session, id, name)
 	w := d.wm
-	if err != nil || !changed || w == nil || !w.home {
+	if err != nil || (!change.FirstAssignment && !change.RefreshNamed) || w == nil || !w.home {
 		d.mu.Unlock()
 		return err
 	}
 	ack := d.beginApply(w, false, "")
 	packet := fmt.Sprintf("assigned %d %d", ack.serial, id)
+	if change.RefreshNamed {
+		packet += " project"
+		for _, member := range change.Members {
+			packet += fmt.Sprintf(" %d %d", member.ID, member.Epoch)
+		}
+	}
 	d.mu.Unlock()
 	if !d.awaitApply(w, ack, packet) {
 		return errAssignmentViewUnknown

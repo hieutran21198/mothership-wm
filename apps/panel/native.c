@@ -1,0 +1,289 @@
+//go:build linux && cgo && panel
+
+#include <gtk/gtk.h>
+#include <string.h>
+#include "native.h"
+
+/* Stable GTK Layer Shell 1.3 runtime ABI; only the calls used by this
+ * fixed overlay. https://github.com/wmww/gtk4-layer-shell/blob/v1.3.0/include/gtk4-layer-shell.h */
+enum layer_edge { RIGHT_EDGE = 1, BOTTOM_EDGE = 3 };
+enum layer_keys { KEYS_NONE = 0, KEYS_ON_DEMAND = 2 };
+extern guint gtk_layer_get_protocol_version(void);
+extern void gtk_layer_init_for_window(GtkWindow *);
+extern void gtk_layer_set_namespace(GtkWindow *, const char *);
+extern void gtk_layer_set_anchor(GtkWindow *, enum layer_edge, gboolean);
+extern void gtk_layer_set_margin(GtkWindow *, enum layer_edge, int);
+extern void gtk_layer_set_keyboard_mode(GtkWindow *, enum layer_keys);
+extern void panelAction(int, char *, char *);
+
+static GtkWindow *window;
+static GtkWidget *title, *status, *entry, *nodes, *windows;
+static GtkWidget *create, *move, *fly, *home;
+static GMainLoop *loop;
+static int enabled;
+static char *last_nodes, *last_windows;
+
+struct update {
+	char *view, *message, *nodes, *windows;
+	int enabled;
+};
+static struct update *queued;
+static GMutex update_lock;
+static gboolean update_scheduled;
+
+static const char *selected(GtkWidget *list) {
+	GtkListBoxRow *row = gtk_list_box_get_selected_row(GTK_LIST_BOX(list));
+	return row == NULL ? NULL : g_object_get_data(G_OBJECT(row), "key");
+}
+
+static void refresh_actions(void) {
+	gboolean node = selected(nodes) != NULL;
+	gtk_widget_set_sensitive(create, enabled && *gtk_editable_get_text(GTK_EDITABLE(entry)));
+	gtk_widget_set_sensitive(move, enabled && node && selected(windows) != NULL);
+	gtk_widget_set_sensitive(fly, enabled && node);
+	gtk_widget_set_sensitive(home, enabled);
+	gtk_widget_set_sensitive(entry, enabled);
+}
+
+static void list_changed(GtkListBox *list, GtkListBoxRow *row, gpointer data) {
+	refresh_actions();
+}
+
+static void text_changed(GtkEditable *editable, gpointer data) {
+	refresh_actions();
+}
+
+static void return_keys(void) {
+	gtk_layer_set_keyboard_mode(window, KEYS_NONE);
+	gtk_window_set_focus(window, NULL);
+}
+
+static void open_input(GtkGestureClick *gesture, int presses, double x, double y, gpointer data) {
+	gtk_layer_set_keyboard_mode(window, KEYS_ON_DEMAND);
+}
+
+static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
+		GdkModifierType mods, gpointer data) {
+	if (key == GDK_KEY_Escape) {
+		return_keys();
+		return TRUE;
+	}
+	return FALSE;
+}
+
+static void submit(GtkWidget *widget, gpointer data) {
+	int op = GPOINTER_TO_INT(data);
+	if (op == 0) {
+		return_keys();
+		return;
+	}
+	if (!enabled) {
+		return;
+	}
+	const char *node = op == 1 ? gtk_editable_get_text(GTK_EDITABLE(entry)) : selected(nodes);
+	const char *ref = selected(windows);
+	if (((op == 1 || op == 2 || op == 3) && (node == NULL || !*node)) ||
+			(op == 2 && ref == NULL)) {
+		return;
+	}
+	// Release the toolkit's keyboard target; the compositor preserves or
+	// reconciles the application's own focus through the existing WM path.
+	char *a = g_strdup(node == NULL ? "" : node);
+	char *b = g_strdup(ref == NULL ? "" : ref);
+	return_keys();
+	panelAction(op, a, b);
+	g_free(a);
+	g_free(b);
+}
+
+static void build_list(GtkWidget *list, const char *rows, gboolean composite) {
+	char *previous = g_strdup(selected(list));
+	GtkWidget *child;
+	while ((child = gtk_widget_get_first_child(list)) != NULL) {
+		gtk_list_box_remove(GTK_LIST_BOX(list), child);
+	}
+	char **lines = g_strsplit(rows, "\n", -1);
+	for (int i = 0; lines[i] != NULL; ++i) {
+		char *key = lines[i], *label = lines[i];
+		if (!*key) {
+			continue;
+		}
+		if (composite) {
+			char *sep = strchr(key, '\t');
+			if (sep == NULL) {
+				continue;
+			}
+			*sep = 0;
+			label = sep + 1;
+		}
+		GtkWidget *row = gtk_list_box_row_new();
+		GtkWidget *body = gtk_label_new(label);
+		gtk_label_set_xalign(GTK_LABEL(body), 0);
+		gtk_label_set_ellipsize(GTK_LABEL(body), PANGO_ELLIPSIZE_END);
+		gtk_widget_set_margin_start(body, 6);
+		gtk_widget_set_margin_end(body, 6);
+		gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), body);
+		g_object_set_data_full(G_OBJECT(row), "key", g_strdup(key), g_free);
+		gtk_list_box_append(GTK_LIST_BOX(list), row);
+		if (previous != NULL && strcmp(previous, key) == 0) {
+			gtk_list_box_select_row(GTK_LIST_BOX(list), GTK_LIST_BOX_ROW(row));
+		}
+	}
+	g_strfreev(lines);
+	g_free(previous);
+}
+
+static void free_update(struct update *u) {
+	if (u != NULL) {
+		g_free(u->view); g_free(u->message); g_free(u->nodes); g_free(u->windows);
+		g_free(u);
+	}
+}
+
+static gboolean apply_update(gpointer data) {
+	g_mutex_lock(&update_lock);
+	struct update *u = queued;
+	queued = NULL;
+	update_scheduled = FALSE;
+	g_mutex_unlock(&update_lock);
+	gtk_label_set_text(GTK_LABEL(title), u->view);
+	gtk_label_set_text(GTK_LABEL(status), u->message);
+	gtk_widget_set_tooltip_text(status, u->message);
+	if (g_strcmp0(last_nodes, u->nodes) != 0) {
+		g_free(last_nodes);
+		last_nodes = g_strdup(u->nodes);
+		build_list(nodes, u->nodes, FALSE);
+	}
+	if (g_strcmp0(last_windows, u->windows) != 0) {
+		g_free(last_windows);
+		last_windows = g_strdup(u->windows);
+		build_list(windows, u->windows, TRUE);
+	}
+	enabled = u->enabled;
+	refresh_actions();
+	free_update(u);
+	return G_SOURCE_REMOVE;
+}
+
+void panel_post(const char *view, const char *message, const char *d, const char *w, int can_submit) {
+	struct update *u = g_new(struct update, 1);
+	*u = (struct update){ g_strdup(view), g_strdup(message), g_strdup(d), g_strdup(w), can_submit };
+	g_mutex_lock(&update_lock);
+	free_update(queued);
+	queued = u;
+	if (!update_scheduled) {
+		update_scheduled = TRUE;
+		g_idle_add(apply_update, NULL);
+	}
+	g_mutex_unlock(&update_lock);
+}
+
+static GtkWidget *button(const char *label, int op, GtkWidget *box) {
+	GtkWidget *w = gtk_button_new_with_label(label);
+	g_signal_connect(w, "clicked", G_CALLBACK(submit), GINT_TO_POINTER(op));
+	gtk_box_append(GTK_BOX(box), w);
+	return w;
+}
+
+static GtkWidget *list_column(GtkWidget *box, const char *heading) {
+	GtkWidget *column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+	gtk_widget_set_hexpand(column, TRUE);
+	gtk_box_append(GTK_BOX(box), column);
+	GtkWidget *label = gtk_label_new(heading);
+	gtk_label_set_xalign(GTK_LABEL(label), 0);
+	gtk_box_append(GTK_BOX(column), label);
+	GtkWidget *scroll = gtk_scrolled_window_new();
+	gtk_widget_set_size_request(scroll, 140, 72);
+	gtk_widget_set_vexpand(scroll, TRUE);
+	gtk_scrolled_window_set_has_frame(GTK_SCROLLED_WINDOW(scroll), TRUE);
+	gtk_box_append(GTK_BOX(column), scroll);
+	GtkWidget *list = gtk_list_box_new();
+	g_signal_connect(list, "row-selected", G_CALLBACK(list_changed), NULL);
+	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list);
+	return list;
+}
+
+static gboolean close_window(GtkWindow *w, gpointer data) {
+	return_keys();
+	g_main_loop_quit(loop);
+	return FALSE;
+}
+
+int panel_init(void) {
+	gdk_set_allowed_backends("wayland");
+	if (!gtk_init_check() || gtk_layer_get_protocol_version() < 4) {
+		return 0;
+	}
+	window = GTK_WINDOW(gtk_window_new());
+	gtk_window_set_title(window, "Mothership Command Center");
+	gtk_window_set_default_size(window, 520, 254);
+	gtk_window_set_resizable(window, FALSE);
+	gtk_layer_init_for_window(window);
+	gtk_layer_set_namespace(window, "mothership-command-center");
+	gtk_layer_set_anchor(window, RIGHT_EDGE, TRUE);
+	gtk_layer_set_anchor(window, BOTTOM_EDGE, TRUE);
+	gtk_layer_set_margin(window, RIGHT_EDGE, 12);
+	gtk_layer_set_margin(window, BOTTOM_EDGE, 12);
+	gtk_layer_set_keyboard_mode(window, KEYS_NONE);
+
+	GtkWidget *form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+	gtk_widget_set_margin_start(form, 12);
+	gtk_widget_set_margin_end(form, 12);
+	gtk_widget_set_margin_top(form, 8);
+	gtk_widget_set_margin_bottom(form, 8);
+	gtk_window_set_child(window, form);
+	GtkWidget *bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	gtk_box_append(GTK_BOX(form), bar);
+	GtkWidget *heading = gtk_label_new("Command Center");
+	gtk_widget_add_css_class(heading, "heading");
+	gtk_box_append(GTK_BOX(bar), heading);
+	title = gtk_label_new("Connecting…");
+	gtk_widget_set_hexpand(title, TRUE);
+	gtk_label_set_xalign(GTK_LABEL(title), 0);
+	gtk_box_append(GTK_BOX(bar), title);
+	button("Return keys", 0, bar);
+
+	GtkWidget *create_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+	gtk_box_append(GTK_BOX(form), create_row);
+	entry = gtk_entry_new();
+	gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "Node name");
+	gtk_entry_set_max_length(GTK_ENTRY(entry), 32);
+	gtk_widget_set_hexpand(entry, TRUE);
+	gtk_box_append(GTK_BOX(create_row), entry);
+	g_signal_connect(entry, "changed", G_CALLBACK(text_changed), NULL);
+	g_signal_connect(entry, "activate", G_CALLBACK(submit), GINT_TO_POINTER(1));
+	GtkGesture *gesture = gtk_gesture_click_new();
+	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(gesture), GTK_PHASE_CAPTURE);
+	g_signal_connect(gesture, "pressed", G_CALLBACK(open_input), NULL);
+	gtk_widget_add_controller(entry, GTK_EVENT_CONTROLLER(gesture));
+	create = button("Create Node", 1, create_row);
+
+	GtkWidget *lists = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	gtk_widget_set_vexpand(lists, TRUE);
+	gtk_box_append(GTK_BOX(form), lists);
+	nodes = list_column(lists, "Nodes");
+	windows = list_column(lists, "Live windows");
+
+	GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+	gtk_box_append(GTK_BOX(form), actions);
+	move = button("Attach / Move", 2, actions);
+	fly = button("Fly to Node", 3, actions);
+	home = button("Home", 4, actions);
+	status = gtk_label_new("");
+	gtk_label_set_xalign(GTK_LABEL(status), 0);
+	gtk_label_set_ellipsize(GTK_LABEL(status), PANGO_ELLIPSIZE_END);
+	gtk_box_append(GTK_BOX(form), status);
+	GtkEventController *keys = gtk_event_controller_key_new();
+	g_signal_connect(keys, "key-pressed", G_CALLBACK(key_pressed), NULL);
+	gtk_widget_add_controller(GTK_WIDGET(window), keys);
+	g_signal_connect(window, "close-request", G_CALLBACK(close_window), NULL);
+	refresh_actions();
+	return 1;
+}
+
+void panel_run(void) {
+	loop = g_main_loop_new(NULL, FALSE);
+	gtk_window_present(window);
+	g_main_loop_run(loop);
+	g_main_loop_unref(loop);
+}

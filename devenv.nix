@@ -34,4 +34,13 @@ in
     ];
     env.CGO_ENABLED = "1";
   };
+
+  profiles.panel-native.module = {
+    packages = [ pkgs.pkg-config pkgs.stdenv.cc pkgs.gtk4 ];
+    # The stable layer-shell runtime supplies the linker symlink; the panel
+    # uses a small ABI shim, not a second toolkit binding.
+    env.CGO_ENABLED = "1";
+    env.CGO_LDFLAGS = "-L${lib.getLib pkgs.gtk4-layer-shell}/lib -Wl,-rpath,${lib.getLib pkgs.gtk4-layer-shell}/lib";
+  };
+
 }

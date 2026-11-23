@@ -109,23 +109,35 @@ func (s *Service) Create(name string) {
 	}
 }
 
-func (s *Service) Assign(sessionID string, id uint64, name string) (bool, error) {
+// Assignment describes the WM projection work after membership is committed.
+type Assignment struct {
+	FirstAssignment bool
+	RefreshNamed    bool
+	Members         []domain.Window
+}
+
+func (s *Service) Assign(sessionID string, id uint64, name string) (Assignment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.ready {
-		return false, ErrUnavailable
+		return Assignment{}, ErrUnavailable
 	}
 	before := s.active.Get(id)
 	if err := s.names.Assign(s.active, sessionID, id, name); err != nil {
-		return false, err
+		return Assignment{}, err
 	}
 	after := s.active.Get(id)
-	if after != before {
-		s.publish(Update{Kind: WindowUpdated, Window: after})
+	if after == before {
+		return Assignment{}, nil
 	}
-	// Only the initial assignment changes Home eligibility. Reassignment does
-	// not remove it from Home again, and the named view already has a snapshot.
-	return before.Domain == "" && after.Domain != "", nil
+	s.publish(Update{Kind: WindowUpdated, Window: after})
+	result := Assignment{FirstAssignment: before.Domain == ""}
+	if selected := s.selection; selected.Kind == SelectionAcknowledged && !selected.Home &&
+		(selected.Domain == before.Domain || selected.Domain == after.Domain) {
+		result.RefreshNamed = true
+		result.Members = s.members(selected.Domain)
+	}
+	return result, nil
 }
 
 func (s *Service) ResolveHome() (string, error) {
@@ -146,11 +158,15 @@ func (s *Service) ResolveDomain(name string) (string, []domain.Window, error) {
 	if !s.ready {
 		return "", nil, ErrUnavailable
 	}
+	return s.active.ID, s.members(name), nil
+}
+
+func (s *Service) members(name string) []domain.Window {
 	members := make([]domain.Window, 0, 2)
 	for _, w := range s.active.Windows() {
 		if w.Domain == name {
 			members = append(members, w)
 		}
 	}
-	return s.active.ID, members, nil
+	return members
 }

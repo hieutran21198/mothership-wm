@@ -16,6 +16,14 @@ Domain does not own seats.
 For this slice membership is in memory only. No persistence, app rules,
 agent or public API. See the [FocusDomain Flow](../flows/focus-domain.md).
 
+## Active projection on assignment
+
+Assignment changes one existing Window’s membership without selecting the
+destination. If it changes the already-selected named projection, WM
+reconciles that projection and acknowledges it. Keep the eligible current
+target, or send the next key to a remaining visible window if the old
+target left; clear focus if none remains. Never fall back across views.
+
 ## Home and Inbox
 
 Home is the initial managed view, not a named Domain or a reservation of

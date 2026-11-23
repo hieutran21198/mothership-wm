@@ -4,7 +4,7 @@ package main
 
 /*
 #cgo pkg-config: wlroots-0.20 wayland-client wayland-server wayland-protocols pixman-1 xkbcommon
-#cgo CFLAGS: -DWLR_USE_UNSTABLE
+#cgo CFLAGS: -DWLR_USE_UNSTABLE -I${SRCDIR}
 #include <stdint.h>
 struct mothership_control;
 struct mothership_control *mothership_control_create(int parent_fd, int stop_write_fd);

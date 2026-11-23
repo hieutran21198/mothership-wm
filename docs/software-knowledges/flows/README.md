@@ -13,6 +13,8 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Subscribe to desktopd state](stream-desktopd-state.md): draft.
 - [Open Home and use Inbox](use-home-inbox.md).
 
+- [Create a Node, move a window and Fly](use-command-center.md).
+
 ## Template
 
 ```markdown

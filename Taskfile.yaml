@@ -44,3 +44,13 @@ tasks:
     desc: Test local Domain policy and protocol
     cmds:
       - go test ./services/desktopd/... ./internal/domainipc
+
+  panel:test:
+    desc: Test Command Center subscription handling
+    cmds:
+      - go test ./apps/panel
+
+  panel:build:
+    desc: Build the native GTK4 Command Center
+    cmds:
+      - CGO_ENABLED=1 go build -tags panel -o bin/mothership-command-center ./apps/panel

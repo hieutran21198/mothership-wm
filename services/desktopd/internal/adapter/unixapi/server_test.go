@@ -351,3 +351,62 @@ func TestAssignmentMirrorLossIsNotAnUnassignment(t *testing.T) {
 		t.Fatalf("stale WM projection still described as known: %+v", lost)
 	}
 }
+
+func TestMoveReconcilesActiveNamedProjectionWithoutSelectingDestination(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	sub := s.request(1, "subscribe", "{}")
+	success(t, sub, 1)
+	send(t, wm, "ready_home")
+	next(t, sub, 1, app.WMChanged)
+	for i, name := range []string{"Dev", "Review"} {
+		id := uint64(i + 2)
+		success(t, s.request(id, "create", `{"domain":"`+name+`"}`), id)
+		next(t, sub, id, app.DomainCreated)
+	}
+	for i := uint64(1); i <= 2; i++ {
+		wi := strconv.FormatUint(i, 10)
+		send(t, wm, "new "+wi)
+		next(t, sub, 3*i+1, app.WindowUpdated)
+		send(t, wm, "map "+wi)
+		next(t, sub, 3*i+2, app.WindowUpdated)
+		id := i + 3
+		req := s.request(id, "assign", `{"domain":"Dev","window_id":`+wi+`,"session":"`+sessionID+`"}`)
+		pkt := strings.Fields(read(t, wm))
+		if len(pkt) != 3 || pkt[0] != "assigned" || pkt[2] != wi {
+			t.Fatalf("unexpected first assignment: %v", pkt)
+		}
+		send(t, wm, "applied "+pkt[1])
+		success(t, req, id)
+		next(t, sub, 3*i+3, app.WindowUpdated)
+	}
+	focus := s.request(6, "focus", `{"domain":"Dev"}`)
+	packet := strings.Fields(read(t, wm))
+	send(t, wm, "applied "+packet[1])
+	success(t, focus, 6)
+	next(t, sub, 10, app.SelectionChanged)
+	for i, wi := range []string{"2", "1"} {
+		id := uint64(i + 7)
+		move := s.request(id, "assign", `{"domain":"Review","window_id":`+wi+`,"session":"`+sessionID+`"}`)
+		pkt := strings.Fields(read(t, wm))
+		if len(pkt) < 4 || pkt[0] != "assigned" || pkt[2] != wi || pkt[3] != "project" {
+			t.Fatalf("move omitted current projection: %v", pkt)
+		}
+		want := "1 1"
+		if i == 1 {
+			want = ""
+		}
+		if tail := strings.Join(pkt[4:], " "); tail != want {
+			t.Fatalf("projection = %q, expected %q", tail, want)
+		}
+		next(t, sub, uint64(i+11), app.WindowUpdated)
+		assertQuiet(t, move)
+		send(t, wm, "applied "+pkt[1])
+		success(t, move, id)
+	}
+	snap := decode[domainipc.Snapshot](t, success(t, s.request(9, "snapshot", "{}"), 9))
+	if snap.Revision != 12 || snap.Selection.Domain != "Dev" ||
+		len(snap.Windows) != 2 || snap.Windows[1].ID != 2 || snap.Windows[1].Domain != "Review" {
+		t.Fatalf("move switched view or identity: %+v", snap)
+	}
+}

@@ -18,7 +18,9 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_output.h>
+#include <wlr/types/wlr_layer_shell_v1.h>
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
@@ -72,6 +74,7 @@ void mothership_control_interrupt(struct mothership_control *control) {
 }
 
 struct xdg_view;
+struct shell_panel;
 
 struct domain_member {
 	uint64_t id;
@@ -85,6 +88,9 @@ struct nested {
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *background;
 	struct wlr_scene *scene;
+	struct wlr_scene_tree *app_tree, *shell_tree;
+	struct shell_panel *panel;
+	struct wl_listener new_panel;
 	struct nested_seat *seat;
 	struct xdg_view *slots[2];
 	uint64_t next_window_id;
@@ -116,6 +122,94 @@ struct xdg_view {
 	struct wl_list link;
 	struct wl_listener map, unmap, commit, destroy, tree_destroy;
 };
+
+struct shell_panel {
+	struct nested *wm;
+	struct wlr_layer_surface_v1 *layer;
+	struct wlr_scene_layer_surface_v1 *scene;
+	bool wants_keyboard;
+	struct wl_listener commit, unmap, destroy;
+};
+
+static void position_panel(struct shell_panel *panel) {
+	if (panel == NULL || panel->wm->output == NULL || !panel->layer->initialized) {
+		return;
+	}
+	int width, height;
+	wlr_output_effective_resolution(panel->wm->output, &width, &height);
+	if (width <= 12 || height <= 12) {
+		return;
+	}
+	int pw = width > 532 ? 520 : width - 12;
+	int ph = height > 266 ? 254 : height - 12;
+	wlr_scene_node_set_position(&panel->scene->tree->node, width - pw - 12, height - ph - 12);
+	wlr_layer_surface_v1_configure(panel->layer, pw, ph);
+}
+
+static void panel_commit(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct shell_panel *panel = wl_container_of(listener, panel, commit);
+	struct wlr_layer_surface_v1 *layer = panel->layer;
+	if (layer->initial_commit) {
+		position_panel(panel);
+	}
+	bool wants = layer->surface->mapped && layer->current.keyboard_interactive ==
+		ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND;
+	if (wants != panel->wants_keyboard) {
+		panel->wants_keyboard = wants;
+		nested_seat_panel(panel->wm->seat, layer->surface, wants);
+	}
+}
+
+static void panel_unmap(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct shell_panel *panel = wl_container_of(listener, panel, unmap);
+	panel->wants_keyboard = false;
+	nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
+}
+
+static void panel_destroy(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct shell_panel *panel = wl_container_of(listener, panel, destroy);
+	nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
+	panel->wm->panel = NULL;
+	wl_list_remove(&panel->commit.link);
+	wl_list_remove(&panel->unmap.link);
+	wl_list_remove(&panel->destroy.link);
+	free(panel);
+}
+
+static void on_new_panel(struct wl_listener *listener, void *data) {
+	struct nested *wm = wl_container_of(listener, wm, new_panel);
+	struct wlr_layer_surface_v1 *layer = data;
+	if (wm->panel != NULL || wm->output == NULL ||
+			strcmp(layer->namespace, "mothership-command-center") != 0 ||
+			(layer->output != NULL && layer->output != wm->output)) {
+		wlr_layer_surface_v1_destroy(layer);
+		return;
+	}
+	layer->output = wm->output;
+	struct shell_panel *panel = calloc(1, sizeof(*panel));
+	if (panel == NULL) {
+		wlr_layer_surface_v1_destroy(layer);
+		return;
+	}
+	panel->scene = wlr_scene_layer_surface_v1_create(wm->shell_tree, layer);
+	if (panel->scene == NULL) {
+		free(panel);
+		wlr_layer_surface_v1_destroy(layer);
+		return;
+	}
+	wm->panel = panel;
+	panel->wm = wm;
+	panel->layer = layer;
+	panel->commit.notify = panel_commit;
+	wl_signal_add(&layer->surface->events.commit, &panel->commit);
+	panel->unmap.notify = panel_unmap;
+	wl_signal_add(&layer->surface->events.unmap, &panel->unmap);
+	panel->destroy.notify = panel_destroy;
+	wl_signal_add(&layer->events.destroy, &panel->destroy);
+}
 
 static void stop(struct nested *wm, const char *reason) {
 	if (wm->failure == NULL) {
@@ -211,6 +305,13 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		return hit;
 	}
 	for (struct wlr_scene_tree *tree = node->parent; tree != NULL; tree = tree->node.parent) {
+		if (wm->panel != NULL && wm->panel->scene->tree == tree) {
+			hit.surface = surface->surface;
+			if (wm->panel->wants_keyboard) {
+				hit.panel_keyboard = wm->panel->layer->surface;
+			}
+			return hit;
+		}
 		for (int i = 0; i < 2; ++i) {
 			struct xdg_view *view = wm->slots[i];
 			if (view != NULL && view->tree == tree) {
@@ -235,6 +336,7 @@ static void on_resize(struct wl_listener *listener, void *data) {
 	wlr_scene_rect_set_size(wm->background, width, height);
 	place_view(wm->slots[0]);
 	place_view(wm->slots[1]);
+	position_panel(wm->panel);
 	nested_seat_refresh(wm->seat);
 }
 
@@ -398,6 +500,51 @@ static uint64_t domain_number(char *token) {
 	return errno == 0 && value <= UINT64_MAX ? (uint64_t)value : 0;
 }
 
+static bool read_members(char **tail, struct domain_member members[2]) {
+	for (int i = 0; i < 2; ++i) {
+		char *id = strtok_r(NULL, " ", tail);
+		if (id == NULL) {
+			return true;
+		}
+		members[i].id = domain_number(id);
+		members[i].epoch = domain_number(strtok_r(NULL, " ", tail));
+		if (members[i].id == 0 || members[i].epoch == 0 ||
+				(i > 0 && members[i].id == members[0].id)) {
+			return false;
+		}
+	}
+	return strtok_r(NULL, " ", tail) == NULL;
+}
+
+static void project_named(struct nested *wm, const struct domain_member members[2]) {
+	clear_slots(wm);
+	memcpy(wm->members, members, sizeof(wm->members));
+	for (int i = 0; i < 2; ++i) {
+		struct xdg_view *view = find_view(wm, members[i].id);
+		if (view != NULL) {
+			show_domain_member(view);
+		}
+	}
+}
+
+static void refresh_named(struct nested *wm, const struct domain_member members[2]) {
+	struct xdg_view *old[] = {wm->slots[0], wm->slots[1]};
+	project_named(wm, members);
+	struct wlr_surface *fallback = view_target(wm);
+	for (int i = 0; i < 2 && fallback == NULL; ++i) {
+		struct xdg_view *v = wm->slots[i];
+		if (v != NULL && v->tree != NULL && v->tree->node.enabled) {
+			fallback = v->toplevel->base->surface;
+		}
+	}
+	for (int i = 0; i < 2; ++i) {
+		if (old[i] != NULL && old[i]->slot < 0) {
+			nested_seat_forget(wm->seat, old[i]->toplevel->base->surface, fallback);
+		}
+	}
+	nested_seat_refresh(wm->seat);
+}
+
 static int on_domain_fd(int fd, uint32_t mask, void *data) {
 	struct nested *wm = data;
 	if (!(mask & WL_EVENT_READABLE)) {
@@ -437,7 +584,11 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 	}
 	if (strcmp(op, "assigned") == 0) {
 		uint64_t id = domain_number(strtok_r(NULL, " ", &tail));
-		if (id == 0 || strtok_r(NULL, " ", &tail) != NULL) {
+		char *operation = strtok_r(NULL, " ", &tail);
+		struct domain_member members[2] = {0};
+		if (id == 0 || (operation != NULL &&
+				(strcmp(operation, "project") != 0 || wm->home_active ||
+				!read_members(&tail, members)))) {
 			domain_disconnect(wm);
 			return 0;
 		}
@@ -448,6 +599,9 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 				refresh_home(wm);
 			}
 		}
+		if (operation != NULL) {
+			refresh_named(wm, members);
+		}
 		domain_send(wm, "applied", serial);
 		return 0;
 	}
@@ -456,35 +610,14 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		return 0;
 	}
 	struct domain_member members[2] = {0};
-	for (int i = 0; i < 2; ++i) {
-		char *id = strtok_r(NULL, " ", &tail);
-		if (id == NULL) {
-			break;
-		}
-		members[i].id = domain_number(id);
-		members[i].epoch = domain_number(strtok_r(NULL, " ", &tail));
-		if (members[i].id == 0 || members[i].epoch == 0 ||
-				(i > 0 && members[i].id == members[0].id)) {
-			domain_disconnect(wm);
-			return 0;
-		}
-	}
-	if (strtok_r(NULL, " ", &tail) != NULL) {
+	if (!read_members(&tail, members)) {
 		domain_disconnect(wm);
 		return 0;
 	}
-	/* The event loop owns both visible slots and input. No parent event can
-	 * be delivered between hiding the old view and selecting the new target. */
-	clear_slots(wm);
+	/* Visibility and keyboard focus belong to this one WM event loop. */
 	wm->home_active = false;
-	memcpy(wm->members, members, sizeof(members));
 	wm->domain_active = true;
-	for (int i = 0; i < 2; ++i) {
-		struct xdg_view *view = find_view(wm, members[i].id);
-		if (view != NULL) {
-			show_domain_member(view);
-		}
-	}
+	project_named(wm, members);
 	nested_seat_switch(wm->seat, view_target(wm));
 	domain_send(wm, "applied", serial);
 	return 0;
@@ -590,7 +723,7 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 		wl_resource_post_no_memory(toplevel->resource);
 		return;
 	}
-	view->tree = wlr_scene_xdg_surface_create(&wm->scene->tree, toplevel->base);
+	view->tree = wlr_scene_xdg_surface_create(wm->app_tree, toplevel->base);
 	if (view->tree == NULL) {
 		free(view);
 		wl_resource_post_no_memory(toplevel->resource);
@@ -697,6 +830,22 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	if (wm.scene_output == NULL || wm.background == NULL) {
 		goto done;
 	}
+	wm.app_tree = wlr_scene_tree_create(&wm.scene->tree);
+	wm.shell_tree = wlr_scene_tree_create(&wm.scene->tree);
+	if (wm.app_tree == NULL || wm.shell_tree == NULL) {
+		goto done;
+	}
+	if (wm.domain_fd >= 0) {
+		struct wlr_layer_shell_v1 *layer = wlr_layer_shell_v1_create(wm.server, 4);
+		/* GTK needs the core data-device global to open Wayland. Do not
+		 * handle selection/drag requests or bridge clipboard to the host. */
+		if (layer == NULL || wlr_data_device_manager_create(wm.server) == NULL) {
+			goto done;
+		}
+		wm.new_panel.notify = on_new_panel;
+		wl_signal_add(&layer->events.new_surface, &wm.new_panel);
+	}
+
 
 	wm.frame.notify = on_frame;
 	wl_signal_add(&wm.output->events.frame, &wm.frame);
@@ -762,6 +911,9 @@ done:
 		wl_display_destroy_clients(wm.server);
 	}
 	nested_seat_destroy(wm.seat);
+	if (wm.new_panel.notify != NULL) {
+		wl_list_remove(&wm.new_panel.link);
+	}
 	if (wm.toplevel.notify != NULL) {
 		wl_list_remove(&wm.toplevel.link);
 	}
