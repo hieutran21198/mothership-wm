@@ -24,6 +24,7 @@ struct nested_seat {
 	struct wlr_surface *selected, *panel_focus;
 	nested_hit_test hit_test;
 	nested_selected select_window;
+	nested_cursor_move move_cursor;
 	bool domain_mode;
 	bool keys_held[KEY_MAX + 1], keys_blocked[KEY_MAX + 1];
 	bool buttons_held[KEY_MAX + 1], buttons_blocked[KEY_MAX + 1];
@@ -139,6 +140,7 @@ static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t seria
 	seat->pointer_inside = surface == seat->output;
 	seat->x = wl_fixed_to_double(x);
 	seat->y = wl_fixed_to_double(y);
+	seat->move_cursor(seat->data, seat->pointer_inside, seat->x, seat->y);
 	pointer_focus(seat);
 }
 
@@ -147,6 +149,7 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->pointer_inside = false;
+		seat->move_cursor(seat->data, false, seat->x, seat->y);
 		pointer_focus(seat);
 	}
 }
@@ -159,6 +162,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 	}
 	seat->x = wl_fixed_to_double(x);
 	seat->y = wl_fixed_to_double(y);
+	seat->move_cursor(seat->data, true, seat->x, seat->y);
 	struct nested_hit hit = pointer_focus(seat);
 	if (hit.surface != NULL) {
 		wlr_seat_pointer_notify_motion(seat->child, time, hit.x, hit.y);
@@ -448,7 +452,7 @@ static const struct wl_registry_listener registry_listener = {
 
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
-		nested_hit_test hit_test, nested_selected selected, void *data) {
+		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor, void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -462,6 +466,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->output = output;
 	seat->hit_test = hit_test;
 	seat->select_window = selected;
+	seat->move_cursor = move_cursor;
 	seat->data = data;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {

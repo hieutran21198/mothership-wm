@@ -24,6 +24,7 @@
 #include <wlr/types/wlr_scene.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/xcursor.h>
 
 #include "nested-seat.h"
 
@@ -85,6 +86,10 @@ struct nested {
 	struct wl_display *server;
 	struct wlr_backend *backend;
 	struct wlr_output *output;
+	struct wlr_output_cursor *cursor;
+	struct wlr_xcursor_theme *cursor_theme;
+	struct wlr_xcursor_image *cursor_image;
+	bool cursor_visible;
 	struct wlr_scene_output *scene_output;
 	struct wlr_scene_rect *background;
 	struct wlr_scene *scene;
@@ -243,6 +248,7 @@ static void on_output_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&wm->resize.link);
 	wl_list_remove(&listener->link);
 	wm->output = NULL;
+	wm->cursor = NULL; /* owned by the output */
 	wm->scene_output = NULL; /* wlroots destroys it with the output. */
 	if (!wm->stopping) {
 		stop(wm, wm->ready ? NULL : "parent closed the output during startup");
@@ -322,6 +328,37 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		}
 	}
 	return hit;
+}
+
+static void move_cursor(void *data, bool inside, double x, double y) {
+	struct nested *wm = data;
+	if (wm->cursor == NULL || wm->cursor_image == NULL || wm->cleaning) {
+		return;
+	}
+	if (inside != wm->cursor_visible) {
+		struct wlr_xcursor_image *image = wm->cursor_image;
+		struct wlr_buffer *buffer = inside ? wlr_xcursor_image_get_buffer(image) : NULL;
+		wm->cursor_visible = inside && buffer != NULL;
+		wlr_output_cursor_set_buffer(wm->cursor, buffer,
+			wm->cursor_visible ? image->hotspot_x : 0, wm->cursor_visible ? image->hotspot_y : 0);
+	}
+	if (inside) {
+		wlr_output_cursor_move(wm->cursor, x, y);
+	}
+}
+
+static void init_cursor(struct nested *wm) {
+	// Use wlroots' nested output cursor: the parent owns its presentation and
+	// applies it only while the pointer is over this outer Wayland surface.
+	wm->cursor_theme = wlr_xcursor_theme_load(NULL, 24);
+	if (wm->cursor_theme == NULL) {
+		return;
+	}
+	struct wlr_xcursor *arrow = wlr_xcursor_theme_get_cursor(wm->cursor_theme, "left_ptr");
+	if (arrow != NULL && arrow->image_count > 0) {
+		wm->cursor_image = arrow->images[0];
+		wm->cursor = wlr_output_cursor_create(wm->output);
+	}
 }
 
 static void on_resize(struct wl_listener *listener, void *data) {
@@ -867,10 +904,11 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		goto done;
 	}
 	wlr_output_create_global(wm.output, wm.server);
+	init_cursor(&wm);
 
 	*reason = "could not create the nested input seat";
 	wm.seat = nested_seat_create(wm.server, parent,
-		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, &wm);
+		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, move_cursor, &wm);
 	if (wm.seat == NULL) {
 		goto done;
 	}
@@ -919,6 +957,9 @@ done:
 	}
 	if (wm.backend != NULL) {
 		wlr_backend_destroy(wm.backend);
+	}
+	if (wm.cursor_theme != NULL) {
+		wlr_xcursor_theme_destroy(wm.cursor_theme);
 	}
 	if (wm.scene != NULL) {
 		wlr_scene_node_destroy(&wm.scene->tree.node);

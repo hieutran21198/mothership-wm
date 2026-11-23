@@ -16,11 +16,12 @@ struct nested_hit {
 };
 
 typedef struct nested_hit (*nested_hit_test)(void *data, double x, double y);
+typedef void (*nested_cursor_move)(void *data, bool inside, double x, double y);
 typedef void (*nested_selected)(void *data, struct wlr_surface *target);
 
 struct nested_seat *nested_seat_create(struct wl_display *server,
 	struct wl_display *parent, struct wl_surface *output,
-	nested_hit_test hit_test, nested_selected selected, void *data);
+	nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor, void *data);
 void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 	struct wlr_surface *fallback);
 void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target);
