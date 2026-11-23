@@ -14,6 +14,7 @@ const (
 	CreateMethod    = "create"
 	AssignMethod    = "assign"
 	FocusMethod     = "focus"
+	HomeMethod      = "home"
 )
 
 type Request struct {
@@ -46,6 +47,7 @@ type AssignBody struct {
 }
 
 type Selection struct {
+	View   string `json:"view,omitempty"`
 	State  string `json:"state"`
 	Domain string `json:"domain,omitempty"`
 }

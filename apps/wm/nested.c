@@ -91,7 +91,7 @@ struct nested {
 	struct wl_list views;
 	struct domain_member members[2];
 	uint64_t focus_order;
-	bool domain_active;
+	bool domain_active, home_active;
 	int domain_fd;
 	struct wl_event_source *domain_source;
 	struct wl_listener backend_destroy;
@@ -110,8 +110,8 @@ struct xdg_view {
 	struct wlr_xdg_toplevel *toplevel;
 	struct wlr_scene_tree *tree;
 	uint64_t id;
-	uint64_t epoch, focused_at;
-	bool mapped;
+	uint64_t epoch, focused_at, home_focused_at;
+	bool mapped, assigned;
 	int slot;
 	struct wl_list link;
 	struct wl_listener map, unmap, commit, destroy, tree_destroy;
@@ -285,23 +285,84 @@ static void remember_focus(void *data, struct wlr_surface *surface) {
 	for (int i = 0; i < 2; ++i) {
 		struct xdg_view *view = wm->slots[i];
 		if (view != NULL && view->toplevel->base->surface == surface) {
-			view->focused_at = ++wm->focus_order;
+			if (wm->home_active) {
+				view->home_focused_at = ++wm->focus_order;
+			} else {
+				view->focused_at = ++wm->focus_order;
+			}
 			return;
 		}
 	}
 }
 
-static struct wlr_surface *domain_target(struct nested *wm) {
+static struct wlr_surface *view_target(struct nested *wm) {
+	if (wm->cleaning) {
+		return NULL;
+	}
 	struct xdg_view *best = NULL;
+	uint64_t best_at = 0;
 	for (int i = 0; i < 2; ++i) {
 		struct xdg_view *view = wm->slots[i];
-		if (view != NULL && view->tree != NULL && view->tree->node.enabled &&
-				view->focused_at != 0 &&
-				(best == NULL || view->focused_at > best->focused_at)) {
+		if (view == NULL || view->tree == NULL || !view->tree->node.enabled) {
+			continue;
+		}
+		uint64_t at = wm->home_active ? view->home_focused_at : view->focused_at;
+		if (at > best_at) {
 			best = view;
+			best_at = at;
 		}
 	}
 	return best == NULL ? NULL : best->toplevel->base->surface;
+}
+
+static void clear_slots(struct nested *wm) {
+	for (int i = 0; i < 2; ++i) {
+		struct xdg_view *view = wm->slots[i];
+		if (view != NULL) {
+			if (view->tree != NULL) {
+				wlr_scene_node_set_enabled(&view->tree->node, false);
+			}
+			view->slot = -1;
+		}
+		wm->slots[i] = NULL;
+	}
+}
+
+static void project_home(struct nested *wm) {
+	struct xdg_view *next[2] = {0};
+	int count = 0;
+	struct xdg_view *view;
+	/* The live list is in ID order. Overflow stays live in the catalog and
+	 * joins the projection when one of the two fixed slots opens. */
+	wl_list_for_each(view, &wm->views, link) {
+		if (view->mapped && !view->assigned && view->tree != NULL) {
+			next[count++] = view;
+			if (count == 2) {
+				break;
+			}
+		}
+	}
+	if (next[0] == wm->slots[0] && next[1] == wm->slots[1]) {
+		return;
+	}
+	clear_slots(wm);
+	for (int i = 0; i < count; ++i) {
+		wm->slots[i] = next[i];
+		next[i]->slot = i;
+		place_view(next[i]);
+	}
+}
+
+static void refresh_home(struct nested *wm) {
+	struct xdg_view *old[] = {wm->slots[0], wm->slots[1]};
+	project_home(wm);
+	for (int i = 0; i < 2; ++i) {
+		if (old[i] != NULL && old[i]->slot < 0) {
+			nested_seat_forget(wm->seat, old[i]->toplevel->base->surface,
+				view_target(wm));
+		}
+	}
+	nested_seat_refresh(wm->seat);
 }
 
 static bool show_domain_member(struct xdg_view *view) {
@@ -354,12 +415,43 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 	}
 	buf[n] = '\0';
 	char *tail, *op = strtok_r(buf, " ", &tail);
-	if (op == NULL || strcmp(op, "focus") != 0) {
+	if (op == NULL) {
 		domain_disconnect(wm);
 		return 0;
 	}
 	uint64_t serial = domain_number(strtok_r(NULL, " ", &tail));
 	if (serial == 0) {
+		domain_disconnect(wm);
+		return 0;
+	}
+	if (strcmp(op, "home") == 0) {
+		if (strtok_r(NULL, " ", &tail) != NULL) {
+			domain_disconnect(wm);
+			return 0;
+		}
+		wm->home_active = true;
+		project_home(wm);
+		nested_seat_switch(wm->seat, view_target(wm));
+		domain_send(wm, "applied", serial);
+		return 0;
+	}
+	if (strcmp(op, "assigned") == 0) {
+		uint64_t id = domain_number(strtok_r(NULL, " ", &tail));
+		if (id == 0 || strtok_r(NULL, " ", &tail) != NULL) {
+			domain_disconnect(wm);
+			return 0;
+		}
+		struct xdg_view *view = find_view(wm, id);
+		if (view != NULL) {
+			view->assigned = true;
+			if (wm->home_active) {
+				refresh_home(wm);
+			}
+		}
+		domain_send(wm, "applied", serial);
+		return 0;
+	}
+	if (strcmp(op, "focus") != 0) {
 		domain_disconnect(wm);
 		return 0;
 	}
@@ -383,16 +475,8 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 	}
 	/* The event loop owns both visible slots and input. No parent event can
 	 * be delivered between hiding the old view and selecting the new target. */
-	for (int i = 0; i < 2; ++i) {
-		struct xdg_view *view = wm->slots[i];
-		if (view != NULL) {
-			if (view->tree != NULL) {
-				wlr_scene_node_set_enabled(&view->tree->node, false);
-			}
-			view->slot = -1;
-		}
-		wm->slots[i] = NULL;
-	}
+	clear_slots(wm);
+	wm->home_active = false;
 	memcpy(wm->members, members, sizeof(members));
 	wm->domain_active = true;
 	for (int i = 0; i < 2; ++i) {
@@ -401,33 +485,40 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 			show_domain_member(view);
 		}
 	}
-	nested_seat_switch(wm->seat, domain_target(wm));
+	nested_seat_switch(wm->seat, view_target(wm));
 	domain_send(wm, "applied", serial);
 	return 0;
 }
 
 static void on_view_map(struct wl_listener *listener, void *data) {
 	struct xdg_view *view = wl_container_of(listener, view, map);
+	struct nested *wm = view->wm;
 	view->mapped = true;
-	domain_send(view->wm, "map", view->id);
-	if (view->wm->domain_active) {
+	if (wm->home_active) {
+		refresh_home(wm);
+	} else if (wm->domain_active) {
 		show_domain_member(view);
-		nested_seat_refresh(view->wm->seat);
-		return;
-	}
-	for (int i = 0; i < 2; ++i) {
-		if (view->wm->slots[i] == NULL) {
-			view->slot = i;
-			view->wm->slots[i] = view;
-			place_view(view);
-			nested_seat_refresh(view->wm->seat);
-			fprintf(stderr, "WINDOW_MAPPED=%" PRIu64 " SLOT=%d\n", view->id, i);
-			return;
+		nested_seat_refresh(wm->seat);
+	} else {
+		for (int i = 0; i < 2; ++i) {
+			if (wm->slots[i] == NULL) {
+				view->slot = i;
+				wm->slots[i] = view;
+				place_view(view);
+				nested_seat_refresh(wm->seat);
+				fprintf(stderr, "WINDOW_MAPPED=%" PRIu64 " SLOT=%d\n", view->id, i);
+				break;
+			}
 		}
 	}
+	domain_send(wm, "map", view->id);
 }
 
 static void remove_view(struct xdg_view *view) {
+	if (view->wm->home_active) {
+		refresh_home(view->wm);
+		return;
+	}
 	if (view->slot < 0) {
 		return;
 	}
@@ -442,7 +533,7 @@ static void remove_view(struct xdg_view *view) {
 		other->tree != NULL && other->tree->node.enabled ?
 		other->toplevel->base->surface : NULL;
 	if (wm->domain_active) {
-		fallback = wm->cleaning ? NULL : domain_target(wm);
+		fallback = wm->cleaning ? NULL : view_target(wm);
 	}
 	nested_seat_forget(wm->seat, view->toplevel->base->surface, fallback);
 }
@@ -474,6 +565,7 @@ static void on_view_commit(struct wl_listener *listener, void *data) {
 static void on_view_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct xdg_view *view = wl_container_of(listener, view, destroy);
+	view->mapped = false;
 	remove_view(view);
 	if (!view->wm->cleaning) {
 		domain_send(view->wm, "close", view->id);
@@ -643,7 +735,9 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		*reason = "could not watch the desktopd control connection";
 		wm.domain_source = wl_event_loop_add_fd(loop, wm.domain_fd,
 			WL_EVENT_READABLE, on_domain_fd, &wm);
-		if (wm.domain_source == NULL || !domain_send(&wm, "ready", 0)) {
+		wm.domain_active = wm.home_active = true;
+		nested_seat_switch(wm.seat, NULL);
+		if (wm.domain_source == NULL || !domain_send(&wm, "ready_home", 0)) {
 			goto done;
 		}
 	}

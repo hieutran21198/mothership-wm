@@ -33,6 +33,7 @@ bin/mothership-desktopd list
 bin/mothership-desktopd assign SESSION WINDOW_ID A
 bin/mothership-desktopd assign SESSION OTHER_WINDOW_ID B
 bin/mothership-desktopd focus A
+bin/mothership-desktopd home
 ```
 
 Replace the uppercase values with the IDs shown in `list`. Use Ctrl+C in

@@ -16,24 +16,30 @@ import (
 	"mothership-wm/services/desktopd/internal/domain"
 )
 
-var errOutcomeUnknown = errors.New("WM disconnected before acknowledging; outcome unknown")
+var (
+	errOutcomeUnknown        = errors.New("WM disconnected before acknowledging; outcome unknown")
+	errAssignmentViewUnknown = errors.New("assignment accepted; WM view outcome unknown, refresh the snapshot")
+	errHomeUnavailable       = errors.New("WM does not support Home")
+)
 
 type wmPeer struct {
-	conn    *net.UnixConn
-	session *domain.Session
-	ready   bool
-	done    chan struct{}
-	applied chan struct{}
-	pending uint64
-	name    string
+	conn      *net.UnixConn
+	session   *domain.Session
+	ready     bool
+	home      bool
+	done      chan struct{}
+	applied   chan struct{}
+	pending   uint64
+	selecting bool
+	name      string
 }
 
 type desktop struct {
-	mu      sync.Mutex
-	focusMu sync.Mutex
-	service *app.Service
-	wm      *wmPeer
-	next    uint64
+	mu        sync.Mutex
+	controlMu sync.Mutex
+	service   *app.Service
+	wm        *wmPeer
+	next      uint64
 }
 
 func Serve(ctx context.Context, l *net.UnixListener, useCases *app.Service) error {
@@ -93,10 +99,10 @@ func (d *desktop) track(ctx context.Context, c *net.UnixConn, session string) {
 	d.mu.Unlock()
 	defer func() {
 		d.mu.Lock()
-		if w.pending != 0 {
+		if w.pending != 0 && w.selecting {
 			d.service.MarkFocusUnknown(w.session)
-			w.pending = 0
 		}
+		w.pending = 0
 		d.service.Disconnect(w.session)
 		d.wm = nil
 		close(w.done)
@@ -118,11 +124,12 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !w.ready {
-		if len(a) != 1 || a[0] != "ready" {
+		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home") {
 			return false
 		}
 		// WM registers before serving any Wayland clients: its initial snapshot is empty.
-		w.ready = d.service.Ready(w.session)
+		w.home = a[0] == "ready_home"
+		w.ready = d.service.Ready(w.session, w.home)
 		return w.ready
 	}
 	if len(a) != 2 {
@@ -137,7 +144,9 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 		if id != w.pending || w.applied == nil {
 			return false
 		}
-		d.service.AcknowledgeFocus(w.session, w.name)
+		if w.selecting {
+			d.service.AcknowledgeFocus(w.session, w.name)
+		}
 		w.pending = 0
 		close(w.applied)
 		return true
@@ -171,11 +180,37 @@ func validSession(id string) bool {
 	return err == nil
 }
 
-func (d *desktop) focus(name string) error {
-	d.focusMu.Lock()
-	defer d.focusMu.Unlock()
+func (d *desktop) assign(session string, id uint64, name string) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
 	d.mu.Lock()
-	session, members, err := d.service.ResolveDomain(name)
+	changed, err := d.service.Assign(session, id, name)
+	w := d.wm
+	if err != nil || !changed || w == nil || !w.home {
+		d.mu.Unlock()
+		return err
+	}
+	ack := d.beginApply(w, false, "")
+	packet := fmt.Sprintf("assigned %d %d", ack.serial, id)
+	d.mu.Unlock()
+	if !d.awaitApply(w, ack, packet) {
+		return errAssignmentViewUnknown
+	}
+	return nil
+}
+
+func (d *desktop) focus(name string) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	var session string
+	var members []domain.Window
+	var err error
+	if name == "" {
+		session, err = d.service.ResolveHome()
+	} else {
+		session, members, err = d.service.ResolveDomain(name)
+	}
 	if err != nil {
 		d.mu.Unlock()
 		return err
@@ -185,39 +220,64 @@ func (d *desktop) focus(name string) error {
 		d.mu.Unlock()
 		return app.ErrUnavailable
 	}
-	d.next++
-	serial := d.next
-	packet := fmt.Sprintf("focus %d", serial)
+	if name == "" && !w.home {
+		d.mu.Unlock()
+		return errHomeUnavailable
+	}
+	ack := d.beginApply(w, true, name)
+	packet := fmt.Sprintf("focus %d", ack.serial)
+	if name == "" {
+		packet = fmt.Sprintf("home %d", ack.serial)
+	}
 	for _, v := range members {
 		packet += fmt.Sprintf(" %d %d", v.ID, v.Epoch)
 	}
-	applied := make(chan struct{})
-	w.pending, w.name, w.applied = serial, name, applied
 	d.mu.Unlock()
+	if !d.awaitApply(w, ack, packet) {
+		return errOutcomeUnknown
+	}
+	return nil
+}
 
+type applyAck struct {
+	serial uint64
+	done   chan struct{}
+}
+
+// beginApply runs under d.mu; controlMu serializes assignments and selections.
+func (d *desktop) beginApply(w *wmPeer, selecting bool, name string) applyAck {
+	d.next++
+	ack := applyAck{serial: d.next, done: make(chan struct{})}
+	w.pending, w.applied, w.selecting, w.name = ack.serial, ack.done, selecting, name
+	return ack
+}
+
+func (d *desktop) awaitApply(w *wmPeer, ack applyAck, packet string) bool {
 	if err := domainipc.Write(w.conn, packet); err == nil {
 		timer := time.NewTimer(domainipc.Timeout)
 		defer timer.Stop()
 		select {
-		case <-applied:
-			return nil
+		case <-ack.done:
+			return true
 		case <-timer.C:
 		case <-w.done:
 		}
 	}
 	// Serialize acknowledgement versus timeout/disconnect. Once an outcome
-	// is declared unknown, a late packet cannot report a successful selection.
+	// is declared unknown, a late packet cannot report success.
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	select {
-	case <-applied:
-		return nil
+	case <-ack.done:
+		return true
 	default:
 	}
-	if w.pending == serial {
+	if w.pending == ack.serial {
 		w.pending = 0
-		d.service.MarkFocusUnknown(w.session)
+		if w.selecting {
+			d.service.MarkFocusUnknown(w.session)
+		}
 	}
 	_ = w.conn.Close()
-	return errOutcomeUnknown
+	return false
 }

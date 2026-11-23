@@ -16,6 +16,18 @@ Domain does not own seats.
 For this slice membership is in memory only. No persistence, app rules,
 agent or public API. See the [FocusDomain Flow](../flows/focus-domain.md).
 
+## Home and Inbox
+
+Home is the initial managed view, not a named Domain or a reservation of
+the name `Home`. Inbox is derived from the current session: a window must
+be mapped, live, and without Domain membership. Explicit assignment removes
+it from Inbox. Unmap or destruction also makes a window ineligible.
+
+The catalog includes every live window, even if only two Inbox entries
+fit the fixed Home slots. When Home is shown, eligible windows fill those
+slots by ascending Window ID. WM owns the projection and Home focus history
+separately from named views; an empty named Domain does not fall back to Home.
+
 ## Local client contract
 
 Desktop clients can subscribe over [desktopd’s private Unix socket](../../architecture/desktopd-client-ipc.md).

@@ -266,3 +266,88 @@ func TestLostWMDoesNotConfirmSelection(t *testing.T) {
 		t.Fatal(lost)
 	}
 }
+
+func TestHomeReadinessAssignmentAndNamedHomeAreDistinct(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	sub := s.request(10, "subscribe", "{}")
+	success(t, sub, 10)
+	send(t, wm, "ready_home")
+	changed := decode[domainipc.WMChangedBody](t, next(t, sub, 1, app.WMChanged))
+	home := domainipc.Selection{State: app.SelectionAcknowledged, View: "home"}
+	if changed.Selection != home {
+		t.Fatalf("ready did not confirm Home: %+v", changed)
+	}
+	success(t, s.request(20, "create", `{"domain":"Home"}`), 20)
+	next(t, sub, 2, app.DomainCreated)
+	send(t, wm, "new 7")
+	next(t, sub, 3, app.WindowUpdated)
+	send(t, wm, "map 7")
+	next(t, sub, 4, app.WindowUpdated)
+	assigned := s.request(30, "assign", `{"domain":"Home","window_id":7,"session":"`+sessionID+`"}`)
+	prep := strings.Fields(read(t, wm))
+	if len(prep) != 3 || prep[0] != "assigned" || prep[2] != "7" {
+		t.Fatalf("expected ordered Home eligibility update: %v", prep)
+	}
+	next(t, sub, 5, app.WindowUpdated)
+	assertQuiet(t, assigned)
+	send(t, wm, "applied "+prep[1])
+	success(t, assigned, 30)
+	named := s.request(40, "focus", `{"domain":"Home"}`)
+	prep = strings.Fields(read(t, wm))
+	if len(prep) != 4 || prep[0] != "focus" || prep[2] != "7" {
+		t.Fatalf("named Home is not a Home view: %v", prep)
+	}
+	send(t, wm, "applied "+prep[1])
+	success(t, named, 40)
+	selected := decode[domainipc.Selection](t, next(t, sub, 6, app.SelectionChanged))
+	if selected != (domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Home"}) {
+		t.Fatalf("unexpected named selection: %+v", selected)
+	}
+	back := s.request(50, "home", "{}")
+	prep = strings.Fields(read(t, wm))
+	if len(prep) != 2 || prep[0] != "home" {
+		t.Fatalf("expected a separate Home command: %v", prep)
+	}
+	assertQuiet(t, back)
+	assertQuiet(t, sub)
+	send(t, wm, "applied "+prep[1])
+	success(t, back, 50)
+	if sel := decode[domainipc.Selection](t, next(t, sub, 7, app.SelectionChanged)); sel != home {
+		t.Fatalf("return Home not confirmed: %+v", sel)
+	}
+	snap := decode[domainipc.Snapshot](t, success(t, s.request(60, "snapshot", "{}"), 60))
+	if snap.Selection != home || len(snap.Windows) != 1 || snap.Windows[0].Domain != "Home" {
+		t.Fatalf("Home changed saved membership: %+v", snap)
+	}
+}
+
+func TestAssignmentMirrorLossIsNotAnUnassignment(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	sub := s.request(1, "subscribe", "{}")
+	success(t, sub, 1)
+	send(t, wm, "ready_home")
+	next(t, sub, 1, app.WMChanged)
+	success(t, s.request(2, "create", `{"domain":"Dev"}`), 2)
+	next(t, sub, 2, app.DomainCreated)
+	send(t, wm, "new 7")
+	next(t, sub, 3, app.WindowUpdated)
+	assigned := s.request(3, "assign", `{"domain":"Dev","window_id":7,"session":"`+sessionID+`"}`)
+	if p := read(t, wm); !strings.HasPrefix(p, "assigned ") {
+		t.Fatal(p)
+	}
+	committed := decode[domainipc.Window](t, next(t, sub, 4, app.WindowUpdated))
+	if committed.Domain != "Dev" {
+		t.Fatal(committed)
+	}
+	wm.Close()
+	r := reply(t, assigned, 3)
+	if r.Error == nil || r.Error.Code != "assignment_view_unknown" {
+		t.Fatalf("lost apply was falsely acknowledged: %+v", r)
+	}
+	lost := decode[domainipc.WMChangedBody](t, next(t, sub, 5, app.WMChanged))
+	if lost.WMReady || lost.Selection.State != app.SelectionUnknown {
+		t.Fatalf("stale WM projection still described as known: %+v", lost)
+	}
+}

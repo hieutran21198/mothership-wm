@@ -18,6 +18,7 @@ const (
 )
 
 type Selection struct {
+	Home   bool
 	Kind   string
 	Domain string
 }
@@ -108,7 +109,7 @@ func (s *Service) drop(ch chan Update) {
 }
 
 func (s *Service) AcknowledgeFocus(conn *domain.Session, name string) {
-	s.setSelection(conn, Selection{Kind: SelectionAcknowledged, Domain: name})
+	s.setSelection(conn, Selection{Kind: SelectionAcknowledged, Domain: name, Home: name == ""})
 }
 
 func (s *Service) MarkFocusUnknown(conn *domain.Session) {

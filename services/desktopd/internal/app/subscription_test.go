@@ -37,7 +37,7 @@ func TestSubscribeBoundaryDoesNotLoseMutation(t *testing.T) {
 func TestSlowSubscriberDoesNotBlockOrLoseFastClient(t *testing.T) {
 	var s Service
 	wm := s.Connect("test")
-	if !s.Ready(wm) {
+	if !s.Ready(wm, false) {
 		t.Fatal("WM not ready")
 	}
 	base, slow, closeSlow, err := s.Subscribe()

@@ -20,15 +20,22 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 	}
 	badBody := func() { sendFailure(c, req.ID, "invalid_body", "invalid request body") }
 	switch req.Method {
-	case domainipc.SnapshotMethod, domainipc.SubscribeMethod:
+	case domainipc.SnapshotMethod, domainipc.SubscribeMethod, domainipc.HomeMethod:
 		if _, err := domainipc.Decode[domainipc.Empty](req.Body); err != nil {
 			badBody()
 			return
 		}
-		if req.Method == domainipc.SubscribeMethod {
+		switch req.Method {
+		case domainipc.SubscribeMethod:
 			d.subscribe(ctx, c, req.ID)
-		} else {
+		case domainipc.SnapshotMethod:
 			sendSnapshot(c, req.ID, d.service.Snapshot())
+		case domainipc.HomeMethod:
+			if err := d.focus(""); err != nil {
+				sendCommandError(c, req.ID, err)
+				return
+			}
+			sendSuccess(c, req.ID)
 		}
 	case domainipc.CreateMethod, domainipc.FocusMethod:
 		b, err := domainipc.Decode[domainipc.DomainBody](req.Body)
@@ -52,7 +59,7 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			badBody()
 			return
 		}
-		if err := d.service.Assign(b.Session, b.WindowID, b.Domain); err != nil {
+		if err := d.assign(b.Session, b.WindowID, b.Domain); err != nil {
 			sendCommandError(c, req.ID, err)
 			return
 		}
@@ -77,6 +84,10 @@ func sendCommandError(c *net.UnixConn, id uint64, err error) {
 		code = "domain_full"
 	case errors.Is(err, errOutcomeUnknown):
 		code = "outcome_unknown"
+	case errors.Is(err, errAssignmentViewUnknown):
+		code = "assignment_view_unknown"
+	case errors.Is(err, errHomeUnavailable):
+		code = "home_unavailable"
 	}
 	sendFailure(c, id, code, err.Error())
 }
@@ -90,7 +101,11 @@ func sendSuccess(c *net.UnixConn, id uint64) {
 }
 
 func selectionWire(s app.Selection) domainipc.Selection {
-	return domainipc.Selection{State: s.Kind, Domain: s.Domain}
+	v := domainipc.Selection{State: s.Kind, Domain: s.Domain}
+	if s.Home {
+		v.View = "home"
+	}
+	return v
 }
 
 func windowWire(w domain.Window) domainipc.Window {

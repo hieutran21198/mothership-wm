@@ -11,6 +11,7 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Focus a Domain](focus-domain.md): design accepted local command and WM handoff.
 
 - [Subscribe to desktopd state](stream-desktopd-state.md): draft.
+- [Open Home and use Inbox](use-home-inbox.md).
 
 ## Template
 

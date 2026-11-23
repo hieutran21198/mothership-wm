@@ -24,7 +24,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Println("usage: mothership-desktopd serve | list | create DOMAIN | assign SESSION WINDOW DOMAIN | focus DOMAIN")
+		fmt.Println("usage: mothership-desktopd serve | list | create DOMAIN | assign SESSION WINDOW DOMAIN | focus DOMAIN | home")
 		return nil
 	}
 	path, err := domainipc.Path(os.Getenv("XDG_RUNTIME_DIR"))

@@ -20,6 +20,7 @@ has either a `body` or an `error` with `code` and `message`.
 | `create` | `{"domain":"Dev"}` | `{}` |
 | `assign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7,"domain":"Dev"}` | `{}` |
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
+| `home` | `{}` | `{}` after WM acknowledgement |
 
 For example, request `{"id":12,"method":"create","body":{"domain":"Dev"}}`
 gets `{"id":12,"body":{}}` on success. Domain names are 1–32 ASCII
@@ -28,9 +29,12 @@ idempotent for an existing name. No description or combined assign-on-create.
 
 Malformed requests use `invalid_request` or `invalid_body`; an unknown
 method uses `unknown_method`. State rejections include `wm_unavailable`,
-`stale_session`, `unknown_window`, `unknown_domain`, and `domain_full`.
-If the WM does not acknowledge after sending FocusDomain, return
-`outcome_unknown`, not a claim that the view did not change. An oversized
+`stale_session`, `unknown_window`, `unknown_domain`, `domain_full`, and
+`home_unavailable` for an older WM that does not support Home.
+If the WM does not acknowledge after sending a view command, return
+`outcome_unknown`, not a claim that the view did not change. If a committed
+assignment cannot be confirmed by WM, return `assignment_view_unknown`;
+refresh the snapshot to read current membership. An oversized
 snapshot or full subscription limit returns `snapshot_too_large` or
 `subscription_limit`; the server does not send partial snapshots.
 
@@ -40,7 +44,11 @@ The snapshot has `revision`, `wm_ready`, `domains`, `windows`,
 `selection`, and `session` when WM is ready. Each window has `id`,
 `mapped`, and `domain` when assigned. The selection has `state`
 (`not_selected`, `acknowledged`, or `unknown`) and includes `domain`
-only when acknowledged.
+only for an acknowledged named Domain. Confirmed Home is
+`{"state":"acknowledged","view":"home"}`. Named selection, unknown and not
+selected retain their existing shapes. Derive Inbox from mapped windows
+without a `domain`; any beyond the first two by ID wait for a Home slot,
+but remain in the catalog and can be assigned directly.
 
 The subscription emits one snapshot response and then objects of the form
 `{"revision":8,"event":"domain.created","body":{"domain":"Dev"}}`.

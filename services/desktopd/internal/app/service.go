@@ -50,7 +50,7 @@ func (s *Service) Disconnect(conn *domain.Session) {
 	}
 }
 
-func (s *Service) Ready(conn *domain.Session) bool {
+func (s *Service) Ready(conn *domain.Session, home bool) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active != conn || s.ready {
@@ -58,6 +58,9 @@ func (s *Service) Ready(conn *domain.Session) bool {
 	}
 	s.ready = true
 	s.selection = Selection{Kind: SelectionNotSelected}
+	if home {
+		s.selection = Selection{Kind: SelectionAcknowledged, Home: true}
+	}
 	s.publish(Update{Kind: WMChanged, Session: conn.ID, WMReady: true, Selection: s.selection})
 	return true
 }
@@ -106,20 +109,32 @@ func (s *Service) Create(name string) {
 	}
 }
 
-func (s *Service) Assign(sessionID string, id uint64, name string) error {
+func (s *Service) Assign(sessionID string, id uint64, name string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.ready {
-		return ErrUnavailable
+		return false, ErrUnavailable
 	}
 	before := s.active.Get(id)
 	if err := s.names.Assign(s.active, sessionID, id, name); err != nil {
-		return err
+		return false, err
 	}
-	if after := s.active.Get(id); after != before {
+	after := s.active.Get(id)
+	if after != before {
 		s.publish(Update{Kind: WindowUpdated, Window: after})
 	}
-	return nil
+	// Only the initial assignment changes Home eligibility. Reassignment does
+	// not remove it from Home again, and the named view already has a snapshot.
+	return before.Domain == "" && after.Domain != "", nil
+}
+
+func (s *Service) ResolveHome() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return "", ErrUnavailable
+	}
+	return s.active.ID, nil
 }
 
 func (s *Service) ResolveDomain(name string) (string, []domain.Window, error) {
