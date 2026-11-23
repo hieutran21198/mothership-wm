@@ -15,6 +15,9 @@ const (
 	AssignMethod    = "assign"
 	FocusMethod     = "focus"
 	HomeMethod      = "home"
+	OverviewMethod  = "overview"
+	LayoutMethod    = "layout"
+	NextMethod      = "stack.next"
 )
 
 type Request struct {
@@ -40,6 +43,21 @@ type DomainBody struct {
 	Domain string `json:"domain"`
 }
 
+type LayoutBody struct {
+	Domain string `json:"domain"`
+	Mode   string `json:"mode"`
+}
+
+const (
+	Tiling = "tiling"
+	Stack  = "stack"
+	Float  = "float"
+)
+
+func ValidLayout(mode string) bool {
+	return mode == Tiling || mode == Stack || mode == Float
+}
+
 type AssignBody struct {
 	Session  string `json:"session"`
 	WindowID uint64 `json:"window_id"`
@@ -50,6 +68,7 @@ type Selection struct {
 	View   string `json:"view,omitempty"`
 	State  string `json:"state"`
 	Domain string `json:"domain,omitempty"`
+	Mode   string `json:"mode,omitempty"`
 }
 
 type Window struct {

@@ -9,7 +9,7 @@ Domain does not own seats.
 
 | Rule | Invariant or allowed change |
 | --- | --- |
-| DOM-1 | An explicit mapping assigns one live `(WM session, Window ID)` to one Domain. Reassigning removes the old membership. App ID, PID and title do not imply ownership. A Domain may be empty. This slice allows two live members for its fixed slots. |
+| DOM-1 | An explicit mapping assigns one live `(WM session, Window ID)` to one Domain. Reassigning removes the old membership. App ID, PID and title do not imply ownership. A Domain may be empty. A named Node allows up to eight live members, including temporarily unmapped windows. |
 | DOM-2 | Destroy or session end removes old refs. Unmap changes visibility, not membership. Reopening creates a new unassigned ref. Old-session and closed IDs cannot be assigned. |
 | DOM-3 | `FocusDomain` names an existing Domain and resolves its members. Only WM applies the visible set and determines the eligible keyboard target. Membership grants no authority to send input. |
 
@@ -55,3 +55,6 @@ rather than silently dropping an update.
 Reuse the existing create, assign and select commands. Validate the same
 live session and Window ID for all clients. Publish a new selection as
 acknowledged only after WM applies it.
+
+[Node layouts and Overview](../flows/view-node-layouts.md) do not change
+membership. Overview has no app projection and is not Home or a Domain.

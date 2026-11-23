@@ -24,9 +24,6 @@ func TestExplicitMembershipLifetime(t *testing.T) {
 	assign(1, "A")
 	assign(2, "A")
 	assign(3, "B")
-	if err := state.Assign(s, "current", 4, "A"); err == nil {
-		t.Fatal("accepted third member for two slots")
-	}
 	before := s.Windows()[2]
 	s.SetMapped(3, true)
 	s.SetMapped(3, false)
@@ -54,5 +51,18 @@ func TestExplicitMembershipLifetime(t *testing.T) {
 	}
 	if fresh := NewSession("new"); len(fresh.Windows()) != 0 {
 		t.Fatal("new session inherited live windows")
+	}
+}
+
+func TestNodeBoundIncludesUnmappedMembers(t *testing.T) {
+	var state State
+	state.Create("node")
+	s := NewSession("session")
+	for id := uint64(1); id <= MaxNodeWindows+1; id++ {
+		s.Add(id)
+		err := state.Assign(s, s.ID, id, "node")
+		if id <= MaxNodeWindows && err != nil || id > MaxNodeWindows && err != ErrDomainFull {
+			t.Fatalf("member %d: %v", id, err)
+		}
 	}
 }

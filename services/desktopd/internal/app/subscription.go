@@ -18,9 +18,10 @@ const (
 )
 
 type Selection struct {
-	Home   bool
-	Kind   string
-	Domain string
+	Home, Overview bool
+	Kind           string
+	Domain         string
+	Mode           string
 }
 
 type Snapshot struct {
@@ -108,8 +109,8 @@ func (s *Service) drop(ch chan Update) {
 	}
 }
 
-func (s *Service) AcknowledgeFocus(conn *domain.Session, name string) {
-	s.setSelection(conn, Selection{Kind: SelectionAcknowledged, Domain: name, Home: name == ""})
+func (s *Service) AcknowledgeView(conn *domain.Session, selection Selection) {
+	s.setSelection(conn, selection)
 }
 
 func (s *Service) MarkFocusUnknown(conn *domain.Session) {
@@ -121,6 +122,9 @@ func (s *Service) setSelection(conn *domain.Session, selection Selection) {
 	defer s.mu.Unlock()
 	if s.ready && s.active == conn && s.selection != selection {
 		s.selection = selection
+		if selection.Kind == SelectionAcknowledged && selection.Domain != "" && selection.Mode != "" {
+			s.layouts[selection.Domain] = selection.Mode
+		}
 		s.publish(Update{Kind: SelectionChanged, Selection: selection})
 	}
 }

@@ -73,7 +73,7 @@ func showNative(v view) {
 	for _, w := range v.windows {
 		fmt.Fprintf(&ws, "%s\t%s\n", w.key, w.label)
 	}
-	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String()}
+	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode}
 	ptr := make([]*C.char, len(s))
 	for i, value := range s {
 		ptr[i] = C.CString(value)
@@ -83,7 +83,11 @@ func showNative(v view) {
 	if v.enabled {
 		enabled = 1
 	}
-	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], enabled)
+	var overview C.int
+	if v.overview {
+		overview = 1
+	}
+	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], enabled, overview)
 }
 
 //export panelAction
@@ -104,5 +108,14 @@ func panelAction(op C.int, a, b *C.char) {
 		active.submit(domainipc.HomeMethod, domainipc.Empty{})
 	case C.int(openTerminal), C.int(openFiles):
 		apps.start(appAction(op))
+	case 7:
+		active.submit(domainipc.OverviewMethod, domainipc.Empty{})
+	case 8, 9, 10:
+		modes := []string{domainipc.Stack, domainipc.Float, domainipc.Tiling}
+		active.submit(domainipc.LayoutMethod, domainipc.LayoutBody{Domain: name, Mode: modes[int(op)-8]})
+	case 11:
+		active.submit(domainipc.NextMethod, domainipc.DomainBody{Domain: name})
+	case 12:
+		active.submit(domainipc.FocusMethod, domainipc.DomainBody{Domain: name})
 	}
 }

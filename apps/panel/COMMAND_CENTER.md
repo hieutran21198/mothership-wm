@@ -17,7 +17,11 @@ The transparent area around the entry lets input reach the app below it.
 
 Create a named Node, select a live Window ID and a destination, then
 **Attach / Move**. Use **Fly to Node** or **Home** separately. **Hide**
-or Escape during text entry releases input back to the current view. Closing the
+or Escape during text entry releases input back to the current view. Use **Overview** to leave the current view and enter a Node from its
+position on the grid. **Home / Inbox** is a separate destination. In a Node,
+choose **Stack**, **Float** or **Tiling**. Use **Next window** in Stack; drag
+a Float window's top bar to move it or its bottom-right grip to resize it.
+Closing the
 managed WM also closes its nested Command Center.
 
 **Terminal** starts an installed Ghostty with single-instance mode off.

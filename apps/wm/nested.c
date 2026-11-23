@@ -27,6 +27,7 @@
 #include <wlr/xcursor.h>
 
 #include "nested-seat.h"
+#include "nested-layout.h"
 
 enum control_phase {
 	STARTING,
@@ -97,12 +98,17 @@ struct nested {
 	struct shell_panel *panel;
 	struct wl_listener new_panel;
 	struct nested_seat *seat;
-	struct xdg_view *slots[2];
+	struct xdg_view *slots[NODE_WINDOWS], *drag;
+	struct rect drag_rect;
+	int drag_x, drag_y;
+	bool drag_resize;
+	enum node_layout layout;
+	int visible_count;
 	uint64_t next_window_id;
 	struct wl_list views;
-	struct domain_member members[2];
+	struct domain_member members[NODE_WINDOWS];
 	uint64_t focus_order;
-	bool domain_active, home_active;
+	bool domain_active, home_active, overview_active;
 	int domain_fd;
 	struct wl_event_source *domain_source;
 	struct wl_listener backend_destroy;
@@ -119,7 +125,10 @@ struct nested {
 struct xdg_view {
 	struct nested *wm;
 	struct wlr_xdg_toplevel *toplevel;
-	struct wlr_scene_tree *tree;
+	struct wlr_scene_tree *frame, *tree;
+	struct wlr_scene_rect *bar, *grip;
+	struct rect floating;
+	int configure_w, configure_h;
 	uint64_t id;
 	uint64_t epoch, focused_at, home_focused_at;
 	bool mapped, assigned;
@@ -146,8 +155,10 @@ static void position_panel(struct shell_panel *panel) {
 		return;
 	}
 	int pw = width > 532 ? 520 : width - 12;
-	int ph = height > 266 ? 254 : height - 12;
-	wlr_scene_node_set_position(&panel->scene->tree->node, width - pw - 12, height - ph - 12);
+	int ph = height > 318 ? 306 : height - 12;
+	int x = panel->wm->overview_active ? (width - pw) / 2 : width - pw - 12;
+	int y = panel->wm->overview_active ? (height - ph) / 2 : height - ph - 12;
+	wlr_scene_node_set_position(&panel->scene->tree->node, x, y);
 	wlr_layer_surface_v1_configure(panel->layer, pw, ph);
 }
 
@@ -278,30 +289,71 @@ static void on_frame(struct wl_listener *listener, void *data) {
 	}
 }
 
+static bool named_view(struct nested *wm) {
+	return wm->domain_active && !wm->home_active && !wm->overview_active;
+}
+
 static void place_view(struct xdg_view *view) {
-	if (view == NULL || view->slot < 0 || view->tree == NULL || view->wm->output == NULL) {
+	if (view == NULL || view->slot < 0 || view->tree == NULL || view->wm->output == NULL ||
+			!view->frame->node.enabled) {
 		return;
 	}
+	struct nested *wm = view->wm;
 	int width, height;
-	wlr_output_effective_resolution(view->wm->output, &width, &height);
-	int middle = width / 2;
-	int left = view->slot == 0 ? 0 : middle;
-	int right = view->slot == 0 ? middle : width;
-	if (right <= left || height <= 0) {
-		wlr_scene_node_set_enabled(&view->tree->node, false);
+	wlr_output_effective_resolution(wm->output, &width, &height);
+	if (width <= 0 || height <= FLOAT_BAR + FLOAT_GRIP) {
 		return;
 	}
-	/* Fixed two slots for this slice, not a general layout. Respect logical
-	 * output coordinates and clip even clients that ignore requested size. */
+	bool named = named_view(wm), floating = named && wm->layout == FLOAT;
+	struct rect r;
+	if (!named) {
+		int middle = width / 2;
+		r = view->slot == 0 ? (struct rect){0, 0, middle, height} :
+			(struct rect){middle, 0, width - middle, height};
+	} else if (wm->layout == STACK) {
+		r = (struct rect){0, 0, width, height};
+	} else if (floating) {
+		if (view->floating.width == 0) {
+			view->floating = float_start(view->slot, width, height);
+		}
+		r = view->floating = float_rect(view->floating, width, height);
+	} else {
+		r = tile_rect(view->slot, wm->visible_count, width, height);
+	}
+	int bar = floating ? FLOAT_BAR : 0;
 	struct wlr_box clip = {
 		.x = view->toplevel->base->geometry.x,
 		.y = view->toplevel->base->geometry.y,
-		.width = right - left,
-		.height = height,
+		.width = r.width,
+		.height = r.height - bar,
 	};
-	wlr_scene_node_set_position(&view->tree->node, left, 0);
+	wlr_scene_node_set_position(&view->frame->node, r.x, r.y);
+	wlr_scene_node_set_position(&view->tree->node, 0, bar);
 	wlr_scene_subsurface_tree_set_clip(&view->tree->node, &clip);
-	wlr_scene_node_set_enabled(&view->tree->node, true);
+	if (floating && view->bar == NULL) {
+		const float title_color[4] = {0.19f, 0.32f, 0.46f, 1.0f};
+		const float grip_color[4] = {0.42f, 0.68f, 0.87f, 1.0f};
+		view->bar = wlr_scene_rect_create(view->frame, r.width, FLOAT_BAR, title_color);
+		view->grip = wlr_scene_rect_create(view->frame, FLOAT_GRIP, FLOAT_GRIP, grip_color);
+	}
+	if (view->bar != NULL) {
+		wlr_scene_node_set_enabled(&view->bar->node, floating);
+		if (floating) {
+			wlr_scene_rect_set_size(view->bar, r.width, FLOAT_BAR);
+		}
+	}
+	if (view->grip != NULL) {
+		wlr_scene_node_set_enabled(&view->grip->node, floating);
+		if (floating) {
+			wlr_scene_node_set_position(&view->grip->node, r.width - FLOAT_GRIP, r.height - FLOAT_GRIP);
+		}
+	}
+	int request_w = named ? clip.width : 0, request_h = named ? clip.height : 0;
+	if (request_w != view->configure_w || request_h != view->configure_h) {
+		view->configure_w = request_w;
+		view->configure_h = request_h;
+		wlr_xdg_toplevel_set_size(view->toplevel, request_w, request_h);
+	}
 }
 
 static struct nested_hit hit_view(void *data, double x, double y) {
@@ -312,7 +364,22 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 	}
 	struct wlr_scene_node *node = wlr_scene_node_at(&wm->scene->tree.node,
 		x, y, &hit.x, &hit.y);
-	if (node == NULL || node->type != WLR_SCENE_NODE_BUFFER) {
+	if (node == NULL) {
+		return hit;
+	}
+	if (node->type == WLR_SCENE_NODE_RECT && named_view(wm) && wm->layout == FLOAT) {
+		for (int i = 0; i < NODE_WINDOWS; ++i) {
+			struct xdg_view *v = wm->slots[i];
+			if (v != NULL && ((v->bar != NULL && node == &v->bar->node) ||
+					(v->grip != NULL && node == &v->grip->node))) {
+				hit.handle = v;
+				hit.resize = v->grip != NULL && node == &v->grip->node;
+				hit.toplevel = v->toplevel->base->surface;
+				return hit;
+			}
+		}
+	}
+	if (node->type != WLR_SCENE_NODE_BUFFER) {
 		return hit;
 	}
 	struct wlr_scene_surface *surface = wlr_scene_surface_try_from_buffer(
@@ -328,7 +395,7 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 			}
 			return hit;
 		}
-		for (int i = 0; i < 2; ++i) {
+		for (int i = 0; i < NODE_WINDOWS; ++i) {
 			struct xdg_view *view = wm->slots[i];
 			if (view != NULL && view->tree == tree) {
 				hit.surface = surface->surface;
@@ -338,6 +405,40 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		}
 	}
 	return hit;
+}
+
+static void start_view_move(void *data, struct nested_hit hit, double x, double y) {
+	struct nested *wm = data;
+	wm->drag = hit.handle;
+	wm->drag_rect = wm->drag->floating;
+	wm->drag_x = (int)x;
+	wm->drag_y = (int)y;
+	wm->drag_resize = hit.resize;
+}
+
+static void update_view_move(void *data, bool moving, double x, double y) {
+	struct nested *wm = data;
+	if (!moving) {
+		wm->drag = NULL;
+		return;
+	}
+	struct xdg_view *view = wm->drag;
+	if (view == NULL || !named_view(wm) || wm->layout != FLOAT) {
+		return;
+	}
+	struct rect r = wm->drag_rect;
+	int dx = (int)x - wm->drag_x, dy = (int)y - wm->drag_y;
+	if (wm->drag_resize) {
+		int width, height;
+		wlr_output_effective_resolution(wm->output, &width, &height);
+		r.width = clamp_int(r.width + dx, 180, width - r.x);
+		r.height = clamp_int(r.height + dy, 100, height - r.y);
+	} else {
+		r.x += dx;
+		r.y += dy;
+	}
+	view->floating = r;
+	place_view(view);
 }
 
 static void move_cursor(void *data, bool inside, double x, double y) {
@@ -381,8 +482,9 @@ static void on_resize(struct wl_listener *listener, void *data) {
 	int width, height;
 	wlr_output_effective_resolution(wm->output, &width, &height);
 	wlr_scene_rect_set_size(wm->background, width, height);
-	place_view(wm->slots[0]);
-	place_view(wm->slots[1]);
+	for (int i = 0; i < NODE_WINDOWS; ++i) {
+		place_view(wm->slots[i]);
+	}
 	position_panel(wm->panel);
 	nested_seat_refresh(wm->seat);
 }
@@ -431,28 +533,32 @@ static void remember_focus(void *data, struct wlr_surface *surface) {
 	if (!wm->domain_active) {
 		return;
 	}
-	for (int i = 0; i < 2; ++i) {
+	for (int i = 0; i < NODE_WINDOWS; ++i) {
 		struct xdg_view *view = wm->slots[i];
 		if (view != NULL && view->toplevel->base->surface == surface) {
 			if (wm->home_active) {
 				view->home_focused_at = ++wm->focus_order;
 			} else {
 				view->focused_at = ++wm->focus_order;
+				if (wm->layout == FLOAT) {
+					wlr_scene_node_raise_to_top(&view->frame->node);
+				}
 			}
 			return;
 		}
 	}
 }
 
-static struct wlr_surface *view_target(struct nested *wm) {
+static struct xdg_view *best_view(struct nested *wm, bool visible_only) {
 	if (wm->cleaning) {
 		return NULL;
 	}
 	struct xdg_view *best = NULL;
 	uint64_t best_at = 0;
-	for (int i = 0; i < 2; ++i) {
+	for (int i = 0; i < NODE_WINDOWS; ++i) {
 		struct xdg_view *view = wm->slots[i];
-		if (view == NULL || view->tree == NULL || !view->tree->node.enabled) {
+		if (view == NULL || view->tree == NULL ||
+				(visible_only && !view->frame->node.enabled)) {
 			continue;
 		}
 		uint64_t at = wm->home_active ? view->home_focused_at : view->focused_at;
@@ -461,43 +567,48 @@ static struct wlr_surface *view_target(struct nested *wm) {
 			best_at = at;
 		}
 	}
+	return best;
+}
+
+static struct wlr_surface *view_target(struct nested *wm) {
+	struct xdg_view *best = best_view(wm, true);
 	return best == NULL ? NULL : best->toplevel->base->surface;
 }
 
 static void clear_slots(struct nested *wm) {
-	for (int i = 0; i < 2; ++i) {
+	for (int i = 0; i < NODE_WINDOWS; ++i) {
 		struct xdg_view *view = wm->slots[i];
 		if (view != NULL) {
-			if (view->tree != NULL) {
-				wlr_scene_node_set_enabled(&view->tree->node, false);
-			}
+			wlr_scene_node_set_enabled(&view->frame->node, false);
 			view->slot = -1;
 		}
 		wm->slots[i] = NULL;
 	}
+	wm->visible_count = 0;
 }
 
 static void project_home(struct nested *wm) {
-	struct xdg_view *next[2] = {0};
+	struct xdg_view *next[HOME_WINDOWS] = {0};
 	int count = 0;
 	struct xdg_view *view;
-	/* The live list is in ID order. Overflow stays live in the catalog and
-	 * joins the projection when one of the two fixed slots opens. */
+	/* Overflow remains live and joins one of the two existing Home slots. */
 	wl_list_for_each(view, &wm->views, link) {
 		if (view->mapped && !view->assigned && view->tree != NULL) {
 			next[count++] = view;
-			if (count == 2) {
+			if (count == HOME_WINDOWS) {
 				break;
 			}
 		}
 	}
-	if (next[0] == wm->slots[0] && next[1] == wm->slots[1]) {
+	if (next[0] == wm->slots[0] && next[1] == wm->slots[1] && wm->visible_count <= HOME_WINDOWS) {
 		return;
 	}
 	clear_slots(wm);
+	wm->visible_count = count;
 	for (int i = 0; i < count; ++i) {
 		wm->slots[i] = next[i];
 		next[i]->slot = i;
+		wlr_scene_node_set_enabled(&next[i]->frame->node, true);
 		place_view(next[i]);
 	}
 }
@@ -505,32 +616,13 @@ static void project_home(struct nested *wm) {
 static void refresh_home(struct nested *wm) {
 	struct xdg_view *old[] = {wm->slots[0], wm->slots[1]};
 	project_home(wm);
-	for (int i = 0; i < 2; ++i) {
+	for (int i = 0; i < HOME_WINDOWS; ++i) {
 		if (old[i] != NULL && old[i]->slot < 0) {
 			nested_seat_forget(wm->seat, old[i]->toplevel->base->surface,
 				view_target(wm));
 		}
 	}
 	nested_seat_refresh(wm->seat);
-}
-
-static bool show_domain_member(struct xdg_view *view) {
-	for (int i = 0; i < 2; ++i) {
-		if (view->id != view->wm->members[i].id) {
-			continue;
-		}
-		if (view->epoch != view->wm->members[i].epoch) {
-			view->epoch = view->wm->members[i].epoch;
-			view->focused_at = 0;
-		}
-		if (view->mapped && view->tree != NULL) {
-			view->slot = i;
-			view->wm->slots[i] = view;
-			place_view(view);
-			return true;
-		}
-	}
-	return false;
 }
 
 static uint64_t domain_number(char *token) {
@@ -547,49 +639,97 @@ static uint64_t domain_number(char *token) {
 	return errno == 0 && value <= UINT64_MAX ? (uint64_t)value : 0;
 }
 
-static bool read_members(char **tail, struct domain_member members[2]) {
-	for (int i = 0; i < 2; ++i) {
+static bool read_members(char **tail, struct domain_member members[NODE_WINDOWS]) {
+	for (int i = 0; i < NODE_WINDOWS; ++i) {
 		char *id = strtok_r(NULL, " ", tail);
 		if (id == NULL) {
 			return true;
 		}
 		members[i].id = domain_number(id);
 		members[i].epoch = domain_number(strtok_r(NULL, " ", tail));
-		if (members[i].id == 0 || members[i].epoch == 0 ||
-				(i > 0 && members[i].id == members[0].id)) {
+		if (members[i].id == 0 || members[i].epoch == 0) {
 			return false;
+		}
+		for (int j = 0; j < i; ++j) {
+			if (members[i].id == members[j].id) {
+				return false;
+			}
 		}
 	}
 	return strtok_r(NULL, " ", tail) == NULL;
 }
 
-static void project_named(struct nested *wm, const struct domain_member members[2]) {
+static bool read_layout(const char *value, enum node_layout *layout) {
+	if (value == NULL) {
+		return false;
+	}
+	if (strcmp(value, "tiling") == 0) {
+		*layout = TILING;
+	} else if (strcmp(value, "stack") == 0) {
+		*layout = STACK;
+	} else if (strcmp(value, "float") == 0) {
+		*layout = FLOAT;
+	} else {
+		return false;
+	}
+	return true;
+}
+
+static void project_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS]) {
 	clear_slots(wm);
-	memcpy(wm->members, members, sizeof(wm->members));
-	for (int i = 0; i < 2; ++i) {
+	if (members != wm->members) {
+		memcpy(wm->members, members, sizeof(wm->members));
+	}
+	for (int i = 0; i < NODE_WINDOWS && members[i].id != 0; ++i) {
 		struct xdg_view *view = find_view(wm, members[i].id);
-		if (view != NULL) {
-			show_domain_member(view);
+		if (view == NULL) {
+			continue;
 		}
+		if (view->epoch != members[i].epoch) {
+			view->epoch = members[i].epoch;
+			view->focused_at = 0;
+			view->floating = (struct rect){0};
+		}
+		if (view->mapped && view->tree != NULL) {
+			view->slot = wm->visible_count;
+			wm->slots[wm->visible_count++] = view;
+		}
+	}
+	struct xdg_view *selected = best_view(wm, false);
+	struct xdg_view *top = selected != NULL ? selected : wm->slots[0];
+	for (int i = 0; i < wm->visible_count; ++i) {
+		struct xdg_view *view = wm->slots[i];
+		wlr_scene_node_set_enabled(&view->frame->node, wm->layout != STACK || view == top);
+		place_view(view);
+	}
+	if (wm->layout == FLOAT && selected != NULL) {
+		wlr_scene_node_raise_to_top(&selected->frame->node);
 	}
 }
 
-static void refresh_named(struct nested *wm, const struct domain_member members[2]) {
-	struct xdg_view *old[] = {wm->slots[0], wm->slots[1]};
+static void refresh_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS]) {
+	struct xdg_view *old[NODE_WINDOWS];
+	memcpy(old, wm->slots, sizeof(old));
 	project_named(wm, members);
 	struct wlr_surface *fallback = view_target(wm);
-	for (int i = 0; i < 2 && fallback == NULL; ++i) {
-		struct xdg_view *v = wm->slots[i];
-		if (v != NULL && v->tree != NULL && v->tree->node.enabled) {
-			fallback = v->toplevel->base->surface;
-		}
+	if (fallback == NULL && wm->slots[0] != NULL) {
+		fallback = wm->slots[0]->toplevel->base->surface;
 	}
-	for (int i = 0; i < 2; ++i) {
-		if (old[i] != NULL && old[i]->slot < 0) {
+	for (int i = 0; i < NODE_WINDOWS; ++i) {
+		if (old[i] != NULL && (old[i]->slot < 0 || !old[i]->frame->node.enabled)) {
 			nested_seat_forget(wm->seat, old[i]->toplevel->base->surface, fallback);
 		}
 	}
+	if (wm->drag != NULL && wm->drag->slot < 0) {
+		wm->drag = NULL;
+	}
 	nested_seat_refresh(wm->seat);
+}
+
+static void select_projection(struct nested *wm) {
+	wm->drag = NULL;
+	position_panel(wm->panel);
+	nested_seat_switch(wm->seat, view_target(wm));
 }
 
 static int on_domain_fd(int fd, uint32_t mask, void *data) {
@@ -598,7 +738,7 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		domain_disconnect(wm);
 		return 0;
 	}
-	char buf[160];
+	char buf[WM_PACKET_MAX];
 	ssize_t n = recv(fd, buf, sizeof(buf), MSG_DONTWAIT | MSG_TRUNC);
 	if (n < 0 && (errno == EAGAIN || errno == EINTR)) {
 		return 0;
@@ -623,18 +763,20 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 			domain_disconnect(wm);
 			return 0;
 		}
+		clear_slots(wm);
 		wm->home_active = true;
+		wm->overview_active = false;
 		project_home(wm);
-		nested_seat_switch(wm->seat, view_target(wm));
+		select_projection(wm);
 		domain_send(wm, "applied", serial);
 		return 0;
 	}
 	if (strcmp(op, "assigned") == 0) {
 		uint64_t id = domain_number(strtok_r(NULL, " ", &tail));
 		char *operation = strtok_r(NULL, " ", &tail);
-		struct domain_member members[2] = {0};
+		struct domain_member members[NODE_WINDOWS] = {0};
 		if (id == 0 || (operation != NULL &&
-				(strcmp(operation, "project") != 0 || wm->home_active ||
+				(strcmp(operation, "project") != 0 || !named_view(wm) ||
 				!read_members(&tail, members)))) {
 			domain_disconnect(wm);
 			return 0;
@@ -652,20 +794,43 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		domain_send(wm, "applied", serial);
 		return 0;
 	}
-	if (strcmp(op, "focus") != 0) {
+	if (strcmp(op, "overview") == 0 && strtok_r(NULL, " ", &tail) == NULL) {
+		clear_slots(wm);
+		wm->home_active = false;
+		wm->overview_active = true;
+	} else if (strcmp(op, "layout") == 0 && named_view(wm)) {
+		if (!read_layout(strtok_r(NULL, " ", &tail), &wm->layout) ||
+				strtok_r(NULL, " ", &tail) != NULL) {
+			domain_disconnect(wm);
+			return 0;
+		}
+		project_named(wm, wm->members);
+	} else if (strcmp(op, "next") == 0 && named_view(wm) && wm->layout == STACK &&
+			strtok_r(NULL, " ", &tail) == NULL) {
+		if (wm->visible_count > 0) {
+			struct xdg_view *top = best_view(wm, true);
+			int next = top != NULL ? (top->slot + 1) % wm->visible_count : 1 % wm->visible_count;
+			remember_focus(wm, wm->slots[next]->toplevel->base->surface);
+			project_named(wm, wm->members);
+		}
+	} else if (strcmp(op, "node") == 0 || strcmp(op, "focus") == 0) {
+		struct domain_member members[NODE_WINDOWS] = {0};
+		enum node_layout mode = TILING;
+		if ((strcmp(op, "node") == 0 && !read_layout(strtok_r(NULL, " ", &tail), &mode)) ||
+				!read_members(&tail, members)) {
+			domain_disconnect(wm);
+			return 0;
+		}
+		wm->home_active = false;
+		wm->overview_active = false;
+		wm->domain_active = true;
+		wm->layout = mode;
+		project_named(wm, members);
+	} else {
 		domain_disconnect(wm);
 		return 0;
 	}
-	struct domain_member members[2] = {0};
-	if (!read_members(&tail, members)) {
-		domain_disconnect(wm);
-		return 0;
-	}
-	/* Visibility and keyboard focus belong to this one WM event loop. */
-	wm->home_active = false;
-	wm->domain_active = true;
-	project_named(wm, members);
-	nested_seat_switch(wm->seat, view_target(wm));
+	select_projection(wm);
 	domain_send(wm, "applied", serial);
 	return 0;
 }
@@ -676,14 +841,14 @@ static void on_view_map(struct wl_listener *listener, void *data) {
 	view->mapped = true;
 	if (wm->home_active) {
 		refresh_home(wm);
-	} else if (wm->domain_active) {
-		show_domain_member(view);
-		nested_seat_refresh(wm->seat);
-	} else {
-		for (int i = 0; i < 2; ++i) {
+	} else if (named_view(wm)) {
+		refresh_named(wm, wm->members);
+	} else if (!wm->domain_active) {
+		for (int i = 0; i < HOME_WINDOWS; ++i) {
 			if (wm->slots[i] == NULL) {
 				view->slot = i;
 				wm->slots[i] = view;
+				wlr_scene_node_set_enabled(&view->frame->node, true);
 				place_view(view);
 				nested_seat_refresh(wm->seat);
 				fprintf(stderr, "WINDOW_MAPPED=%" PRIu64 " SLOT=%d\n", view->id, i);
@@ -695,26 +860,28 @@ static void on_view_map(struct wl_listener *listener, void *data) {
 }
 
 static void remove_view(struct xdg_view *view) {
-	if (view->wm->home_active) {
-		refresh_home(view->wm);
+	struct nested *wm = view->wm;
+	if (wm->drag == view) {
+		wm->drag = NULL;
+	}
+	if (wm->home_active) {
+		refresh_home(wm);
+		return;
+	}
+	if (named_view(wm)) {
+		refresh_named(wm, wm->members);
 		return;
 	}
 	if (view->slot < 0) {
 		return;
 	}
-	struct nested *wm = view->wm;
 	struct xdg_view *other = wm->slots[1 - view->slot];
 	wm->slots[view->slot] = NULL;
 	view->slot = -1;
-	if (view->tree != NULL) {
-		wlr_scene_node_set_enabled(&view->tree->node, false);
-	}
+	wlr_scene_node_set_enabled(&view->frame->node, false);
 	struct wlr_surface *fallback = other != NULL && !wm->cleaning &&
-		other->tree != NULL && other->tree->node.enabled ?
+		other->tree != NULL && other->frame->node.enabled ?
 		other->toplevel->base->surface : NULL;
-	if (wm->domain_active) {
-		fallback = wm->cleaning ? NULL : view_target(wm);
-	}
 	nested_seat_forget(wm->seat, view->toplevel->base->surface, fallback);
 }
 
@@ -757,8 +924,8 @@ static void on_view_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->destroy.link);
 	if (view->tree != NULL) {
 		wl_list_remove(&view->tree_destroy.link);
-		wlr_scene_node_destroy(&view->tree->node);
 	}
+	wlr_scene_node_destroy(&view->frame->node);
 	free(view);
 }
 
@@ -770,8 +937,14 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 		wl_resource_post_no_memory(toplevel->resource);
 		return;
 	}
-	view->tree = wlr_scene_xdg_surface_create(wm->app_tree, toplevel->base);
+	view->frame = wlr_scene_tree_create(wm->app_tree);
+	if (view->frame != NULL) {
+		view->tree = wlr_scene_xdg_surface_create(view->frame, toplevel->base);
+	}
 	if (view->tree == NULL) {
+		if (view->frame != NULL) {
+			wlr_scene_node_destroy(&view->frame->node);
+		}
 		free(view);
 		wl_resource_post_no_memory(toplevel->resource);
 		return;
@@ -780,7 +953,7 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 	view->toplevel = toplevel;
 	view->id = ++wm->next_window_id;
 	view->slot = -1;
-	wlr_scene_node_set_enabled(&view->tree->node, false);
+	wlr_scene_node_set_enabled(&view->frame->node, false);
 	view->tree_destroy.notify = on_view_tree_destroy;
 	wl_signal_add(&view->tree->node.events.destroy, &view->tree_destroy);
 	struct wlr_surface *surface = toplevel->base->surface;
@@ -918,7 +1091,8 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 
 	*reason = "could not create the nested input seat";
 	wm.seat = nested_seat_create(wm.server, parent,
-		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, move_cursor, &wm);
+		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, move_cursor,
+		start_view_move, update_view_move, &wm);
 	if (wm.seat == NULL) {
 		goto done;
 	}
@@ -934,7 +1108,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 			WL_EVENT_READABLE, on_domain_fd, &wm);
 		wm.domain_active = wm.home_active = true;
 		nested_seat_switch(wm.seat, NULL);
-		if (wm.domain_source == NULL || !domain_send(&wm, "ready_home", 0)) {
+		if (wm.domain_source == NULL || !domain_send(&wm, "ready_views", 0)) {
 			goto done;
 		}
 	}

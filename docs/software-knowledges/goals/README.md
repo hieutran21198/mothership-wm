@@ -17,6 +17,7 @@ Each criterion names the Flow scenario that demonstrates it.
 
 - [Launch Mothership Shell in COSMIC](launch-native-shell.md).
 - [Open a terminal or file manager from Command Center](open-native-apps.md).
+- [Enter Nodes from Overview and choose a layout](view-node-layouts.md).
 
 ## Template
 

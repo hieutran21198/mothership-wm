@@ -26,10 +26,10 @@ type controller struct {
 }
 
 type view struct {
-	title, message string
-	domains        []string
-	windows        []windowRow
-	enabled        bool
+	title, message, node, mode string
+	domains                    []string
+	windows                    []windowRow
+	enabled, overview          bool
 }
 
 type windowRow struct{ key, label string }
@@ -41,6 +41,8 @@ func (c *controller) render() {
 		switch {
 		case s.Selection.State == "acknowledged" && s.Selection.View == "home":
 			title = "Home"
+		case s.Selection.State == "acknowledged" && s.Selection.View == "overview":
+			title = "Overview"
 		case s.Selection.State == "acknowledged" && s.Selection.Domain != "":
 			title = "Node: " + s.Selection.Domain
 		case s.Selection.State == "not_selected":
@@ -50,6 +52,10 @@ func (c *controller) render() {
 		}
 	}
 	v := view{title: title, message: c.message, enabled: c.online && s.WMReady && !c.pending}
+	if c.online && s.Selection.State == "acknowledged" {
+		v.node, v.mode = s.Selection.Domain, s.Selection.Mode
+		v.overview = s.Selection.View == "overview"
+	}
 	if c.online {
 		v.domains = append([]string(nil), s.Domains...)
 		for _, w := range s.Windows {

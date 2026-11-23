@@ -25,6 +25,9 @@ struct nested_seat {
 	nested_hit_test hit_test;
 	nested_selected select_window;
 	nested_cursor_move move_cursor;
+	nested_move_start start_move;
+	nested_move_update update_move;
+	bool moving;
 	bool domain_mode;
 	bool keys_held[KEY_MAX + 1], keys_blocked[KEY_MAX + 1];
 	bool buttons_held[KEY_MAX + 1], buttons_blocked[KEY_MAX + 1];
@@ -105,6 +108,10 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target) {
 		return;
 	}
 	seat->domain_mode = true;
+	if (seat->moving) {
+		seat->update_move(seat->data, false, seat->x, seat->y);
+		seat->moving = false;
+	}
 	isolate_keys(seat);
 	memcpy(seat->buttons_blocked, seat->buttons_held, sizeof(seat->buttons_held));
 	// A button released after switching cannot complete an old grab.
@@ -149,6 +156,11 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->pointer_inside = false;
+		if (seat->moving) {
+			seat->update_move(seat->data, false, seat->x, seat->y);
+			seat->moving = false;
+			seat->buttons_blocked[BTN_LEFT] = seat->buttons_held[BTN_LEFT];
+		}
 		seat->move_cursor(seat->data, false, seat->x, seat->y);
 		pointer_focus(seat);
 	}
@@ -163,6 +175,10 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 	seat->x = wl_fixed_to_double(x);
 	seat->y = wl_fixed_to_double(y);
 	seat->move_cursor(seat->data, true, seat->x, seat->y);
+	if (seat->moving) {
+		seat->update_move(seat->data, true, seat->x, seat->y);
+		return;
+	}
 	struct nested_hit hit = pointer_focus(seat);
 	if (hit.surface != NULL) {
 		wlr_seat_pointer_notify_motion(seat->child, time, hit.x, hit.y);
@@ -187,7 +203,32 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	if (seat->domain_mode && !was_held && !seat->buttons_held[button]) {
 		return;
 	}
+	if (seat->moving) {
+		if (button != BTN_LEFT) {
+			seat->buttons_blocked[button] = seat->buttons_held[button];
+		}
+		if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_RELEASED) {
+			seat->update_move(seat->data, false, seat->x, seat->y);
+			seat->moving = false;
+			pointer_focus(seat);
+		}
+		return;
+	}
 	struct nested_hit hit = pointer_focus(seat);
+	if (hit.handle != NULL && button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
+		if (seat->panel_focus != NULL) {
+			isolate_keys(seat);
+			seat->panel_focus = NULL;
+		}
+		wlr_seat_pointer_end_grab(seat->child);
+		wlr_seat_pointer_clear_focus(seat->child);
+		seat->selected = hit.toplevel;
+		seat->select_window(seat->data, hit.toplevel);
+		keyboard_focus(seat);
+		seat->start_move(seat->data, hit, seat->x, seat->y);
+		seat->moving = true;
+		return;
+	}
 	/* Empty space has no input target. Cross-window drags are out of scope. */
 	if (hit.surface == NULL) {
 		return;
@@ -452,7 +493,8 @@ static const struct wl_registry_listener registry_listener = {
 
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
-		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor, void *data) {
+		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
+		nested_move_start start_move, nested_move_update update_move, void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -467,6 +509,8 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->hit_test = hit_test;
 	seat->select_window = selected;
 	seat->move_cursor = move_cursor;
+	seat->start_move = start_move;
+	seat->update_move = update_move;
 	seat->data = data;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {

@@ -27,11 +27,11 @@ type wmPeer struct {
 	session   *domain.Session
 	ready     bool
 	home      bool
+	views     bool
 	done      chan struct{}
 	applied   chan struct{}
 	pending   uint64
-	selecting bool
-	name      string
+	selection *app.Selection
 }
 
 type desktop struct {
@@ -99,7 +99,7 @@ func (d *desktop) track(ctx context.Context, c *net.UnixConn, session string) {
 	d.mu.Unlock()
 	defer func() {
 		d.mu.Lock()
-		if w.pending != 0 && w.selecting {
+		if w.pending != 0 && w.selection != nil {
 			d.service.MarkFocusUnknown(w.session)
 		}
 		w.pending = 0
@@ -124,11 +124,12 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !w.ready {
-		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home") {
+		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views") {
 			return false
 		}
 		// WM registers before serving any Wayland clients: its initial snapshot is empty.
-		w.home = a[0] == "ready_home"
+		w.views = a[0] == "ready_views"
+		w.home = w.views || a[0] == "ready_home"
 		w.ready = d.service.Ready(w.session, w.home)
 		return w.ready
 	}
@@ -144,8 +145,8 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 		if id != w.pending || w.applied == nil {
 			return false
 		}
-		if w.selecting {
-			d.service.AcknowledgeFocus(w.session, w.name)
+		if w.selection != nil {
+			d.service.AcknowledgeView(w.session, *w.selection)
 		}
 		w.pending = 0
 		close(w.applied)
@@ -190,7 +191,7 @@ func (d *desktop) assign(session string, id uint64, name string) error {
 		d.mu.Unlock()
 		return err
 	}
-	ack := d.beginApply(w, false, "")
+	ack := d.beginApply(w, nil)
 	packet := fmt.Sprintf("assigned %d %d", ack.serial, id)
 	if change.RefreshNamed {
 		packet += " project"
@@ -230,10 +231,19 @@ func (d *desktop) focus(name string) error {
 		d.mu.Unlock()
 		return errHomeUnavailable
 	}
-	ack := d.beginApply(w, true, name)
+	selection := app.Selection{Kind: app.SelectionAcknowledged, Domain: name, Home: name == ""}
+	if w.views && name != "" {
+		selection.Mode = d.service.NodeMode(name)
+		if selection.Mode == "" {
+			selection.Mode = domainipc.Tiling
+		}
+	}
+	ack := d.beginApply(w, &selection)
 	packet := fmt.Sprintf("focus %d", ack.serial)
 	if name == "" {
 		packet = fmt.Sprintf("home %d", ack.serial)
+	} else if w.views {
+		packet = fmt.Sprintf("node %d %s", ack.serial, selection.Mode)
 	}
 	for _, v := range members {
 		packet += fmt.Sprintf(" %d %d", v.ID, v.Epoch)
@@ -251,10 +261,10 @@ type applyAck struct {
 }
 
 // beginApply runs under d.mu; controlMu serializes assignments and selections.
-func (d *desktop) beginApply(w *wmPeer, selecting bool, name string) applyAck {
+func (d *desktop) beginApply(w *wmPeer, selection *app.Selection) applyAck {
 	d.next++
 	ack := applyAck{serial: d.next, done: make(chan struct{})}
-	w.pending, w.applied, w.selecting, w.name = ack.serial, ack.done, selecting, name
+	w.pending, w.applied, w.selection = ack.serial, ack.done, selection
 	return ack
 }
 
@@ -280,10 +290,54 @@ func (d *desktop) awaitApply(w *wmPeer, ack applyAck, packet string) bool {
 	}
 	if w.pending == ack.serial {
 		w.pending = 0
-		if w.selecting {
+		if w.selection != nil {
 			d.service.MarkFocusUnknown(w.session)
 		}
 	}
 	_ = w.conn.Close()
 	return false
+}
+
+// View actions join the existing serialized WM acknowledgement path.
+func (d *desktop) viewAction(method, name, mode string) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	w := d.wm
+	if w == nil || !w.ready || !w.views {
+		d.mu.Unlock()
+		return errors.New("WM does not support Node views")
+	}
+	var selection *app.Selection
+	var command string
+	if method == domainipc.OverviewMethod {
+		selection = &app.Selection{Kind: app.SelectionAcknowledged, Overview: true}
+		command = "overview"
+	} else {
+		active, err := d.service.ActiveNode(name)
+		if err != nil {
+			d.mu.Unlock()
+			return err
+		}
+		if method == domainipc.NextMethod {
+			if active.Mode != domainipc.Stack {
+				d.mu.Unlock()
+				return errors.New("Stack mode is not active")
+			}
+			command = "next"
+		} else {
+			active.Mode = mode
+			selection, command = &active, "layout"
+		}
+	}
+	ack := d.beginApply(w, selection)
+	packet := fmt.Sprintf("%s %d", command, ack.serial)
+	if command == "layout" {
+		packet += " " + mode
+	}
+	d.mu.Unlock()
+	if !d.awaitApply(w, ack, packet) {
+		return errOutcomeUnknown
+	}
+	return nil
 }

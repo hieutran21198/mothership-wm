@@ -410,3 +410,51 @@ func TestMoveReconcilesActiveNamedProjectionWithoutSelectingDestination(t *testi
 		t.Fatalf("move switched view or identity: %+v", snap)
 	}
 }
+
+func TestNodeOverviewAndLayoutRequireWMAcknowledgement(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	sub := s.request(1, "subscribe", "{}")
+	success(t, sub, 1)
+	send(t, wm, "ready_views")
+	next(t, sub, 1, app.WMChanged)
+	success(t, s.request(2, "create", `{"domain":"Dev"}`), 2)
+	next(t, sub, 2, app.DomainCreated)
+	success(t, s.request(3, "create", `{"domain":"Review"}`), 3)
+	next(t, sub, 3, app.DomainCreated)
+
+	apply := func(id uint64, method, body, command, suffix string) {
+		t.Helper()
+		c := s.request(id, method, body)
+		a := strings.Fields(read(t, wm))
+		if len(a) < 2 || a[0] != command || strings.Join(a[2:], " ") != suffix {
+			t.Fatalf("unexpected WM command: %v", a)
+		}
+		assertQuiet(t, c)
+		assertQuiet(t, sub)
+		send(t, wm, "applied "+a[1])
+		success(t, c, id)
+	}
+	want := func(rev uint64, v domainipc.Selection) {
+		t.Helper()
+		got := decode[domainipc.Selection](t, next(t, sub, rev, app.SelectionChanged))
+		if got != v {
+			t.Fatalf("selection %v; want %v", got, v)
+		}
+	}
+	apply(4, "focus", `{"domain":"Dev"}`, "node", "tiling")
+	want(4, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "tiling"})
+	apply(5, "layout", `{"domain":"Dev","mode":"stack"}`, "layout", "stack")
+	want(5, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"})
+	apply(6, "stack.next", `{"domain":"Dev"}`, "next", "")
+	assertQuiet(t, sub)
+	apply(7, "overview", `{}`, "overview", "")
+	want(6, domainipc.Selection{State: app.SelectionAcknowledged, View: "overview"})
+	if r := reply(t, s.request(8, "layout", `{"domain":"Dev","mode":"float"}`), 8); r.Error == nil {
+		t.Fatal("layout accepted for an inactive Node")
+	}
+	apply(9, "focus", `{"domain":"Review"}`, "node", "tiling")
+	want(7, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "tiling"})
+	apply(10, "focus", `{"domain":"Dev"}`, "node", "stack")
+	want(8, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"})
+}

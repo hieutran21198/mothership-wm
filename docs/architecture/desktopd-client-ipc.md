@@ -21,6 +21,9 @@ has either a `body` or an `error` with `code` and `message`.
 | `assign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7,"domain":"Dev"}` | `{}` |
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
 | `home` | `{}` | `{}` after WM acknowledgement |
+| `overview` | `{}` | `{}` after clearing the app projection in WM |
+| `layout` | `{"domain":"Dev","mode":"float"}` | `{}` after applying the mode in the currently selected Node |
+| `stack.next` | `{"domain":"Dev"}` | `{}` after advancing only the current Node's Stack |
 
 For example, request `{"id":12,"method":"create","body":{"domain":"Dev"}}`
 gets `{"id":12,"body":{}}` on success. Domain names are 1–32 ASCII
@@ -45,8 +48,12 @@ The snapshot has `revision`, `wm_ready`, `domains`, `windows`,
 `mapped`, and `domain` when assigned. The selection has `state`
 (`not_selected`, `acknowledged`, or `unknown`) and includes `domain`
 only for an acknowledged named Domain. Confirmed Home is
-`{"state":"acknowledged","view":"home"}`. Named selection, unknown and not
-selected retain their existing shapes. Derive Inbox from mapped windows
+`{"state":"acknowledged","view":"home"}`. Confirmed Overview has the same shape with `"view":"overview"` and no
+Domain or mode. Named selection from a current WM adds `mode` (`tiling`,
+`float` or `stack`). Mode changes use the existing selection event; Next
+does not create a false selection event. A mode command names the Node it
+intends to change; a stale target is rejected. Unknown and not selected
+retain their existing shapes. Derive Inbox from mapped windows
 without a `domain`; any beyond the first two by ID wait for a Home slot,
 but remain in the catalog and can be assigned directly.
 
@@ -66,3 +73,8 @@ revision by one. On EOF or a gap, mark the local view stale and subscribe
 again. Revisions are scoped to the running daemon; no update replay. The
 daemon bounds each subscriber queue and drops a slow subscriber rather
 than blocking a writer or losing an event silently.
+
+
+The matching WM's private text authoring accepts at most eight Window
+ID/epoch pairs for a named Node; full-width decimal IDs fit within its
+512-byte packet bound for both select and assignment reprojection.

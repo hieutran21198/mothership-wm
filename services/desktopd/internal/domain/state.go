@@ -6,11 +6,13 @@ import (
 	"sort"
 )
 
+const MaxNodeWindows = 8
+
 var (
 	ErrStaleSession  = errors.New("unknown WM session")
 	ErrUnknownWindow = errors.New("unknown Window ID")
 	ErrUnknownDomain = errors.New("unknown Domain")
-	ErrDomainFull    = errors.New("Domain already has two live members")
+	ErrDomainFull    = errors.New("Node already has eight live members")
 )
 
 // State is used by one serialized owner. Domain names are independent of any
@@ -103,7 +105,7 @@ func (s *State) Assign(session *Session, sessionID string, id uint64, name strin
 			count++
 		}
 	}
-	if count >= 2 {
+	if count >= MaxNodeWindows {
 		return ErrDomainFull
 	}
 	session.epoch++
@@ -112,8 +114,8 @@ func (s *State) Assign(session *Session, sessionID string, id uint64, name strin
 	return nil
 }
 
-// Windows returns ordered copies so the projection into the two fixed slots
-// is deterministic. Unmapped members remain in that projection.
+// Windows returns ordered copies for deterministic projection, including
+// temporarily unmapped members.
 func (s *Session) Windows() []Window {
 	out := make([]Window, 0, len(s.windows))
 	for _, w := range s.windows {
