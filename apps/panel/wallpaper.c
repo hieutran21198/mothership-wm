@@ -37,16 +37,28 @@ static cairo_status_t read_png(void *data, unsigned char *dest, unsigned int len
 	return CAIRO_STATUS_SUCCESS;
 }
 
-int wallpaper_set(const unsigned char *data, size_t size, int contain) {
+void *wallpaper_prepare(const unsigned char *data,size_t size) {
 	struct png_stream png = {data, size};
 	cairo_surface_t *image = cairo_image_surface_create_from_png_stream(read_png, &png);
-	g_clear_pointer(&wallpaper, cairo_surface_destroy);
 	if (cairo_surface_status(image) != CAIRO_STATUS_SUCCESS) {
 		cairo_surface_destroy(image);
-		return 0;
+		return NULL;
 	}
-	wallpaper = image;
-	contain_image = contain != 0;
+	return image;
+}
+
+void wallpaper_replace(void *prepared,int contain) {
+	g_clear_pointer(&wallpaper,cairo_surface_destroy);
+	wallpaper=prepared;
+	contain_image=contain!=0;
+	retained_wallpaper_source(wallpaper_accelerated,wallpaper,contain_image);
+	if (wallpaper_canvas) gtk_widget_queue_draw(wallpaper_canvas);
+}
+
+int wallpaper_set(const unsigned char *data,size_t size,int contain) {
+	void *image=wallpaper_prepare(data,size);
+	if (!image) return 0;
+	wallpaper_replace(image,contain);
 	return 1;
 }
 
@@ -117,15 +129,13 @@ void wallpaper_show(void) {
 	GtkWindow *window=paint_only_layer("mothership-wallpaper",
 		"Mothership Wallpaper", draw_wallpaper, &wallpaper_canvas);
 	g_signal_connect(wallpaper_canvas,"resize",G_CALLBACK(viewport_resized),NULL);
-	if (wallpaper) {
-		GtkWidget *overlay=gtk_overlay_new();
-		g_object_ref(wallpaper_canvas);
-		gtk_window_set_child(window, overlay);
-		gtk_overlay_set_child(GTK_OVERLAY(overlay),wallpaper_canvas);
-		g_object_unref(wallpaper_canvas);
-		wallpaper_accelerated=retained_wallpaper_new(wallpaper,contain_image,wallpaper_canvas);
-		gtk_overlay_add_overlay(GTK_OVERLAY(overlay),wallpaper_accelerated);
-		retained_wallpaper_update(wallpaper_accelerated, frost_enabled, frost_margin);
-	}
+	GtkWidget *overlay=gtk_overlay_new();
+	g_object_ref(wallpaper_canvas);
+	gtk_window_set_child(window, overlay);
+	gtk_overlay_set_child(GTK_OVERLAY(overlay),wallpaper_canvas);
+	g_object_unref(wallpaper_canvas);
+	wallpaper_accelerated=retained_wallpaper_new(wallpaper,contain_image,wallpaper_canvas);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),wallpaper_accelerated);
+	retained_wallpaper_update(wallpaper_accelerated, frost_enabled, frost_margin);
 	gtk_widget_set_visible(GTK_WIDGET(window), TRUE);
 }

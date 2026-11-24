@@ -23,6 +23,7 @@ extern void gtk_layer_set_anchor(GtkWindow *, enum layer_edge, gboolean);
 extern void gtk_layer_set_margin(GtkWindow *, enum layer_edge, int);
 extern void gtk_layer_set_keyboard_mode(GtkWindow *, enum layer_keys);
 extern void panelAction(int, char *, char *);
+extern void panelReloadConfig(void);
 extern char *panelSaveMapSettings(char *, int, int, int, int, int, int);
 
 static GtkWindow *window;
@@ -499,6 +500,7 @@ static unsigned modal_shortcut(guint key) {
 	switch(gdk_keyval_to_lower(key)) {
 	case GDK_KEY_m: return 1;
 	case GDK_KEY_h: return 2;
+	case GDK_KEY_r: return 4;
 	default: return 0;
 	}
 }
@@ -526,6 +528,19 @@ static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 		return (navigating && map_hud_close_profile()) || had_pointer;
 	}
 	unsigned shortcut=modal_shortcut(key);
+	if (shortcut==4) {
+		// Closing Map leaves an intentionally blank, shell-owned Overview
+		// instead of exposing the apps in Home / Inbox.
+		gboolean blank_shell=blank_home || (overview && !map_visible);
+		if (!enabled || !blank_shell || !gtk_window_is_active(window) || expanded ||
+				navigating || navigation_timeout || editing_input() ||
+				(mods & (GDK_SHIFT_MASK|GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK|GDK_META_MASK|GDK_HYPER_MASK))) return FALSE;
+		if (!(shortcut_held&shortcut)) {
+			shortcut_held|=shortcut;
+			panelReloadConfig();
+		}
+		return TRUE;
+	}
 	if (shortcut && !(mods & (GDK_SHIFT_MASK|GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK|GDK_META_MASK|GDK_HYPER_MASK))
 			&& !editing_input() && !map_settings_active) {
 		if (shortcut_held & shortcut) return TRUE;

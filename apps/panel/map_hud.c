@@ -137,7 +137,15 @@ static gboolean map_icon_rasterize(struct map_icon *icon, int pixels) {
 	return TRUE;
 }
 
-int map_hud_icon(const char *name, const unsigned char *data, size_t size) {
+void *map_hud_icons_new(void) {
+	return g_hash_table_new_full(g_str_hash,g_str_equal,g_free,map_icon_free);
+}
+
+void map_hud_icons_free(void *set) {
+	g_hash_table_unref(set);
+}
+
+int map_hud_icon_add(void *set,const char *name,const unsigned char *data,size_t size) {
 	// No base URI for external files. Validate once, then cache just one
 	// raster per SVG, with 2× sampling at larger zoom levels.
 	GError *err = NULL;
@@ -152,11 +160,16 @@ int map_hud_icon(const char *name, const unsigned char *data, size_t size) {
 		map_icon_free(icon);
 		return 0;
 	}
-	if (icons == NULL) {
-		icons = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, map_icon_free);
-	}
-	g_hash_table_replace(icons, g_strdup(name), icon);
+	g_hash_table_replace(set,g_strdup(name),icon);
 	return 1;
+}
+
+void map_hud_icons_replace(void *set) {
+	g_clear_pointer(&icons,g_hash_table_unref);
+	icons=set;
+	clear_intro_labels();
+	if (annotations) gtk_widget_queue_draw(annotations);
+	if (route_layer) gtk_widget_queue_draw(route_layer);
 }
 
 struct plane { double x, y, width, height, step; };

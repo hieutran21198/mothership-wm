@@ -25,7 +25,10 @@ void map_hud_click(double x,double y,void (*fly)(const char *));
 void map_hud_configure(const char *, double, const char *, const char *, const char *, const char *);
 void map_hud_set_spacing(const char *, int outer, int inner, gboolean frosted);
 int map_hud_set_font(const char *, double);
-int map_hud_icon(const char *, const unsigned char *, size_t);
+void *map_hud_icons_new(void);
+void map_hud_icons_free(void *);
+int map_hud_icon_add(void *,const char *,const unsigned char *,size_t);
+void map_hud_icons_replace(void *);
 void map_hud_update(const char *names, GHashTable *positions, const char *node, const char *profile_data,
 	gboolean overview, gboolean visible);
 void map_hud_show_fps(gboolean enabled);

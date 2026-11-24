@@ -37,10 +37,14 @@ inner padding, or select Clear/Frosted and the camera animation. Frost is
 clipped to the Map outline
 and only affects the wallpaper below apps; it is off while the Map is hidden.
 A valid change redraws without a view/focus request.
-Cancel restores the previous appearance. Save persists only those overrides
-locally; the theme and wallpaper stay separate. A failed write leaves the
-form visible with an error. The next session uses the saved values or its
-defaults when the override is invalid.
+Cancel restores the previous appearance. Save patches only changed keys in
+`center_map` in the [canonical user configuration](../../../apps/panel/CENTER_MAP.md#user-configuration);
+it preserves wallpaper and other modules. A failed write leaves the
+form visible with an error. On launch or on **R** from blank Home with
+Command Center closed, the saved patch applies over defaults in code.
+An invalid manual reload keeps the running configuration, view and camera.
+External edits are not watched, and R does not reload config in Map View,
+Command Center, Settings or apps.
 
 ### F-MAP-4
 

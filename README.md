@@ -18,7 +18,8 @@ This builds and starts the three local parts, opens Home and shows the
 **Command Center** entry. Close the outer Mothership window or press Ctrl+C in
 the launch terminal to end this private nested session.
 The [local Shell guide](apps/panel/COMMAND_CENTER.md) covers the controls
-and disposable application testing.
+and disposable application testing. User preferences live in
+[`~/config/.mothership/config.json`](apps/panel/CENTER_MAP.md#user-configuration).
 
 ## Development
 

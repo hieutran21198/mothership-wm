@@ -5,11 +5,8 @@ Node labels in Overview. Only Nodes move when the map pans; the wallpaper,
 frame and app windows do not. Node anchors are fixed in map space and their
 paint is clipped inside the frame. **Command Center → Map settings** keeps
 Clear/Frosted, spacing, camera animation and the optional debug readout.
-The sample theme is optional:
-
-```sh
-MOTHERSHIP_MAP_THEME="$PWD/apps/panel/themes/orbital.json" devenv shell --offline -- task mothership:run
-```
+Use [the user configuration](#user-configuration) to set preferences.
+The [sample theme](themes/orbital.json) is a developer fixture.
 
 The launcher prints `MOTHERSHIP_WAYLAND=/…/mothership-…/wayland-…`. In a second
 terminal, use the containing directory as the runtime directory **for these
@@ -38,7 +35,7 @@ Session wallpaper is a separate paint-only surface under apps, the HUD and
 Command Center. It covers the canvas without stretching in Home, Overview
 and Node workspaces, and remains when the HUD is hidden.
 
-Theme keys are optional. Restart to reload. `background`, `grid`, `text`
+Theme keys are optional in `center_map`. Apply external edits from blank Home as described below. `background`, `grid`, `text`
 and `stroke` use `#RRGGBB`. The `opacity` fraction (0–1) applies only to
 the glass tint, not the grid, symbols or labels. Default and sample opacity
 are 0. The border defaults to 24 logical px inside the viewport on every side,
@@ -135,10 +132,9 @@ last saved values. A save failure leaves the form open.
 **WASD speed** has minus/plus steps of 10 percentage points, from 50%
 to 200%; 100% is 530.4 logical screen px/s. Change the displayed percentage,
 then **Save** to use it on the next movement without restarting. **Cancel**
-restores the saved speed. The optional `pan_speed_percent` integer in the
-Map theme sets the default (100 if absent or invalid). Save writes an
-override to `mothership-wm/center-map.json` under `$XDG_CONFIG_HOME`;
-**Reset** and Save remove that override so future theme defaults apply.
+restores the saved speed. `center_map.pan_speed_percent` overrides the
+code default of 100 or the speed supplied by an explicit developer theme.
+**Reset** and Save remove the user override.
 This changes only WASD, not Connect.
 
 **Camera animation** controls WASD and wheel movement, not workspace selection:
@@ -158,11 +154,10 @@ FPS**, which counts changed Node-layer render samples, not display
 presentation or the monitor refresh rate. The readout has no input target
 and does not create a continuous redraw.
 
-These overrides use `mothership-wm/center-map.json` under
-`$XDG_CONFIG_HOME` (normally `~/.config`). Only these overrides
-are written; the theme JSON, font, icons, tint and wallpaper file are
-not modified. Unset or invalid overrides retain their defaults from
-the theme and map layout. If the selected wallpaper is missing, the procedural fallback stays clear.
+Save patches the changed keys in the canonical `center_map` section.
+It does not rewrite the meaning of other preferences or change wallpaper assets,
+font files, or developer fixtures. Unset or out-of-range values fall back to
+the defaults.
 Spacing uses logical px (outer 0–96, inner 0–64)
 and is capped for extremely small viewports without rewriting preferences.
 
@@ -174,21 +169,58 @@ reference size and clamps against actual viewport dimensions. The
 wallpaper uses fixed screen-space cover (or configured Contain). A map pan
 does not invalidate the wallpaper, frame or grid.
 
-## Session wallpaper
+## User configuration
 
-The bundled frost-ring PNG is the default. For a separate configuration,
-copy [themes/wallpaper.json](themes/wallpaper.json) and set
-`MOTHERSHIP_WALLPAPER_CONFIG` to the config path before launching:
+Keep preferences in **`~/config/.mothership/config.json`**. Modules and
+keys use lowercase snake case; `center_map` and `wallpaper` are separate
+top-level modules. Include only overrides. Missing sections and keys use
+defaults in code. For example:
 
-```sh
-MOTHERSHIP_WALLPAPER_CONFIG="$PWD/apps/panel/themes/wallpaper.json" ./bin/mothership
+```json
+{
+  "center_map": {
+    "opacity": 0,
+    "animation": 0,
+    "frosted": false,
+    "pan_speed_percent": 120
+  },
+  "wallpaper": {
+    "path": "assets/my-wallpaper.png",
+    "mode": "contain"
+  }
+}
 ```
 
-`path` is a local PNG path, relative to this JSON or absolute. Omit it to
-use the bundled image. `mode` is `cover` (fill the canvas, crop if needed)
-or `contain` (show the whole image with dark bars if needed). Both center
-the image without stretching. Mode defaults to `cover` if absent or invalid.
-A missing or malformed configuration uses the bundled image; an unreadable or
-invalid selected PNG falls back to the bundled image (procedural only if unavailable).
-The selected PNG is limited to 4096 px on either axis. Wallpaper
-loads once on launch and is never applied to COSMIC itself.
+Zero and false are valid where supported. Save in Map settings writes
+only to this file, including on first use. It does not alter other module
+fields. If the file is malformed or managed through a symlink, UI Save
+reports an error instead of replacing it. Startup never creates it.
+From **blank Home** with Command Center closed, press **R** to reread the
+file and its configured SVG and PNG assets. It does not restart the
+session, reselect a workspace, or reset the Map camera. A rejected
+reload keeps the running configuration and logs the error. Saving a file
+does not reload it automatically. R is not a shortcut in Map View,
+Command Center, Settings, or apps. Runtime sockets and desktopd's saved
+Node data stay separate from preferences.
+
+Compatibility: an explicit `MOTHERSHIP_MAP_THEME` or
+`MOTHERSHIP_WALLPAPER_CONFIG` supplies a launch-specific baseline for
+that module; keys in the canonical file take precedence. Those developer
+paths and their relative assets are never copied or written by Settings.
+Before the canonical file exists, the app also accepts legacy settings at
+`$XDG_CONFIG_HOME/mothership-wm/center-map.json` (normally under
+`~/.config`). The first Settings Save carries the legacy overrides into
+the canonical file and leaves the old file unchanged. If you create the new
+file yourself, include any old overrides you still want: missing keys never
+fall back to the old settings file once a canonical file exists.
+
+## Session wallpaper
+
+Set `wallpaper.path` to a local PNG, relative to the configuration file's
+directory or absolute. Leave it unset for the baseline above, or set it to
+an empty string to choose the bundled Frost Ring explicitly.
+`wallpaper.mode` is `cover` (default; crop to fill) or `contain` (fit
+the whole image, with bars if needed). Both center without stretching.
+An unreadable or invalid selected PNG falls back to the bundled image
+(procedural only if unavailable). The selected PNG is limited to 4096 px
+on either axis. This affects only Mothership, not the COSMIC wallpaper.

@@ -14,7 +14,12 @@ void panel_post(const char *view, const char *message, const char *domains,
 void map_hud_configure(const char *, double, const char *, const char *, const char *, const char *);
 int wallpaper_set(const unsigned char *, size_t, int contain);
 void wallpaper_show(void);
+void *wallpaper_prepare(const unsigned char *,size_t);
+void wallpaper_replace(void *,int contain);
 int map_hud_set_font(const char *, double);
-int map_hud_icon(const char *, const unsigned char *, size_t);
+void *map_hud_icons_new(void);
+void map_hud_icons_free(void *);
+int map_hud_icon_add(void *,const char *,const unsigned char *,size_t);
+void map_hud_icons_replace(void *);
 
 #endif

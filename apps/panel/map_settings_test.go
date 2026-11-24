@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"mothership-wm/internal/userconfig"
 )
 
 func TestMapSettingsOverlayKeepsSelectedTheme(t *testing.T) {
@@ -213,4 +215,11 @@ func TestPanSpeedThemeAndUserOverride(t *testing.T) {
 	if bad.PanSpeed != 100 || bad.FontSize != 19 {
 		t.Fatalf("bad speed corrupted defaults or font: %+v", bad)
 	}
+}
+
+func saveMapSettings(path string, settings mapSettings) error {
+	if err := validateMapSettings(settings); err != nil {
+		return err
+	}
+	return userconfig.Write(path, settings)
 }

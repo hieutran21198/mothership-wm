@@ -130,6 +130,7 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int margin=map_frame_margin(w,h,p->margin);
 	int padding=MIN(p->padding,(MIN(w,h)-2*margin-16)/2);
 	if (p->wallpaper) {
+		if (!p->texture) return;
 		const GdkRGBA bg={.023,.047,.081,1};
 		gtk_snapshot_append_color(snap,&bg,&screen);
 		double iw=gdk_texture_get_width(p->texture), ih=gdk_texture_get_height(p->texture);
@@ -169,7 +170,7 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 }
 
 static void prepare_frost(RetainedPaint *p) {
-	if (!p->context || !p->frost || p->blur_attempted) return;
+	if (!p->context || !p->image || !p->frost || p->blur_attempted) return;
 	p->blur_attempted=TRUE;
 	p->blur=map_gl_frost_texture(p->context,p->image);
 }
@@ -180,9 +181,9 @@ static void retained_realize(GtkWidget *widget) {
 	p->context=map_gpu_context(widget,p->wallpaper?"wallpaper":"grid");
 	if (!p->context) return;
 	if (p->wallpaper) {
-		if (!p->texture) p->texture=image_texture(p->image);
+		if (!p->texture && p->image) p->texture=image_texture(p->image);
 		prepare_frost(p);
-		gtk_widget_set_opacity(p->fallback,0);
+		gtk_widget_set_opacity(p->fallback,p->texture?0:1);
 	} else {
 		*p->grid_ready=TRUE;
 		gtk_widget_queue_draw(p->fallback);
@@ -221,10 +222,25 @@ static void retained_paint_init(RetainedPaint *p) {
 
 GtkWidget *retained_wallpaper_new(cairo_surface_t *image,gboolean contain,GtkWidget *fallback) {
 	RetainedPaint *p=g_object_new(retained_paint_get_type(),NULL);
-	p->image=cairo_surface_reference(image);
+	p->image=image?cairo_surface_reference(image):NULL;
 	p->wallpaper=TRUE;p->contain=contain;
 	p->fallback=g_object_ref(fallback);
 	return GTK_WIDGET(p);
+}
+
+void retained_wallpaper_source(GtkWidget *widget,cairo_surface_t *image,gboolean contain) {
+	if (!widget) return;
+	RetainedPaint *p=(RetainedPaint *)widget;
+	g_clear_object(&p->texture);
+	g_clear_object(&p->blur);
+	g_clear_pointer(&p->image,cairo_surface_destroy);
+	p->image=image?cairo_surface_reference(image):NULL;
+	p->contain=contain;
+	p->blur_attempted=FALSE;
+	if (p->context && p->image) p->texture=image_texture(p->image);
+	gtk_widget_set_opacity(p->fallback,p->texture?0:1);
+	prepare_frost(p);
+	gtk_widget_queue_draw(widget);
 }
 
 void retained_wallpaper_update(GtkWidget *widget,gboolean frost,int margin) {

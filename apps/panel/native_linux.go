@@ -24,11 +24,13 @@ import (
 	"unsafe"
 
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/internal/userconfig"
 )
 
 var active *controller
 var apps *appLauncher
-var mapSettingsPath string
+var preferencePaths panelConfigPaths
+var preferences panelPreferences
 
 func main() {
 	nested := flag.String("nested", "", "distinct child Wayland socket reported by Mothership")
@@ -58,8 +60,15 @@ func main() {
 		cleanupTypography()
 		fail(fmt.Errorf("could not open native Command Center in the nested WM"))
 	}
-	configureWallpaper()
-	configureMap()
+	home, _ := os.UserHomeDir()
+	preferencePaths = panelConfigPaths{user: userconfig.Path(home), theme: os.Getenv("MOTHERSHIP_MAP_THEME"), wallpaper: os.Getenv("MOTHERSHIP_WALLPAPER_CONFIG")}
+	if dir, err := os.UserConfigDir(); err == nil {
+		preferencePaths.legacyMap = filepath.Join(dir, "mothership-wm", "center-map.json")
+	}
+	preferences = loadPanelPreferences(preferencePaths, configWarning)
+	configureWallpaper(preferences.wallpaperSource, preferences.wallpaper)
+	icons, _ := prepareMapIcons(preferences, configWarning, false)
+	configureMap(preferences, icons)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	active = &controller{ctx: ctx, path: path, show: showNative}
 	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
@@ -116,10 +125,8 @@ func showNative(v view) {
 	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], enabled, overview, mapVisible, blankHome, ready, C.uint64_t(v.connectFailed), C.uint64_t(v.preparedRelay))
 }
 
-func configureWallpaper() {
-	path := os.Getenv("MOTHERSHIP_WALLPAPER_CONFIG")
+func configureWallpaper(path string, cfg wallpaperConfig) {
 	warn := func(f string, a ...any) { fmt.Fprintf(os.Stderr, "mothership-wallpaper: "+f+"\n", a...) }
-	cfg := loadWallpaperConfig(path, warn)
 	data, err := readWallpaper(path, cfg.Path)
 	var contain C.int
 	if cfg.Mode == "contain" {
@@ -144,10 +151,9 @@ func configureWallpaper() {
 	C.wallpaper_show()
 }
 
-func configureMap() {
-	path := os.Getenv("MOTHERSHIP_MAP_THEME")
+func configureMap(p panelPreferences, icons unsafe.Pointer) {
 	warn := func(f string, a ...any) { fmt.Fprintf(os.Stderr, "mothership-center-map: "+f+"\n", a...) }
-	theme := loadMapTheme(path, warn)
+	theme := p.theme
 	colors := []string{theme.Background, theme.Grid, theme.Text, theme.Stroke, theme.BorderColor}
 	cs := make([]*C.char, len(colors))
 	for i, color := range colors {
@@ -155,14 +161,7 @@ func configureMap() {
 		defer C.free(unsafe.Pointer(cs[i]))
 	}
 	C.map_hud_configure(cs[0], C.double(theme.Opacity), cs[1], cs[2], cs[3], cs[4])
-	settings := defaultMapSettings(theme.BorderColor)
-	if dir, err := os.UserConfigDir(); err == nil {
-		mapSettingsPath = filepath.Join(dir, "mothership-wm", "center-map.json")
-		settings, err = loadMapSettings(mapSettingsPath, settings)
-		if err != nil {
-			warn("settings: %v; using theme defaults", err)
-		}
-	}
+	settings := p.settings
 	border := C.CString(settings.BorderColor)
 	var frosted, showFPS C.int
 	if settings.Frosted {
@@ -178,26 +177,83 @@ func configureMap() {
 		warn("font family %q is not available; using Mothership shell font", theme.FontFamily)
 	}
 	C.free(unsafe.Pointer(family))
-	for node, asset := range theme.Icons {
-		data, err := readMapIcon(path, asset)
-		if err != nil {
-			warn("node %q icon %q: %v; using diamond", node, asset, err)
-			continue
+	C.map_hud_icons_replace(icons)
+}
+
+func configWarning(f string, a ...any) {
+	fmt.Fprintf(os.Stderr, "mothership-config: "+f+"\n", a...)
+}
+
+func prepareMapIcons(p panelPreferences, warn func(string, ...any), strict bool) (unsafe.Pointer, error) {
+	set := C.map_hud_icons_new()
+	for node, asset := range p.theme.Icons {
+		data, err := readMapIcon(p.iconSource, asset)
+		if err == nil && len(data) != 0 {
+			name := C.CString(node)
+			ok := C.map_hud_icon_add(set, name, (*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+			C.free(unsafe.Pointer(name))
+			if ok == 0 {
+				err = fmt.Errorf("not a renderable SVG")
+			}
+		} else if err == nil {
+			err = fmt.Errorf("empty SVG")
 		}
-		name, svg := C.CString(node), C.CBytes(data)
-		ok := C.map_hud_icon(name, (*C.uchar)(svg), C.size_t(len(data)))
-		C.free(unsafe.Pointer(name))
-		C.free(svg)
-		if ok == 0 {
-			warn("node %q icon %q is not a renderable SVG; using diamond", node, asset)
+		if err != nil {
+			if strict {
+				C.map_hud_icons_free(set)
+				return nil, fmt.Errorf("node %q icon %q: %w", node, asset, err)
+			}
+			warn("node %q icon %q: %v; using diamond", node, asset, err)
 		}
 	}
+	return set, nil
+}
+
+//export panelReloadConfig
+func panelReloadConfig() {
+	// Invoked on the locked GTK thread only from blank Home. Validate and
+	// prepare every replacement before touching the running configuration.
+	var bad error
+	next := loadPanelPreferences(preferencePaths, func(f string, a ...any) {
+		if bad == nil {
+			bad = fmt.Errorf(f, a...)
+		}
+	})
+	if bad != nil {
+		configWarning("reload kept current settings: %v", bad)
+		return
+	}
+	icons, err := prepareMapIcons(next, configWarning, true)
+	if err != nil {
+		configWarning("reload kept current settings: %v", err)
+		return
+	}
+	data, err := readWallpaper(next.wallpaperSource, next.wallpaper.Path)
+	if err != nil {
+		C.map_hud_icons_free(icons)
+		configWarning("reload kept current settings: wallpaper %q: %v", next.wallpaper.Path, err)
+		return
+	}
+	pix := C.wallpaper_prepare((*C.uchar)(unsafe.Pointer(&data[0])), C.size_t(len(data)))
+	if pix == nil {
+		C.map_hud_icons_free(icons)
+		configWarning("reload kept current settings: image is not a renderable PNG")
+		return
+	}
+	var contain C.int
+	if next.wallpaper.Mode == "contain" {
+		contain = 1
+	}
+	C.wallpaper_replace(pix, contain)
+	configureMap(next, icons)
+	preferences = next
+	configWarning("reloaded user configuration")
 }
 
 //export panelSaveMapSettings
 func panelSaveMapSettings(border *C.char, outer, inner, frosted, animation, showFPS, panOverride C.int) *C.char {
 	settings := mapSettings{BorderColor: C.GoString(border), OuterMargin: int(outer), InnerPadding: int(inner), Frosted: frosted != 0, Animation: int(animation), ShowFPS: showFPS != 0, PanSpeedOverride: int(panOverride)}
-	if err := saveMapSettings(mapSettingsPath, settings); err != nil {
+	if err := preferences.saveMap(preferencePaths.user, settings); err != nil {
 		return C.CString("Could not save settings: " + err.Error())
 	}
 	return nil

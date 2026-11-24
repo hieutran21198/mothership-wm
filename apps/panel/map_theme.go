@@ -70,26 +70,28 @@ func loadMapTheme(path string, warn func(string, ...any)) mapTheme {
 		warn("theme %q: %v; using defaults", path, err)
 		return defaults
 	}
-	t := defaults
-	// Decode against a padded struct so absent values retain their defaults,
-	// while explicit 0 opacity is never mistaken for missing.
-	type rawTheme struct {
-		Background  *string           `json:"background"`
-		Opacity     *float64          `json:"opacity"`
-		Grid        *string           `json:"grid"`
-		Text        *string           `json:"text"`
-		BorderColor *string           `json:"border_color"`
-		Stroke      *string           `json:"stroke"`
-		FontFamily  *string           `json:"font_family"`
-		FontSize    *float64          `json:"font_size"`
-		PanSpeed    json.RawMessage   `json:"pan_speed_percent"`
-		Icons       map[string]string `json:"icons"`
-	}
 	raw, err := domainipc.Decode[rawTheme](data)
 	if err != nil {
 		warn("theme %q: %v; using defaults", path, err)
 		return defaults
 	}
+	return applyMapTheme(defaults, raw, warn)
+}
+
+type rawTheme struct {
+	Background  *string           `json:"background"`
+	Opacity     *float64          `json:"opacity"`
+	Grid        *string           `json:"grid"`
+	Text        *string           `json:"text"`
+	BorderColor *string           `json:"border_color"`
+	Stroke      *string           `json:"stroke"`
+	FontFamily  *string           `json:"font_family"`
+	FontSize    *float64          `json:"font_size"`
+	PanSpeed    json.RawMessage   `json:"pan_speed_percent"`
+	Icons       map[string]string `json:"icons"`
+}
+
+func applyMapTheme(t mapTheme, raw rawTheme, warn func(string, ...any)) mapTheme {
 	for _, k := range []struct {
 		name string
 		in   *string
@@ -142,7 +144,9 @@ func loadMapTheme(path string, warn func(string, ...any)) mapTheme {
 	} else if len(raw.PanSpeed) != 0 && string(raw.PanSpeed) != "null" {
 		warn("theme pan_speed_percent must be an integer %d through %d; using default", minMapPanSpeed, maxMapPanSpeed)
 	}
-	t.Icons = raw.Icons
+	if raw.Icons != nil {
+		t.Icons = raw.Icons
+	}
 	return t
 }
 
