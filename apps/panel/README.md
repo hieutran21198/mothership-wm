@@ -6,3 +6,4 @@ display and shares the same Overview slots with Map.
 
 - [Use Command Center](COMMAND_CENTER.md).
 - [Show Center Map and configure its theme](CENTER_MAP.md).
+- [Diagnose render performance](../../docs/runbooks/render-performance.md).

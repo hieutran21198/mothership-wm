@@ -38,4 +38,5 @@ icons or text and does not rerun on movement. If GLES is unavailable, use
 Clear with the normal Map; no dynamic CPU blur or second renderer.
 
 See the [use flow](../software-knowledges/flows/show-center-map.md) and
-[native guide](../../apps/panel/CENTER_MAP.md).
+[native guide](../../apps/panel/CENTER_MAP.md). For instrumentation and A/B checks,
+use the [render performance runbook](../runbooks/render-performance.md).
