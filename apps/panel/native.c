@@ -6,7 +6,9 @@
 #include <string.h>
 #include "native.h"
 #include "map_hud.h"
+#include "shell-type.h"
 #include "map-pointer.h"
+#include "generated-map-pointer.h"
 #include "map-camera.h"
 #include "shell-paint.h"
 
@@ -27,7 +29,7 @@ static GtkWindow *window;
 static GtkWidget *title, *status, *entry, *nodes, *windows;
 static GtkWidget *create, *move, *fly, *home, *terminal, *files;
 static GtkWidget *form, *normal, *overview_form, *entry_button;
-static GtkWidget *map_navigation_form, *map_view_open, *map_view_normal, *navigation_done;
+static GtkWidget *map_view_open, *map_view_normal, *map_clear_buffer;
 static GtkWidget *map_settings_form, *map_border_input, *map_outer_input, *map_inner_input;
 static GtkWidget *map_clear_input, *map_frosted_input, *map_settings_note, *map_settings_save;
 static GtkWidget *map_animation_input[MAP_ANIMATION_COUNT], *map_fps_input;
@@ -41,12 +43,21 @@ static gboolean map_settings_active,settings_populating;
 static gboolean navigating,map_action_wait,map_action_sent;
 static guint camera_tick, navigation_timeout;
 static gint64 camera_last;
-static unsigned camera_held, shortcut_held;
+static unsigned camera_held, shortcut_held, number_held;
+static struct {
+	gboolean pending, can_drag, dragging;
+	double x,y;
+} map_drag;
 static struct map_velocity camera_velocity;
 static GtkWidget *node_grid, *node_layouts, *layout_buttons[3], *next_stack, *overview_home;
 static GHashTable *positions;
 static unsigned node_count;
-static char *current_node, *current_mode;
+static char *current_node, *current_mode, *last_connected;
+static gboolean returning_map;
+static char *relay_target;
+static uint64_t relay_serial, relay_token;
+static guint relay_timeout;
+static gboolean relay_acknowledged, relay_revealing, relay_projected;
 static gboolean overview, map_visible, blank_home;
 static gboolean showing, expanded, region_pending;
 static GMainLoop *loop;
@@ -55,7 +66,8 @@ static char *last_nodes, *last_windows;
 
 struct update {
 	char *view, *message, *nodes, *windows, *node, *mode, *profiles;
-	int enabled, overview, map_visible, blank_home;
+	int enabled, overview, map_visible, blank_home, ready;
+	uint64_t connect_failed,prepared_relay;
 };
 static struct update *queued;
 static GMutex update_lock;
@@ -68,7 +80,10 @@ static const char *selected(GtkWidget *list) {
 
 static void refresh_actions(void) {
 	gtk_widget_set_sensitive(map_view_open, enabled);
-	if (map_view_normal) gtk_widget_set_sensitive(map_view_normal, enabled);
+	if (map_view_normal) {
+		gtk_widget_set_sensitive(map_view_normal, enabled);
+		gtk_button_set_label(GTK_BUTTON(map_view_normal),current_node && *current_node?"Disconnect":"Map View");
+	}
 	gboolean node = selected(nodes) != NULL;
 	gtk_widget_set_sensitive(create, enabled && *gtk_editable_get_text(GTK_EDITABLE(entry)));
 	gtk_widget_set_sensitive(move, enabled && node && selected(windows) != NULL);
@@ -117,11 +132,16 @@ static gboolean set_input_region(gpointer data) {
 	if (surface == NULL) {
 		return G_SOURCE_REMOVE;
 	}
-	if (expanded && !navigating) {
+	if (navigating) {
+		// Keep the shell's keyboard ownership with no invisible hit area.
+		cairo_region_t *empty=cairo_region_create();
+		gdk_surface_set_input_region(surface, empty);
+		cairo_region_destroy(empty);
+	} else if (expanded) {
 		gdk_surface_set_input_region(surface, NULL);
 	} else {
 		graphene_rect_t bounds;
-		if (!gtk_widget_compute_bounds(navigating?navigation_done:entry_button, GTK_WIDGET(window), &bounds) ||
+		if (!gtk_widget_compute_bounds(entry_button, GTK_WIDGET(window), &bounds) ||
 				bounds.size.width <= 0 || bounds.size.height <= 0) {
 			schedule_region();
 			return G_SOURCE_REMOVE;
@@ -166,30 +186,59 @@ static void close_map_settings(void) {
 	gtk_widget_set_visible(overview_form, overview);
 }
 
-static void stop_navigation(void) {
-	if (!navigating && !navigation_timeout) return;
-	if (navigation_timeout) {
-		g_source_remove(navigation_timeout);
-		navigation_timeout = 0;
-	}
-	navigating = FALSE;
-	map_action_wait = map_action_sent = FALSE;
-	map_pointer_zoom_enabled(FALSE,map_hud_outer_margin());
-	map_hud_cancel_zoom();
-	map_hud_finish_effect();
-	map_hud_close_profile();
+static void cancel_connect_relay(void) {
+	g_clear_handle_id(&relay_timeout,g_source_remove);
+	map_hud_relay_cancel();
+	g_clear_pointer(&relay_target,g_free);
+	relay_token=0;
+	relay_acknowledged=relay_revealing=relay_projected=FALSE;
+}
+
+static void cancel_map_drag(void) {
+	map_drag.pending=map_drag.can_drag=map_drag.dragging=FALSE;
+}
+
+static void stop_key_pan(void) {
 	camera_held = 0;
 	camera_velocity = (struct map_velocity){0};
 	if (camera_tick) {
 		gtk_widget_remove_tick_callback(map_hud_clock(), camera_tick);
 		camera_tick = 0;
 	}
-	gtk_widget_set_visible(map_navigation_form, FALSE);
+}
+
+static void stop_camera_input(void) {
+	cancel_map_drag();
+	map_hud_allow_route(FALSE);
+	map_hud_cancel_zoom();
+	stop_key_pan();
+}
+
+static void end_navigation(gboolean keep_paint) {
+	if (!navigating && !navigation_timeout) return;
+	if (navigation_timeout) {
+		g_source_remove(navigation_timeout);
+		navigation_timeout = 0;
+	}
+	navigating = FALSE;
+	number_held=0;
+	map_action_wait = map_action_sent = FALSE;
+	map_pointer_zoom_enabled(FALSE,map_hud_outer_margin());
+	stop_camera_input();
+	if(!keep_paint) {
+		cancel_connect_relay();
+		map_hud_finish_effect();
+		map_hud_close_profile();
+	}
+	gtk_widget_remove_css_class(form, "mothership-map-keyboard");
+	gtk_widget_set_visible(map_clear_buffer,FALSE);
 	gtk_widget_set_visible(normal, !overview);
 	gtk_widget_set_visible(overview_form, overview);
 	gtk_widget_set_visible(status, TRUE);
 	return_keys();
 }
+
+static void stop_navigation(void) {end_navigation(FALSE);}
 
 static void set_expanded(gboolean value) {
 	expanded = value;
@@ -264,20 +313,104 @@ static void directions_changed(void) {
 	}
 }
 
-static void fly_to_node(const char *name) {
-	if (!enabled || !overview) return;
+static void connect_retract_finished(void) {
+	map_hud_dismiss_effect();
+	cancel_connect_relay();
+}
+
+static gboolean connect_relay_timeout(gpointer unused) {
+	(void)unused;
+	relay_timeout=0;
+	cancel_connect_relay();
+	return G_SOURCE_REMOVE;
+}
+
+static void connect_relay_finished(void) {
+	if(!relay_acknowledged || !relay_target) return;
+	relay_revealing=TRUE;
+	g_clear_handle_id(&relay_timeout,g_source_remove);
+	relay_timeout=g_timeout_add(4000,connect_relay_timeout,NULL);
+	char token[32];
+	g_snprintf(token,sizeof(token),"%" G_GUINT64_FORMAT,(guint64)relay_token);
+	panelAction(15,"",token);
+}
+
+static void connect_node(const char *name,gboolean animate) {
+	if (!enabled || !name || !*name || relay_target) return;
+	// Keep the existing map visible if the command is rejected. Only the
+	// acknowledged projection event ends an active Map View.
 	char *target=g_strdup(name);
-	set_expanded(FALSE);
-	panelAction(12,target,"");
+	cancel_map_drag();
+	map_hud_pause_route();
+	char token[32]="";
+	if(animate && navigating && map_visible && map_animation!=MAP_ANIMATION_OFF) {
+		map_hud_cancel_zoom();
+		stop_key_pan();
+		if(map_hud_relay_begin(target,connect_relay_finished)) {
+			relay_target=g_strdup(target);
+			relay_token=++relay_serial;
+			relay_timeout=g_timeout_add(4000,connect_relay_timeout,NULL);
+			g_snprintf(token,sizeof(token),"%" G_GUINT64_FORMAT,(guint64)relay_token);
+		}
+	}
+	panelAction(12,target,token);
 	g_free(target);
 }
 
+static void connect_to_node(const char *name) {connect_node(name,TRUE);}
+
 void panel_map_click(double x,double y) {
-	if (enabled && navigating && map_visible) map_hud_click(x,y,fly_to_node);
+	if (!relay_target && enabled && navigating && map_visible) map_hud_click(x,y,connect_to_node);
+}
+
+void panel_map_contact(uint32_t phase,double x,double y) {
+	if (phase==MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_CANCEL || relay_target ||
+			!enabled || !navigating || !map_visible) {
+		cancel_map_drag();
+		return;
+	}
+	if (phase==MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_BEGIN) {
+		cancel_map_drag();
+		map_drag.pending=TRUE;
+		map_drag.can_drag=map_hud_drag_can_start(x,y);
+		map_drag.x=x;map_drag.y=y;
+		return;
+	}
+	if (!map_drag.pending) return;
+	// If a candidate leaves the frame, do not resume on re-entry even
+	// if the primary button is still down.
+	if (map_drag.can_drag && !map_hud_drag_inside(x,y)) {
+		cancel_map_drag();
+		return;
+	}
+	double dx=x-map_drag.x,dy=y-map_drag.y;
+	if (!map_drag.dragging && hypot(dx,dy)>=6) {
+		if (!map_drag.can_drag) {
+			cancel_map_drag();
+			return;
+		}
+		map_drag.dragging=TRUE;
+		stop_key_pan();
+		map_hud_cancel_zoom();
+	}
+	if (map_drag.dragging) {
+		// The pointer pulls content, opposite the world-camera translation.
+		// This helper converts logical screen deltas by the current zoom.
+		map_hud_translate(-dx,-dy);
+		map_drag.x=x;map_drag.y=y;
+	}
+	if (phase==MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_END) {
+		gboolean click=!map_drag.dragging;
+		cancel_map_drag();
+		if (click) panel_map_click(x,y);
+	}
 }
 
 void panel_map_scroll(double x,double y,double delta) {
-	if (navigating && map_visible) map_hud_zoom(x,y,delta,map_animation);
+	if (!relay_target && navigating && map_visible && !map_drag.dragging) {
+		cancel_map_drag();
+		map_hud_zoom(x,y,delta,map_animation);
+	}
 }
 
 static void navigation_focused(void) {
@@ -292,13 +425,19 @@ static void navigation_focused(void) {
 	navigation_timeout = 0;
 	map_action_wait = map_action_sent = FALSE;
 	navigating = TRUE;
-	map_hud_open_effect(map_animation);
+	map_hud_allow_route(map_animation!=MAP_ANIMATION_OFF);
+	map_hud_open_effect(returning_map?MAP_ANIMATION_OFF:map_animation);
+	if(returning_map) {
+		map_hud_restore_selection(last_connected);
+		returning_map=FALSE;
+	}
 	map_pointer_zoom_enabled(TRUE,map_hud_outer_margin());
 	gtk_widget_set_visible(normal, FALSE);
 	gtk_widget_set_visible(overview_form, FALSE);
 	gtk_widget_set_visible(status, FALSE);
-	gtk_widget_set_visible(map_navigation_form, TRUE);
-	gtk_widget_grab_focus(map_navigation_form);
+	gtk_widget_add_css_class(form, "mothership-map-keyboard");
+	gtk_widget_set_visible(map_clear_buffer,TRUE);
+	gtk_widget_grab_focus(form);
 	schedule_region();
 }
 
@@ -316,6 +455,7 @@ static void open_map_view(GtkButton *button, gpointer unused) {
 	(void)button; (void)unused;
 	if (!enabled || navigation_timeout || navigating) return;
 	if (!expanded) set_expanded(TRUE);
+	returning_map=!overview && current_node && *current_node;
 	map_action_wait = TRUE;
 	navigation_timeout = g_timeout_add(750, navigation_focus_timeout, NULL);
 	// Arm before asking for keyboard ownership so WM can retain this
@@ -326,23 +466,32 @@ static void open_map_view(GtkButton *button, gpointer unused) {
 }
 
 static void exit_map_view(void) {
+	cancel_connect_relay();
 	map_hud_dismiss_effect();
 	set_expanded(FALSE);
 	// Overview already hides app windows; only dismiss its Map overlay.
 	if (overview && map_visible) panelAction(14, "", "");
 }
 
-static void leave_navigation(GtkButton *button, gpointer unused) {
-	(void)button; (void)unused;
-	exit_map_view();
-}
-
 static void lose_window_focus(GObject *window, GParamSpec *prop, gpointer data) {
 	(void)prop; (void)data;
-	if (gtk_window_is_active(GTK_WINDOW(window))) navigation_focused();
-	else {
+	if (gtk_window_is_active(GTK_WINDOW(window))) {
+		if(navigating && overview && map_visible) {
+			// Parent focus returned to the same Map. Restore its existing
+			// input mode, without replaying the reveal or changing view.
+			gtk_widget_grab_focus(form);
+			map_hud_allow_route(map_animation!=MAP_ANIMATION_OFF);
+			map_pointer_zoom_enabled(TRUE,map_hud_outer_margin());
+		} else navigation_focused();
+	} else {
 		shortcut_held=0;
-		if (navigating || (map_action_wait && map_action_sent)) set_expanded(FALSE);
+		number_held=0;
+		if(navigating) {
+			// Alt+Tab is focus loss, not a request to exit Map View.
+			// Clear held/repeating motion, then await the next fresh input.
+			stop_camera_input();
+			map_pointer_zoom_enabled(FALSE,map_hud_outer_margin());
+		} else if(!relay_target && map_action_wait && map_action_sent) set_expanded(FALSE);
 	}
 }
 
@@ -363,8 +512,19 @@ static gboolean editing_input(void) {
 static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 		GdkModifierType mods, gpointer data) {
 	(void)keys; (void)code; (void)data;
-	if (key == GDK_KEY_Escape)
-		return navigating && map_hud_close_profile();
+	if (relay_target && navigating) {
+		if(key==GDK_KEY_Escape) { cancel_connect_relay(); return TRUE; }
+		if((key==GDK_KEY_m || key==GDK_KEY_h) &&
+				!(mods & (GDK_SHIFT_MASK|GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK|GDK_META_MASK|GDK_HYPER_MASK))) {
+			exit_map_view(); return TRUE;
+		}
+		return TRUE;
+	}
+	if (key == GDK_KEY_Escape) {
+		gboolean had_pointer=navigating && map_drag.pending;
+		if (had_pointer) cancel_map_drag();
+		return (navigating && map_hud_close_profile()) || had_pointer;
+	}
 	unsigned shortcut=modal_shortcut(key);
 	if (shortcut && !(mods & (GDK_SHIFT_MASK|GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK|GDK_META_MASK|GDK_HYPER_MASK))
 			&& !editing_input() && !map_settings_active) {
@@ -381,8 +541,19 @@ static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 		}
 	}
 	if (!navigating) return FALSE;
+	if (key>=GDK_KEY_1 && key<=GDK_KEY_9 &&
+			!(mods & (GDK_SHIFT_MASK|GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK|GDK_META_MASK|GDK_HYPER_MASK)) &&
+			!editing_input()) {
+		unsigned bit=1u<<(key-GDK_KEY_1);
+		if (!(number_held&bit)) {
+			number_held|=bit;
+			connect_node(map_hud_shortcut((int)(key-GDK_KEY_1)+1),FALSE);
+		}
+		return TRUE;
+	}
 	unsigned dir=direction(key);
 	if (!dir || (mods & (GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK))) return FALSE;
+	if (map_drag.dragging) return TRUE;
 	if (!(camera_held & dir)) {
 		camera_held|=dir;
 		directions_changed();
@@ -394,6 +565,7 @@ static void key_released(GtkEventControllerKey *keys,guint key,guint code,
 		GdkModifierType mods,gpointer data) {
 	(void)keys; (void)code; (void)mods; (void)data;
 	shortcut_held&=~modal_shortcut(key);
+	if(key>=GDK_KEY_1 && key<=GDK_KEY_9) number_held&=~(1u<<(key-GDK_KEY_1));
 	unsigned dir=direction(key);
 	if(navigating && (camera_held&dir)) {
 		camera_held&=~dir;
@@ -419,6 +591,7 @@ static void submit(GtkWidget *widget, gpointer data) {
 			(op == 2 && ref == NULL)) {
 		return;
 	}
+	if(op==3) {connect_to_node(node);return;}
 	// Release the toolkit's keyboard target; the compositor preserves or
 	// reconciles the application's own focus through the existing WM path.
 	char *a = g_strdup(node == NULL ? "" : node);
@@ -468,7 +641,7 @@ static void build_list(GtkWidget *list, const char *rows, gboolean composite) {
 
 static void enter_node(GtkButton *button,gpointer data) {
 	(void)data;
-	fly_to_node(g_object_get_data(G_OBJECT(button),"node"));
+	connect_to_node(g_object_get_data(G_OBJECT(button),"node"));
 }
 
 static void build_overview(const char *names) {
@@ -522,11 +695,36 @@ static gboolean apply_update(gpointer data) {
 	}
 	enabled = u->enabled;
 	blank_home = u->blank_home;
+	gboolean entered_node=*u->node && g_strcmp0(current_node,u->node)!=0;
 	g_free(current_node);
 	g_free(current_mode);
 	current_node = g_strdup(u->node);
 	current_mode = g_strdup(u->mode);
+	if(*u->node) {
+		g_free(last_connected);
+		last_connected=g_strdup(u->node);
+	}
 	gboolean show_nodes=u->map_visible && u->overview;
+	gboolean keep_relay_paint=FALSE;
+	if (relay_target) {
+		gboolean selected=u->ready && *u->node && g_str_equal(u->node,relay_target);
+		if(relay_revealing && selected) {
+			if(!relay_projected) {
+				relay_projected=TRUE;
+				g_clear_handle_id(&relay_timeout,g_source_remove);
+				end_navigation(TRUE);
+				map_hud_retract(connect_retract_finished);
+			}
+			keep_relay_paint=TRUE;
+		} else if (relay_projected || !show_nodes || !u->ready || u->connect_failed==relay_token) {
+			if(u->connect_failed==relay_token && navigating)
+				g_warning("Map connection: %s",u->message);
+			cancel_connect_relay();
+		} else if(!relay_acknowledged && u->prepared_relay==relay_token) {
+			relay_acknowledged=TRUE;
+			map_hud_relay_ack();
+		}
+	}
 	if (overview != (u->overview != 0)) {
 		overview = u->overview != 0;
 		gtk_widget_set_visible(normal, !map_settings_active && !navigating && !overview);
@@ -537,10 +735,11 @@ static gboolean apply_update(gpointer data) {
 		if ((!show_nodes || !navigation_timeout) && !map_action_wait)
 			set_expanded(FALSE);
 	}
+	if (entered_node && expanded && !overview) set_expanded(FALSE);
 	map_visible = show_nodes;
 	if(gtk_window_is_active(window)) navigation_focused();
 	if(!map_visible && navigating) stop_navigation();
-	map_hud_update(u->nodes, positions, u->node, u->profiles, overview, map_visible);
+	map_hud_update(u->nodes, positions, u->node, u->profiles, overview, map_visible || keep_relay_paint);
 	refresh_actions();
 	if (!showing && enabled) {
 		showing = TRUE;
@@ -551,10 +750,10 @@ static gboolean apply_update(gpointer data) {
 	return G_SOURCE_REMOVE;
 }
 
-void panel_post(const char *view, const char *message, const char *d, const char *w, const char *node, const char *mode, const char *profiles, int can_submit, int overview_on, int map_visible_on, int blank_home_on) {
+void panel_post(const char *view, const char *message, const char *d, const char *w, const char *node, const char *mode, const char *profiles, int can_submit, int overview_on, int map_visible_on, int blank_home_on,int ready,uint64_t connect_failed,uint64_t prepared_relay) {
 	struct update *u = g_new(struct update, 1);
 	*u = (struct update){ g_strdup(view), g_strdup(message), g_strdup(d), g_strdup(w),
-		g_strdup(node), g_strdup(mode), g_strdup(profiles), can_submit, overview_on, map_visible_on, blank_home_on };
+		g_strdup(node), g_strdup(mode), g_strdup(profiles), can_submit, overview_on, map_visible_on, blank_home_on,ready,connect_failed,prepared_relay };
 	g_mutex_lock(&update_lock);
 	free_update(queued);
 	queued = u;
@@ -577,6 +776,7 @@ static GtkWidget *list_column(GtkWidget *box, const char *heading) {
 	gtk_widget_set_hexpand(column, TRUE);
 	gtk_box_append(GTK_BOX(box), column);
 	GtkWidget *label = gtk_label_new(heading);
+	gtk_widget_add_css_class(label,"shell-readout");
 	gtk_label_set_xalign(GTK_LABEL(label), 0);
 	gtk_box_append(GTK_BOX(column), label);
 	GtkWidget *scroll = gtk_scrolled_window_new();
@@ -591,6 +791,7 @@ static GtkWidget *list_column(GtkWidget *box, const char *heading) {
 }
 
 static gboolean close_window(GtkWindow *w, gpointer data) {
+	cancel_connect_relay();
 	return_keys();
 	g_main_loop_quit(loop);
 	return FALSE;
@@ -748,7 +949,7 @@ static void add_settings_button(GtkBox *bar) {
 }
 
 static void init_map_settings(void) {
-	map_settings_form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+	map_settings_form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
 	gtk_widget_set_visible(map_settings_form, FALSE);
 	gtk_box_append(GTK_BOX(form), map_settings_form);
 	GtkWidget *heading = gtk_label_new("Center Map Settings");
@@ -756,10 +957,17 @@ static void init_map_settings(void) {
 	gtk_widget_add_css_class(heading, "heading");
 	gtk_widget_set_halign(heading, GTK_ALIGN_START);
 	gtk_box_append(GTK_BOX(map_settings_form), heading);
-	GtkGrid *grid = GTK_GRID(gtk_grid_new());
+	// Keep Save/Cancel visible even if the layer is capped or the text
+	// theme needs more height; only the settings fields may scroll.
+	GtkWidget *body=gtk_scrolled_window_new();
+	gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(body),GTK_POLICY_NEVER,GTK_POLICY_AUTOMATIC);
+	gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(body),FALSE);
+	gtk_widget_set_vexpand(body,TRUE);
+	gtk_box_append(GTK_BOX(map_settings_form),body);
+	GtkGrid *grid=GTK_GRID(gtk_grid_new());
 	gtk_grid_set_column_spacing(grid, 16);
-	gtk_grid_set_row_spacing(grid, 6);
-	gtk_box_append(GTK_BOX(map_settings_form), GTK_WIDGET(grid));
+	gtk_grid_set_row_spacing(grid, 3);
+	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(body),GTK_WIDGET(grid));
 	map_border_input = gtk_entry_new();
 	gtk_entry_set_max_length(GTK_ENTRY(map_border_input), 9);
 	gtk_entry_set_placeholder_text(GTK_ENTRY(map_border_input), "#6F91AC9F");
@@ -879,6 +1087,16 @@ GtkWindow *paint_only_layer(const char *name, const char *title,
 	return layer;
 }
 
+// GTK may omit a snapshot with no paint nodes and leave the last Command
+// Center buffer visible. A transparent one-pixel node submits the clear
+// buffer without hiding the keyboard surface or adding pointer input.
+static void mark_clear_buffer(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer unused) {
+	(void)area;(void)w;(void)h;(void)unused;
+	cairo_set_operator(cr,CAIRO_OPERATOR_SOURCE);
+	cairo_set_source_rgba(cr,0,0,0,0);
+	cairo_paint(cr);
+}
+
 int panel_init(void) {
 	if (!gtk_init_check() || gtk_layer_get_protocol_version() < 4) {
 		return 0;
@@ -897,13 +1115,19 @@ int panel_init(void) {
 	gtk_layer_set_keyboard_mode(window, KEYS_NONE);
 
 	GtkCssProvider *skin = gtk_css_provider_new();
-	gtk_css_provider_load_from_string(skin,
-		"window.mothership-shell { background: transparent; }"
-		".mothership-controls { background: @window_bg_color; border-radius: 10px; padding: 8px; }"
+	g_autofree char *css=g_strdup_printf(
+		"window.mothership-shell { background: transparent; font-family: \"%s\", sans-serif; font-size: 14px; font-weight: 500; }"
+		"window.mothership-shell .heading { font-weight: 600; }"
+		".mothership-controls { background-color: #172435; border-radius: 10px; padding: 8px; }"
+		".mothership-controls .heading, .mothership-controls .shell-readout { color: #EDF5FB; }"
+		".mothership-controls button { padding-left: 8px; padding-right: 8px; }"
 		".mothership-controls.mothership-settings-surface { background-color: #172435; }"
+		".mothership-settings-surface entry, .mothership-settings-surface button { min-height: 22px; padding-top: 2px; padding-bottom: 2px; }"
+		".mothership-controls.mothership-map-keyboard { background: transparent; padding: 0; }"
 		".mothership-settings-label { color: #EDF5FB; }"
 		".mothership-render-fps { color: #EDF5FB; background: #172435; "
-		"padding: 4px 8px; font-family: monospace; font-size: 11px; }");
+		"padding: 4px 8px; font-size: 12px; }",shell_font_family());
+	gtk_css_provider_load_from_string(skin,css);
 	gtk_style_context_add_provider_for_display(gdk_display_get_default(),
 		GTK_STYLE_PROVIDER(skin), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref(skin);
@@ -912,6 +1136,14 @@ int panel_init(void) {
 	map_pointer_init(window);
 	GtkWidget *overlay = gtk_overlay_new();
 	gtk_window_set_child(window, overlay);
+	map_clear_buffer=gtk_drawing_area_new();
+	gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(map_clear_buffer),mark_clear_buffer,NULL,NULL);
+	gtk_widget_set_size_request(map_clear_buffer,1,1);
+	gtk_widget_set_halign(map_clear_buffer,GTK_ALIGN_START);
+	gtk_widget_set_valign(map_clear_buffer,GTK_ALIGN_START);
+	gtk_widget_set_can_target(map_clear_buffer,FALSE);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),map_clear_buffer);
+	gtk_widget_set_visible(map_clear_buffer,FALSE);
 	form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
 	gtk_widget_set_focusable(form, TRUE);
 	gtk_widget_add_css_class(form, "mothership-controls");
@@ -933,6 +1165,8 @@ int panel_init(void) {
 	gtk_widget_add_css_class(heading, "heading");
 	gtk_box_append(GTK_BOX(bar), heading);
 	title = gtk_label_new("Connecting…");
+	gtk_widget_add_css_class(title,"shell-readout");
+	gtk_label_set_ellipsize(GTK_LABEL(title),PANGO_ELLIPSIZE_END);
 	gtk_widget_set_hexpand(title, TRUE);
 	gtk_label_set_xalign(GTK_LABEL(title), 0);
 	gtk_box_append(GTK_BOX(bar), title);
@@ -968,7 +1202,7 @@ int panel_init(void) {
 	GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 	gtk_box_append(GTK_BOX(normal), actions);
 	move = button("Attach / Move", 2, actions);
-	fly = button("Fly to Node", 3, actions);
+	fly = button("Connect", 3, actions);
 	home = button("Home", 4, actions);
 	terminal = button("Terminal", 5, actions);
 	files = button("File Manager", 6, actions);
@@ -1005,19 +1239,11 @@ int panel_init(void) {
 	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), node_grid);
 	positions = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 	status = gtk_label_new("");
+	gtk_widget_add_css_class(status,"shell-readout");
 	gtk_label_set_xalign(GTK_LABEL(status), 0);
 	gtk_label_set_ellipsize(GTK_LABEL(status), PANGO_ELLIPSIZE_END);
 	gtk_box_append(GTK_BOX(form), status);
 	init_map_settings();
-	map_navigation_form=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,12);
-	gtk_widget_set_focusable(map_navigation_form, TRUE);
-	gtk_widget_set_visible(map_navigation_form,FALSE);
-	gtk_box_append(GTK_BOX(form),map_navigation_form);
-	GtkWidget *hint=gtk_label_new("WASD · Scroll to zoom · M close · H Home");
-	gtk_box_append(GTK_BOX(map_navigation_form),hint);
-	navigation_done=gtk_button_new_with_label("Done");
-	g_signal_connect(navigation_done,"clicked",G_CALLBACK(leave_navigation),NULL);
-	gtk_box_append(GTK_BOX(map_navigation_form),navigation_done);
 	g_signal_connect(window,"notify::is-active",G_CALLBACK(lose_window_focus),NULL);
 	GtkEventController *keys = gtk_event_controller_key_new();
 	g_signal_connect(keys, "key-pressed", G_CALLBACK(key_pressed), NULL);
@@ -1032,6 +1258,7 @@ int panel_init(void) {
 void panel_run(void) {
 	loop = g_main_loop_new(NULL, FALSE);
 	g_main_loop_run(loop);
+	cancel_connect_relay();
 	g_main_loop_unref(loop);
 }
 

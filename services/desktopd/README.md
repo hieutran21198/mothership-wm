@@ -3,7 +3,7 @@
 A local Go service that owns live Window-to-Domain assignments and resolves
 [FocusDomain](../../docs/software-knowledges/flows/focus-domain.md). The WM
 owns visibility and the human seat’s focus. Live membership, layout and focus remain session-only. Node names,
-descriptions and timestamps are stored as private records in
+descriptions, timestamps and assigned Map shortcut slots are stored as private records in
 `$XDG_STATE_HOME/mothership-wm/nodes` (default `~/.local/state/mothership-wm/nodes`).
 Set a disposable absolute `XDG_STATE_HOME` when testing.
 

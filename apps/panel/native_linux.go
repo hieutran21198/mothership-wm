@@ -52,7 +52,10 @@ func main() {
 		// Keep the GTK compositor on OpenGL rather than selecting Vulkan.
 		_ = os.Setenv("GSK_RENDERER", "gl")
 	}
+	cleanupTypography := installShellTypography(filepath.Dir(path))
+	defer cleanupTypography()
 	if C.panel_init() == 0 {
+		cleanupTypography()
 		fail(fmt.Errorf("could not open native Command Center in the nested WM"))
 	}
 	configureWallpaper()
@@ -82,7 +85,7 @@ func showNative(v view) {
 	}
 	var profiles strings.Builder
 	for _, p := range v.profiles {
-		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","))
+		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\t%d\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","), p.Shortcut)
 	}
 	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode, profiles.String()}
 	ptr := make([]*C.char, len(s))
@@ -106,7 +109,11 @@ func showNative(v view) {
 	if v.blankHome {
 		blankHome = 1
 	}
-	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], enabled, overview, mapVisible, blankHome)
+	var ready C.int
+	if v.ready {
+		ready = 1
+	}
+	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], enabled, overview, mapVisible, blankHome, ready, C.uint64_t(v.connectFailed), C.uint64_t(v.preparedRelay))
 }
 
 func configureWallpaper() {
@@ -168,7 +175,7 @@ func configureMap() {
 	C.free(unsafe.Pointer(border))
 	family := C.CString(theme.FontFamily)
 	if C.map_hud_set_font(family, C.double(theme.FontSize)) == 0 {
-		warn("font family %q is not available; using Sans", theme.FontFamily)
+		warn("font family %q is not available; using Mothership shell font", theme.FontFamily)
 	}
 	C.free(unsafe.Pointer(family))
 	for node, asset := range theme.Icons {
@@ -220,10 +227,14 @@ func panelAction(op C.int, a, b *C.char) {
 	case 11:
 		active.submit(domainipc.NextMethod, domainipc.DomainBody{Domain: name})
 	case 12:
-		active.submit(domainipc.FocusMethod, domainipc.DomainBody{Domain: name})
+		relay, _ := strconv.ParseUint(key, 10, 64)
+		active.connect(name, relay)
 	case 13:
 		active.openMap(name == "overview")
 	case 14:
 		active.blankHome(name == "overview")
+	case 15:
+		relay, _ := strconv.ParseUint(key, 10, 64)
+		active.reveal(relay)
 	}
 }

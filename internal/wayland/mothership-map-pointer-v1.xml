@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="2">
-    <description summary="nested Map View wheel routing">
+  <interface name="mothership_map_pointer_v1" version="3">
+    <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
-      inside the frame and completed clicks in the mapped, focused Map View.
+      inside the frame and left-button sequences in the mapped, focused Map View.
       Coordinates are logical and local
       to the nested viewport. There is no global pointer observer or grab.
     </description>
@@ -21,6 +21,21 @@
     </event>
     <event name="click" since="2">
       <description summary="completed left click on empty canvas of the active Map View"/>
+      <arg name="x" type="fixed"/><arg name="y" type="fixed"/>
+    </event>
+    <enum name="contact_phase" since="3">
+      <entry name="begin" value="0"/>
+      <entry name="motion" value="1"/>
+      <entry name="end" value="2"/>
+      <entry name="cancel" value="3"/>
+    </enum>
+    <event name="contact" since="3">
+      <description summary="scoped primary button sequence">
+        Motion is sent only while a sequence began in empty nested space during Map View.
+        Cancel ends the sequence without a click. Without begin, motion and
+        end have no effect. Version 3 uses this event instead of click.
+      </description>
+      <arg name="phase" type="uint" enum="contact_phase"/>
       <arg name="x" type="fixed"/><arg name="y" type="fixed"/>
     </event>
   </interface>

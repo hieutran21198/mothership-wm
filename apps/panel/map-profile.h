@@ -5,12 +5,13 @@
 struct profile_rect { double x,y,w,h; };
 struct profile_layout { struct profile_rect card,fly; };
 
-enum { PROFILE_CORNER=10, PROFILE_FLY_CORNER=8, PROFILE_RIM_GAP=6 };
+enum { PROFILE_CORNER=10, PROFILE_FLY_CORNER=8, PROFILE_RIM_GAP=6, PROFILE_PADDING=16, PROFILE_ACTION=40 };
 
 struct profile_data {
 	char *description;
 	gint64 created_at,last_active;
 	gboolean empty;
+	int shortcut;
 	char **app_ids;
 	GPtrArray *icons;
 	GskRenderNode *paint;
@@ -21,6 +22,7 @@ struct profile_data {
 
 void profile_data_free(gpointer);
 GHashTable *profile_parse(const char *);
+void profile_draw_chrome(cairo_t *, struct profile_rect, gboolean flat);
 double profile_height(const struct profile_data *);
 void profile_snapshot(GtkSnapshot *, GtkWidget *, struct profile_layout, const char *, struct profile_data *);
 
@@ -50,7 +52,8 @@ static inline gboolean profile_place_on(struct profile_layout *out,struct profil
 		if (top<safe.y || top+height>safe.y+safe.h) return FALSE;
 	}
 	out->card=(struct profile_rect){left,top,width,height};
-	out->fly=(struct profile_rect){left+width-54,top+height-53,40,40};
+	out->fly=(struct profile_rect){left+width-PROFILE_PADDING-PROFILE_ACTION,
+		top+height-PROFILE_PADDING-PROFILE_ACTION,PROFILE_ACTION,PROFILE_ACTION};
 	return TRUE;
 }
 

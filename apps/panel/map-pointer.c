@@ -22,7 +22,13 @@ static void click(void *data,struct mothership_map_pointer_v1 *p,wl_fixed_t x,wl
 	if (zoom_enabled) panel_map_click(wl_fixed_to_double(x),wl_fixed_to_double(y));
 }
 
-static const struct mothership_map_pointer_v1_listener events={.zoom=zoom,.click=click};
+static void contact(void *data,struct mothership_map_pointer_v1 *p,uint32_t phase,wl_fixed_t x,wl_fixed_t y) {
+	(void)data;(void)p;
+	if (zoom_enabled || phase==MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_CANCEL)
+		panel_map_contact(phase,wl_fixed_to_double(x),wl_fixed_to_double(y));
+}
+
+static const struct mothership_map_pointer_v1_listener events={.zoom=zoom,.click=click,.contact=contact};
 
 static void watch(void) {
 	if(!pointer || !gtk_widget_get_mapped(GTK_WIDGET(command))) return;
@@ -42,7 +48,7 @@ static void command_mapped(GtkWidget *widget,gpointer data) {
 static void global(void *data,struct wl_registry *r,uint32_t name,const char *interface,uint32_t version) {
 	(void)data;(void)version;
 	if(pointer || strcmp(interface,mothership_map_pointer_v1_interface.name)!=0) return;
-	pointer=wl_registry_bind(r,name,&mothership_map_pointer_v1_interface,MIN(version,2));
+	pointer=wl_registry_bind(r,name,&mothership_map_pointer_v1_interface,MIN(version,3));
 	if(pointer) {
 		pointer_name=name;
 		mothership_map_pointer_v1_add_listener(pointer,&events,NULL);
@@ -53,6 +59,7 @@ static void global(void *data,struct wl_registry *r,uint32_t name,const char *in
 static void removed(void *data,struct wl_registry *r,uint32_t name) {
 	(void)data;(void)r;
 	if(pointer && name==pointer_name) {
+		panel_map_contact(MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_CANCEL,0,0);
 		mothership_map_pointer_v1_destroy(pointer);
 		pointer=NULL;
 	}

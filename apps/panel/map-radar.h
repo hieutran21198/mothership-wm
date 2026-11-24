@@ -6,7 +6,7 @@
 void map_radar_init(GtkWindow *hud);
 gboolean map_radar_begin(GtkWindow *hud);
 gboolean map_radar_step(GtkWindow *hud,graphene_rect_t frame,gint64 elapsed,gint64 duration,
-	const GdkRGBA *border);
+	const GdkRGBA *border,const graphene_rect_t *exclude);
 void map_radar_end(void);
 
 #endif

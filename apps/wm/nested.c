@@ -100,6 +100,10 @@ struct nested {
 	struct wlr_xcursor_image *cursor_image;
 	bool cursor_visible;
 	struct wlr_scene_output *scene_output;
+	uint64_t reveal_ack;
+	int64_t reveal_start;
+	bool revealing;
+	struct wlr_box aperture;
 	struct wlr_scene_rect *background;
 	struct wlr_scene *scene;
 	struct wlr_scene_tree *wallpaper_tree, *app_tree, *hud_tree, *shell_tree;
@@ -216,6 +220,7 @@ static void panel_unmap(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, unmap);
 	if (!panel->paint_only) {
+		nested_seat_cancel_map_pointer(panel->wm->seat);
 		nested_seat_blank_shell(panel->wm->seat,NULL);
 		panel->wants_keyboard = false;
 		nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
@@ -226,6 +231,7 @@ static void panel_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, destroy);
 	if (!panel->paint_only) {
+		nested_seat_cancel_map_pointer(panel->wm->seat);
 		nested_seat_blank_shell(panel->wm->seat,NULL);
 		nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
 		panel->wm->map_zoom_enabled=false;
@@ -327,17 +333,52 @@ static void on_output_destroy(struct wl_listener *listener, void *data) {
 	}
 }
 
+enum { WORKSPACE_REVEAL_US = 200000 };
+static bool domain_send(struct nested *,const char *,uint64_t);
+static void select_projection(struct nested *,bool);
+static void apply_view_clip(struct xdg_view *);
+
+static int64_t monotonic_us(struct timespec now) {
+	return (int64_t)now.tv_sec*1000000 + now.tv_nsec/1000;
+}
+
+static void reveal_frame(struct nested *wm,struct timespec now) {
+	if (!wm->revealing) return;
+	int64_t us=monotonic_us(now);
+	if (!wm->reveal_start) wm->reveal_start=us;
+	double t=(us-wm->reveal_start)/(double)WORKSPACE_REVEAL_US;
+	if(t>=1) {
+		wm->revealing=false;
+		for(int i=0;i<wm->visible_count;i++) apply_view_clip(wm->slots[i]);
+		select_projection(wm,false);
+		return;
+	}
+	// Grow one centered viewport clip in logical coords. With fractional
+	// scale the same center maps to the physical buffer center.
+	double e=t*t*(3-2*t);
+	int w=wm->parent_window.width,h=wm->parent_window.height;
+	int bw=1+(int)((w-1)*e),bh=1+(int)((h-1)*e);
+	wm->aperture=(struct wlr_box){(w-bw)/2,(h-bh)/2,bw,bh};
+	for(int i=0;i<wm->visible_count;i++) apply_view_clip(wm->slots[i]);
+}
+
 static void on_frame(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct nested *wm = wl_container_of(listener, wm, frame);
+	struct timespec now;
+	bool timed=clock_gettime(CLOCK_MONOTONIC,&now)==0;
+	if (timed) reveal_frame(wm,now);
 	if (!wlr_scene_output_commit(wm->scene_output, NULL)) {
 		stop(wm, "could not render the nested output");
 		return;
 	}
-	struct timespec now;
-	if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
-		wlr_scene_output_send_frame_done(wm->scene_output, &now);
+	if (wm->reveal_ack) {
+		uint64_t ack=wm->reveal_ack;
+		wm->reveal_ack=0;
+		domain_send(wm,"applied",ack);
 	}
+	if (timed) wlr_scene_output_send_frame_done(wm->scene_output,&now);
+	if (wm->revealing) wlr_output_schedule_frame(wm->output);
 }
 
 static bool named_view(struct nested *wm) {
@@ -390,24 +431,44 @@ static void arrange_flow(struct nested *wm, struct xdg_view *center) {
 	wm->flow_offset=clamp_int(wm->flow_offset,wm->flow_low,wm->flow_high);
 }
 
+static void clip_chrome(struct xdg_view *view,struct wlr_scene_rect *scene,struct wlr_box rect,bool shown) {
+	if(!scene) return;
+	struct wlr_box visible=rect;
+	bool paint=shown && (!view->wm->revealing || wlr_box_intersection(&visible,&rect,&view->wm->aperture));
+	wlr_scene_node_set_enabled(&scene->node,paint);
+	if(!paint) return;
+	wlr_scene_node_set_position(&scene->node,visible.x-view->placement.x,visible.y-view->placement.y);
+	wlr_scene_rect_set_size(scene,visible.width,visible.height);
+}
+
 static void apply_view_clip(struct xdg_view *view) {
+	if(!view || !view->tree || !view->frame->node.enabled) return;
 	struct rect r=view->placement;
 	int bar=view->title_height,edge=view->content_edge;
-	struct wlr_box clip={
-		view->toplevel->base->geometry.x,view->toplevel->base->geometry.y,
-		r.width-2*edge,r.height-bar-edge,
-	};
-	wlr_scene_subsurface_tree_set_clip(&view->tree->node,&clip);
+	struct wlr_box target={r.x+edge,r.y+bar,r.width-2*edge,r.height-bar-edge},visible=target;
+	bool shown=!view->wm->revealing || wlr_box_intersection(&visible,&target,&view->wm->aperture);
+	wlr_scene_node_set_enabled(&view->tree->node,shown);
+	if(shown) {
+		struct wlr_box clip={
+			view->toplevel->base->geometry.x + visible.x-target.x,
+			view->toplevel->base->geometry.y + visible.y-target.y,
+			visible.width,visible.height,
+		};
+		wlr_scene_subsurface_tree_set_clip(&view->tree->node,&clip);
+	}
 	bool legacy=!is_flow(view->wm) && bar>0;
-	if (view->bar) {
-		wlr_scene_node_set_enabled(&view->bar->node,legacy);
-		if (legacy) wlr_scene_rect_set_size(view->bar,r.width,bar);
+	clip_chrome(view,view->bar,(struct wlr_box){r.x,r.y,r.width,bar},legacy);
+	clip_chrome(view,view->grip,(struct wlr_box){
+		r.x+r.width-FLOAT_GRIP,r.y+r.height-FLOAT_GRIP,FLOAT_GRIP,FLOAT_GRIP},legacy);
+	if (view->chrome && is_flow(view->wm) && bar>0) {
+		struct wlr_box frame={r.x,r.y,r.width,r.height},crop;
+		bool visible_frame=!view->wm->revealing || wlr_box_intersection(&crop,&frame,&view->wm->aperture);
+		window_chrome_show(view->chrome,visible_frame);
+		if (visible_frame && view->wm->revealing) {
+			crop.x-=r.x;crop.y-=r.y;
+			window_chrome_clip(view->chrome,&crop);
+		} else if (visible_frame) window_chrome_clip(view->chrome,NULL);
 	}
-	if (view->grip) {
-		wlr_scene_node_set_enabled(&view->grip->node,legacy);
-		if (legacy) wlr_scene_node_set_position(&view->grip->node,r.width-FLOAT_GRIP,r.height-FLOAT_GRIP);
-	}
-	if (view->chrome && is_flow(view->wm) && bar>0) window_chrome_show(view->chrome,true);
 }
 
 static void place_view(struct xdg_view *view) {
@@ -486,6 +547,7 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 	struct wlr_scene_node *node = wlr_scene_node_at(&wm->shell_tree->node,
 		x, y, &hit.x, &hit.y);
 	if (node == NULL) {
+		if (wm->revealing) return hit;
 		node = wlr_scene_node_at(&wm->app_tree->node, x, y, &hit.x, &hit.y);
 	}
 	if (node == NULL) {
@@ -596,6 +658,7 @@ static void map_pointer_set_zoom(struct wl_client *client,struct wl_resource *re
 	(void)client;
 	struct nested *wm=wl_resource_get_user_data(resource);
 	if (wm->map_pointer!=resource || margin>96) return;
+	if (!enabled) nested_seat_cancel_map_pointer(wm->seat);
 	wm->map_zoom_enabled=enabled!=0;
 	wm->map_zoom_margin=(int)margin;
 }
@@ -616,10 +679,18 @@ static bool map_scroll(void *data,struct wlr_surface *panel,double x,double y,do
 	return true;
 }
 
-static bool map_click(void *data,struct wlr_surface *panel,double x,double y,bool send) {
+static bool map_contact(void *data,struct wlr_surface *panel,double x,double y,uint32_t phase) {
 	struct nested *wm=data;
-	if (!map_target(wm,panel) || wl_resource_get_version(wm->map_pointer)<2) return false;
-	if (send) mothership_map_pointer_v1_send_click(wm->map_pointer,wl_fixed_from_double(x),wl_fixed_from_double(y));
+	if (phase!=MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_CANCEL && !map_target(wm,panel)) return false;
+	if (!wm->map_pointer) return false;
+	uint32_t version=wl_resource_get_version(wm->map_pointer);
+	if (version>=MOTHERSHIP_MAP_POINTER_V1_CONTACT_SINCE_VERSION) {
+		if (phase!=NESTED_MAP_LEGACY_CLICK)
+			mothership_map_pointer_v1_send_contact(wm->map_pointer,phase,wl_fixed_from_double(x),wl_fixed_from_double(y));
+	} else if (version>=MOTHERSHIP_MAP_POINTER_V1_CLICK_SINCE_VERSION) {
+		if (phase==NESTED_MAP_LEGACY_CLICK)
+			mothership_map_pointer_v1_send_click(wm->map_pointer,wl_fixed_from_double(x),wl_fixed_from_double(y));
+	} else return false;
 	return true;
 }
 
@@ -634,11 +705,12 @@ static void map_pointer_gone(struct wl_resource *resource) {
 	if(wm->map_pointer==resource) {
 		wm->map_pointer=NULL;
 		wm->map_zoom_enabled=false;
+		nested_seat_cancel_map_pointer(wm->seat);
 	}
 }
 
 static void map_pointer_bind(struct wl_client *client,void *data,uint32_t version,uint32_t id) {
-	struct wl_resource *resource=wl_resource_create(client,&mothership_map_pointer_v1_interface,version<2?version:2,id);
+	struct wl_resource *resource=wl_resource_create(client,&mothership_map_pointer_v1_interface,version<3?version:3,id);
 	if(!resource) {wl_client_post_no_memory(client);return;}
 	wl_resource_set_implementation(resource,&map_pointer_requests,data,map_pointer_gone);
 }
@@ -1034,7 +1106,7 @@ static void refresh_named(struct nested *wm, const struct domain_member members[
 
 static bool cycle_window(void *data,int steps) {
 	struct nested *wm=data;
-	if (!is_flow(wm) || wm->visible_count<1) return false;
+	if (!is_flow(wm) || wm->revealing || wm->visible_count<1) return false;
 	if (!steps) return true; // applicability only, no change
 	int n=wm->visible_count;
 	int from=wm->focused?wm->focused->slot:(steps>0?-1:0);
@@ -1053,7 +1125,7 @@ static bool cycle_window(void *data,int steps) {
 
 static bool scroll_flow(void *data,double x,double y,unsigned axis,double delta) {
 	struct nested *wm=data;
-	if (!is_flow(wm) || !delta || (wm->focused && wm->focused->maximized)) return false;
+	if (!is_flow(wm) || wm->revealing || !delta || (wm->focused && wm->focused->maximized)) return false;
 	if (axis==WL_POINTER_AXIS_HORIZONTAL_SCROLL &&
 		flow_vertical(wm->layout,wm->parent_window.width,wm->parent_window.height)) return false;
 	int move=(int)fmax(-200,fmin(200,delta*3));
@@ -1070,7 +1142,7 @@ static bool scroll_flow(void *data,double x,double y,unsigned axis,double delta)
 static void activate_chrome(void *data,struct nested_hit hit) {
 	struct nested *wm=data;
 	struct xdg_view *v=hit.decoration;
-	if (!v || v->slot<0 || !is_flow(wm)) return;
+	if (!v || v->slot<0 || !is_flow(wm) || wm->revealing) return;
 	if (hit.chrome_action==WINDOW_CHROME_CLOSE) {
 		wlr_xdg_toplevel_send_close(v->toplevel);
 		return;
@@ -1120,6 +1192,39 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 	if (serial == 0) {
 		domain_disconnect(wm);
 		return 0;
+	}
+	if (strcmp(op,"prepare") == 0 && wm->overview_active && strtok_r(NULL," ",&tail)==NULL) {
+		// Prepare confirms a live Overview without changing projection, app
+		// layout or input. Desktopd resolves live members again at reveal.
+		domain_send(wm,"applied",serial);
+		return 0;
+	}
+	if (strcmp(op,"reveal")==0) {
+		struct domain_member members[NODE_WINDOWS]={0};
+		enum node_layout mode;
+		if(!wm->overview_active || !read_layout(strtok_r(NULL," ",&tail),&mode) ||
+				!read_members(&tail,members)) {
+			domain_disconnect(wm);
+			return 0;
+		}
+		wm->home_active=wm->overview_active=false;
+		wm->domain_active=true;
+		wm->layout=mode;
+		wm->revealing=true;
+		wm->reveal_start=0;
+		wm->reveal_ack=serial;
+		wm->aperture=(struct wlr_box){wm->parent_window.width/2,wm->parent_window.height/2,1,1};
+		project_named(wm,members,true);
+		wm->drag=NULL;
+		nested_seat_switch(wm->seat,NULL,false);
+		refresh_blank_shell(wm);
+		position_panel(wm->panel);
+		wlr_output_schedule_frame(wm->output);
+		return 0;
+	}
+	if(wm->revealing && strcmp(op,"assigned")!=0) {
+		wm->revealing=false;
+		for(int i=0;i<wm->visible_count;i++) apply_view_clip(wm->slots[i]);
 	}
 	if (strcmp(op, "home") == 0) {
 		if (strtok_r(NULL, " ", &tail) != NULL) {
@@ -1451,7 +1556,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		/* GTK needs the core data-device global to open Wayland. Do not
 		 * handle selection/drag requests or bridge clipboard to the host. */
 		if (layer == NULL || wlr_data_device_manager_create(wm.server) == NULL ||
-				wl_global_create(wm.server,&mothership_map_pointer_v1_interface,2,&wm,map_pointer_bind)==NULL) {
+				wl_global_create(wm.server,&mothership_map_pointer_v1_interface,3,&wm,map_pointer_bind)==NULL) {
 			goto done;
 		}
 		wm.new_panel.notify = on_new_panel;
@@ -1482,7 +1587,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	*reason = "could not create the nested input seat";
 	wm.seat = nested_seat_create(wm.server, parent,
 		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, move_cursor,
-		start_view_move, update_view_move,map_scroll,map_click,activate_chrome,scroll_flow,cycle_window,&wm);
+		start_view_move, update_view_move,map_scroll,map_contact,activate_chrome,scroll_flow,cycle_window,&wm);
 	if (wm.seat == NULL) {
 		goto done;
 	}
@@ -1498,7 +1603,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 			WL_EVENT_READABLE, on_domain_fd, &wm);
 		wm.domain_active = wm.home_active = true;
 		nested_seat_switch(wm.seat, NULL, false);
-		if (wm.domain_source == NULL || !domain_send(&wm, "ready_views", 0)) {
+		if (wm.domain_source == NULL || !domain_send(&wm, "ready_handoff", 0)) {
 			goto done;
 		}
 	}

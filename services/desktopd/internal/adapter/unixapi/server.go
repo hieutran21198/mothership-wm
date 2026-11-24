@@ -19,6 +19,7 @@ import (
 var (
 	errOutcomeUnknown        = errors.New("WM disconnected before acknowledging; outcome unknown")
 	errAssignmentViewUnknown = errors.New("assignment accepted; WM view outcome unknown, refresh the snapshot")
+	errStalePrepared         = errors.New("Map selection changed; connect again")
 	errHomeUnavailable       = errors.New("WM does not support Home")
 )
 
@@ -28,11 +29,18 @@ type wmPeer struct {
 	ready     bool
 	home      bool
 	views     bool
+	handoff   bool
 	done      chan struct{}
 	applied   chan struct{}
 	pending   uint64
 	selection *app.Selection
 	entry     bool
+}
+
+type preparedFocus struct {
+	peer   *wmPeer
+	name   string
+	ticket uint64
 }
 
 type desktop struct {
@@ -41,6 +49,7 @@ type desktop struct {
 	service   *app.Service
 	wm        *wmPeer
 	next      uint64
+	prepared  *preparedFocus
 }
 
 func Serve(ctx context.Context, l *net.UnixListener, useCases *app.Service) error {
@@ -125,11 +134,12 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !w.ready {
-		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views") {
+		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views" && a[0] != "ready_handoff") {
 			return false
 		}
 		// WM registers before serving any Wayland clients: its initial snapshot is empty.
-		w.views = a[0] == "ready_views"
+		w.handoff = a[0] == "ready_handoff"
+		w.views = w.handoff || a[0] == "ready_views"
 		w.home = w.views || a[0] == "ready_home"
 		w.ready = d.service.Ready(w.session, w.home)
 		return w.ready
@@ -232,10 +242,48 @@ func (d *desktop) assign(session string, id uint64, name string) error {
 	return nil
 }
 
-func (d *desktop) focus(name string) error {
+func (d *desktop) prepareFocus(name string) (uint64, error) {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
 	d.mu.Lock()
+	d.prepared = nil
+	session, _, err := d.service.ResolveDomain(name)
+	w := d.wm
+	if err != nil || w == nil || w.session.ID != session || !w.handoff || !d.service.MapOverview() {
+		d.mu.Unlock()
+		if err != nil {
+			return 0, err
+		}
+		return 0, errStalePrepared
+	}
+	ack := d.beginApply(w, nil)
+	d.mu.Unlock()
+	if !d.awaitApply(w, ack, fmt.Sprintf("prepare %d", ack.serial)) {
+		return 0, errOutcomeUnknown
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.wm != w || !d.service.MapOverview() {
+		return 0, errStalePrepared
+	}
+	d.prepared = &preparedFocus{peer: w, name: name, ticket: ack.serial}
+	return ack.serial, nil
+}
+
+func (d *desktop) focus(name string) error { return d.focusView(name, 0) }
+
+func (d *desktop) focusView(name string, ticket uint64) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	if ticket != 0 {
+		if d.prepared == nil || d.prepared.ticket != ticket || d.prepared.peer != d.wm || !d.service.MapOverview() {
+			d.mu.Unlock()
+			return errStalePrepared
+		}
+		name = d.prepared.name
+	}
+	d.prepared = nil
 	var session string
 	var members []domain.Window
 	var err error
@@ -269,6 +317,8 @@ func (d *desktop) focus(name string) error {
 	packet := fmt.Sprintf("focus %d", ack.serial)
 	if name == "" {
 		packet = fmt.Sprintf("home %d", ack.serial)
+	} else if ticket != 0 {
+		packet = fmt.Sprintf("reveal %d %s", ack.serial, selection.Mode)
 	} else if w.views {
 		packet = fmt.Sprintf("node %d %s", ack.serial, selection.Mode)
 	}
@@ -338,6 +388,7 @@ func (d *desktop) viewAction(method, name, mode string) error {
 	var selection *app.Selection
 	var command string
 	if method == domainipc.OverviewMethod {
+		d.prepared = nil
 		selection = &app.Selection{Kind: app.SelectionAcknowledged, Overview: true}
 		command = "overview"
 	} else {

@@ -16,7 +16,7 @@ Click **Command Center** to open its controls; close it with **Hide** or Escape.
 The transparent area around the entry lets input reach the app below it.
 
 Create a named Node, select a live Window ID and a destination, then
-**Attach / Move**. Use **Fly to Node** or **Home** separately. **Hide**
+**Attach / Move**. Use **Connect** or **Home** separately. **Hide**
 or Escape during text entry releases input back to the current view. Use **Overview** to leave the current view and enter a Node from its
 position on the grid. **Home / Inbox** is a separate destination. In a Node,
 choose **Stack**, **Float** or **Tiling**. Use **Next window** in Stack; drag

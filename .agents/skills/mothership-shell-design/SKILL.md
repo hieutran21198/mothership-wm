@@ -8,7 +8,9 @@ description: Apply and review the Mothership shell design system for the bottom 
 1. Read the [canonical shell design system](../../../docs/software-knowledges/system/shell-design.md).
    Use its semantic roles and component contracts. Separate measured board
    values from rules that apply across viewports.
-2. Inspect the current full Overview and the affected detail. Work in context:
+2. For Center Map work, follow the [UI contract and visual invariants](../../../docs/software-knowledges/system/center-map-ui.md)
+   and open its linked original assets before judging actual build pixels.
+   Inspect the current full Overview and the affected detail. Work in context:
    change only the authorized artifact and preserve surrounding layers.
 3. Apply the shared chamfer recipe to shell corners in scope. At matched
    zoom, confirm a straight 45° cut (equal absolute x and y runs), small

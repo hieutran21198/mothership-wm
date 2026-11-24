@@ -43,3 +43,29 @@ func TestNodeRestartAndValidation(t *testing.T) {
 		t.Fatal("malformed record was silently discarded")
 	}
 }
+
+func TestShortcutMigrationKeepsAssignmentsAndAnEmptySlot(t *testing.T) {
+	dir := t.TempDir()
+	s, _, err := Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Existing Dev keeps 9, even with an earlier named/created legacy Node.
+	if err = s.Save(domain.Node{Name: "Dev", CreatedAt: 20, Shortcut: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(s.dir, "Alpha.json"), []byte(`{"name":"Alpha","created_at":10}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, nodes, err := Open(dir, "")
+	if err != nil || len(nodes) != 2 || nodes[0].Shortcut != 1 || nodes[1].Shortcut != 9 {
+		t.Fatalf("migration %v %v", nodes, err)
+	}
+	if err = os.Remove(filepath.Join(s.dir, "Alpha.json")); err != nil {
+		t.Fatal(err)
+	}
+	_, nodes, err = Open(dir, "")
+	if err != nil || len(nodes) != 1 || nodes[0].Shortcut != 9 {
+		t.Fatalf("gap shifted a saved shortcut: %v %v", nodes, err)
+	}
+}

@@ -9,18 +9,20 @@ import (
 )
 
 const (
-	SnapshotMethod  = "snapshot"
-	SubscribeMethod = "subscribe"
-	CreateMethod    = "create"
-	AssignMethod    = "assign"
-	FocusMethod     = "focus"
-	HomeMethod      = "home"
-	OverviewMethod  = "overview"
-	LayoutMethod    = "layout"
-	NextMethod      = "stack.next"
-	MapShowMethod   = "map.show"
-	MapHideMethod   = "map.hide"
-	MapChangedEvent = "map.visibility.changed"
+	SnapshotMethod     = "snapshot"
+	SubscribeMethod    = "subscribe"
+	CreateMethod       = "create"
+	AssignMethod       = "assign"
+	FocusMethod        = "focus"
+	PrepareFocusMethod = "focus.prepare"
+	RevealFocusMethod  = "focus.reveal"
+	HomeMethod         = "home"
+	OverviewMethod     = "overview"
+	LayoutMethod       = "layout"
+	NextMethod         = "stack.next"
+	MapShowMethod      = "map.show"
+	MapHideMethod      = "map.hide"
+	MapChangedEvent    = "map.visibility.changed"
 )
 
 type Request struct {
@@ -50,11 +52,16 @@ type NodeProfile struct {
 	Description string `json:"description,omitempty"`
 	CreatedAt   int64  `json:"created_at,omitempty"`
 	LastActive  int64  `json:"last_active,omitempty"`
+	Shortcut    int    `json:"shortcut,omitempty"`
 }
 
 type CreateBody struct {
 	Domain      string `json:"domain"`
 	Description string `json:"description,omitempty"`
+}
+
+type FocusTicket struct {
+	Ticket uint64 `json:"ticket"`
 }
 
 type DomainBody struct {

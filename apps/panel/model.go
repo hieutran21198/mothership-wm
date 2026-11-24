@@ -15,23 +15,25 @@ import (
 )
 
 type controller struct {
-	ctx     context.Context
-	path    string
-	show    func(view)
-	mu      sync.Mutex
-	state   domainipc.Snapshot
-	online  bool
-	pending bool
-	message string
-	next    uint64
+	ctx                                       context.Context
+	path                                      string
+	show                                      func(view)
+	mu                                        sync.Mutex
+	state                                     domainipc.Snapshot
+	online                                    bool
+	pending                                   bool
+	message                                   string
+	next                                      uint64
+	connectFailed, preparedRelay, focusTicket uint64
 }
 
 type view struct {
-	title, message, node, mode               string
-	domains, emptyDomains                    []string
-	windows                                  []windowRow
-	profiles                                 []profileRow
-	enabled, overview, mapVisible, blankHome bool
+	title, message, node, mode                      string
+	domains, emptyDomains                           []string
+	windows                                         []windowRow
+	profiles                                        []profileRow
+	enabled, overview, mapVisible, blankHome, ready bool
+	connectFailed, preparedRelay                    uint64
 }
 
 type windowRow struct{ key, label string }
@@ -98,7 +100,7 @@ func (c *controller) render() {
 			title = "View outcome unknown"
 		}
 	}
-	v := view{title: title, message: c.message, enabled: c.online && s.WMReady && !c.pending, mapVisible: c.online && s.WMReady && s.MapVisible}
+	v := view{title: title, message: c.message, ready: c.online && s.WMReady, connectFailed: c.connectFailed, preparedRelay: c.preparedRelay, enabled: c.online && s.WMReady && !c.pending, mapVisible: c.online && s.WMReady && s.MapVisible}
 	if c.online && s.Selection.State == "acknowledged" {
 		v.node, v.mode = s.Selection.Domain, s.Selection.Mode
 		v.overview = s.Selection.View == "overview"
@@ -247,8 +249,38 @@ func (c *controller) submit(method string, body any) {
 }
 
 func (c *controller) submitAfter(method string, body any, enterOverview bool) {
+	c.submitCommand(method, body, enterOverview, 0)
+}
+
+func (c *controller) connect(name string, relay uint64) {
+	method := domainipc.FocusMethod
+	if relay != 0 {
+		method = domainipc.PrepareFocusMethod
+	}
+	c.submitCommand(method, domainipc.DomainBody{Domain: name}, false, relay)
+}
+
+func (c *controller) reveal(relay uint64) {
+	c.mu.Lock()
+	if relay == 0 || c.preparedRelay != relay || c.focusTicket == 0 {
+		c.connectFailed = relay
+		c.render()
+		c.mu.Unlock()
+		return
+	}
+	ticket := c.focusTicket
+	c.focusTicket = 0
+	c.mu.Unlock()
+	c.submitCommand(domainipc.RevealFocusMethod, domainipc.FocusTicket{Ticket: ticket}, false, relay)
+}
+
+func (c *controller) submitCommand(method string, body any, enterOverview bool, relay uint64) {
 	c.mu.Lock()
 	if !c.online || !c.state.WMReady || c.pending {
+		if relay != 0 {
+			c.connectFailed = relay
+			c.render()
+		}
 		c.mu.Unlock()
 		return
 	}
@@ -264,6 +296,7 @@ func (c *controller) submitAfter(method string, body any, enterOverview bool) {
 
 	go func() {
 		var err error
+		var ticket uint64
 		if enterOverview {
 			first := domainipc.OverviewMethod
 			if method == domainipc.MapHideMethod {
@@ -276,13 +309,27 @@ func (c *controller) submitAfter(method string, body any, enterOverview bool) {
 			id++
 		}
 		if err == nil {
-			_, _, done, status := connection(c.ctx, c.path, method, id, body)
+			_, reply, done, status := connection(c.ctx, c.path, method, id, body)
 			done()
 			err = status
+			if err == nil && method == domainipc.PrepareFocusMethod {
+				x, decodeErr := domainipc.Decode[domainipc.FocusTicket](reply.Body)
+				if decodeErr != nil || x.Ticket == 0 {
+					err = errors.New("desktopd sent no prepared workspace")
+				} else {
+					ticket = x.Ticket
+				}
+			}
 		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.pending = false
+		if ticket != 0 {
+			c.preparedRelay, c.focusTicket = relay, ticket
+		}
+		if err != nil && relay != 0 {
+			c.connectFailed = relay
+		}
 		if c.online {
 			c.message = "Applied"
 			if err != nil {

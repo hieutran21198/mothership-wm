@@ -114,3 +114,16 @@ func TestNodeDetailReflectsAppLifecycleAndActivity(t *testing.T) {
 		t.Fatalf("wrong disconnected detail: %+v", rows)
 	}
 }
+
+func TestRelayRejectionKeepsConfirmedMapAndIdentifiesRequest(t *testing.T) {
+	var v view
+	c := controller{
+		online: true, pending: true,
+		state: domainipc.Snapshot{WMReady: true, MapVisible: true, Selection: domainipc.Selection{State: "acknowledged", View: "overview"}},
+		show:  func(got view) { v = got },
+	}
+	c.connect("Dev", 18)
+	if v.connectFailed != 18 || !v.ready || !v.mapVisible || !v.overview || v.node != "" {
+		t.Fatalf("a stale action changed confirmed Map state or lacked its error token: %+v", v)
+	}
+}

@@ -20,6 +20,19 @@ static void diagonal(GtkSnapshot *snap,const GdkRGBA *color,double x,double y,do
 	gtk_snapshot_restore(snap);
 }
 
+static void frame_primitives(GtkSnapshot *snap,const GdkRGBA *tint,double l,double t,
+		double r,double b,double c,double weight) {
+	// Eight thin primitives, not a stroke with full-map mask bounds.
+	solid(snap,tint,l+c,t-weight*.5,r-l-2*c,weight);
+	solid(snap,tint,l+c,b-weight*.5,r-l-2*c,weight);
+	solid(snap,tint,l-weight*.5,t+c,weight,b-t-2*c);
+	solid(snap,tint,r-weight*.5,t+c,weight,b-t-2*c);
+	diagonal(snap,tint,l,t+c,c,-1,weight);
+	diagonal(snap,tint,r-c,t,c,1,weight);
+	diagonal(snap,tint,l,b-c,c,1,weight);
+	diagonal(snap,tint,r-c,b,c,-1,weight);
+}
+
 static void frame_open(GtkSnapshot *snap,double x,double y,double w,double h,double progress,const GdkRGBA *border) {
 	double t=CLAMP(progress,0,1);
 	t=t*t*(3-2*t);
@@ -37,25 +50,21 @@ static void frame_open(GtkSnapshot *snap,double x,double y,double w,double h,dou
 		return;
 	}
 	double c=MIN(map_frame_cut_at(MAP_PERIMETER_INSET),(bottom-top)*.5);
-	// Eight thin primitives, not a stroke with full-map mask bounds.
-	solid(snap,&tint,l+c,top-weight*.5,r-l-2*c,weight);
-	solid(snap,&tint,l+c,bottom-weight*.5,r-l-2*c,weight);
-	solid(snap,&tint,l-weight*.5,top+c,weight,bottom-top-2*c);
-	solid(snap,&tint,r-weight*.5,top+c,weight,bottom-top-2*c);
-	diagonal(snap,&tint,l,top+c,c,-1,weight);
-	diagonal(snap,&tint,r-c,top,c,1,weight);
-	diagonal(snap,&tint,l,bottom-c,c,1,weight);
-	diagonal(snap,&tint,r-c,bottom,c,-1,weight);
+	frame_primitives(snap,&tint,l,top,r,bottom,c,weight);
+	const double g=MAP_INNER_OFFSET;
+	if (bottom-top>2*g+2 && r-l>2*g) {
+		const double inner_cut=MAX(0,c-g*(2-G_SQRT2));
+		GdkRGBA inner=map_frame_inner_color(&tint);
+		inner.alpha*=CLAMP((bottom-top-2*g-2)/16,0,1);
+		frame_primitives(snap,&inner,l+g,top+g,r-g,bottom-g,inner_cut,MAP_INNER_WIDTH);
+	}
 }
 
 static void steady_frame_piece(GtkSnapshot *s,graphene_rect_t frame,graphene_rect_t bounds,
 		const GdkRGBA *border) {
 	if (bounds.size.width<=0 || bounds.size.height<=0) return;
 	cairo_t *cr=gtk_snapshot_append_cairo(s,&bounds);
-	map_frame_outline(cr,frame.origin.x,frame.origin.y,frame.size.width,frame.size.height,MAP_PERIMETER_INSET);
-	cairo_set_source_rgba(cr,border->red,border->green,border->blue,border->alpha);
-	cairo_set_line_width(cr,MAP_PERIMETER_WIDTH);
-	cairo_stroke(cr);
+	map_frame_strokes(cr,frame.origin.x,frame.origin.y,frame.size.width,frame.size.height,border);
 	cairo_destroy(cr);
 }
 void map_frame_snapshot(GtkSnapshot *snap,graphene_rect_t frame,const GdkRGBA *border) {
@@ -63,10 +72,10 @@ void map_frame_snapshot(GtkSnapshot *snap,graphene_rect_t frame,const GdkRGBA *b
 	double t=frame.origin.y,b=t+frame.size.height;
 	// Disjoint integer-aligned boxes; no full-view Cairo raster target.
 	double xl=l+16,xr=r-16,yt=t+16,yb=b-16;
-	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(xl,t-2,xr-xl,4),border);
-	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(xl,b-2,xr-xl,4),border);
-	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(l-2,yt,4,yb-yt),border);
-	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(r-2,yt,4,yb-yt),border);
+	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(xl,t-2,xr-xl,9),border);
+	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(xl,b-7,xr-xl,9),border);
+	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(l-2,yt,9,yb-yt),border);
+	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(r-7,yt,9,yb-yt),border);
 	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(l-2,t-2,18,18),border);
 	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(xr,t-2,18,18),border);
 	steady_frame_piece(snap,frame,GRAPHENE_RECT_INIT(l-2,yb,18,18),border);
@@ -123,7 +132,7 @@ static void corner(GtkSnapshot *snap,double x,double y,int i,double c,double tai
 	gsk_path_unref(path);
 }
 
-void map_intro_snapshot(GtkSnapshot *snap,graphene_rect_t frame,gint64 elapsed,gint64 scan_us,const GdkRGBA *border) {
+void map_intro_snapshot(GtkSnapshot *snap,graphene_rect_t frame,gint64 elapsed,gint64 scan_us,const GdkRGBA *border,const graphene_rect_t *exclude) {
 	double x=frame.origin.x,y=frame.origin.y,w=frame.size.width,h=frame.size.height;
 	if (elapsed<MAP_INTRO_FRAME_US) {
 		frame_open(snap,x,y,w,h,(double)elapsed/MAP_INTRO_FRAME_US,border);
@@ -133,11 +142,24 @@ void map_intro_snapshot(GtkSnapshot *snap,graphene_rect_t frame,gint64 elapsed,g
 	if (passed>=scan_us) return;
 	struct map_radar_sample s=map_radar_sample_at(frame,passed,scan_us);
 	double l=s.left,r=s.right,top=s.top,b=s.bottom,c=s.cut;
-	band(snap,l,top+c,r,b-c,s.tail,s.head);
-	band(snap,l+c,top,r-c,top+c,s.tail,s.head);
-	band(snap,l+c,b-c,r-c,b,s.tail,s.head);
+	GtkSnapshot *beam=gtk_snapshot_new();
+	band(beam,l,top+c,r,b-c,s.tail,s.head);
+	band(beam,l+c,top,r-c,top+c,s.tail,s.head);
+	band(beam,l+c,b-c,r-c,b,s.tail,s.head);
 	for(int i=0;i<4;i++)
-		corner(snap,i%2?r-c:l,i/2?b-c:top,i,c,s.tail,s.head);
+		corner(beam,i%2?r-c:l,i/2?b-c:top,i,c,s.tail,s.head);
+	GskRenderNode *node=gtk_snapshot_free_to_node(beam);
+	if(node) {
+		graphene_rect_t bounds,pieces[4];
+		gsk_render_node_get_bounds(node,&bounds);
+		int count=map_radar_visible_rects(bounds,exclude,pieces);
+		for(int i=0;i<count;i++) {
+			gtk_snapshot_push_clip(snap,&pieces[i]);
+			gtk_snapshot_append_node(snap,node);
+			gtk_snapshot_pop(snap);
+		}
+		gsk_render_node_unref(node);
+	}
 	GdkRGBA lock=map_radar_lock_color(passed,border);
 	if (lock.alpha>0) {
 		double shift=-MAP_PERIMETER_INSET;

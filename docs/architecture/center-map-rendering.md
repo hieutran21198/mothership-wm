@@ -19,7 +19,7 @@ temporary edge/lock buffers are bounded and reused only after compositor
 release. If the small buffers or required protocol are unavailable, the
 same timeline uses the in-HUD GTK renderer. The
 annotation layer then reveals all visible Nodes on one timeline: icon scale,
-leader stroke, clipped stationary label. The label paint is cached during its
+then clipped stationary label. The label paint is cached during its
 reveal; no Node polls or separate timers extend it. Panning or zooming never selects a
 Node. Fly is normal workspace selection after an acknowledgement.
 
@@ -30,10 +30,13 @@ explicit Command Center → Map View click acquires the shell keyboard
 target and retains it only while entering the acknowledged Overview. A
 private Wayland protocol routes vertical wheel inside the mapped Map's
 chamfered frame to that focused shell, not outside it or over a control.
-The same protocol carries completed left clicks on empty canvas only while
-Map View owns that keyboard target. Panel applies Node and card hit
-testing in logical coordinates, independent of app routing. There is no
-passive pointer stream, pointer grab or new global shortcut.
+The same private protocol carries scoped left-button sequences that start
+in otherwise untargeted Overview space while Map View owns the keyboard.
+Panel applies current marker, label, card and overlay hit tests. Only an
+empty interior press can become a drag after a movement threshold; translate
+by the inverse zoom to keep the map under the pointer. The WM ends routing
+on focus loss or target change and consumes a cancelled sequence's release.
+There is no passive motion stream, cross-window/global grab or new shortcut.
 A blank Home has no app keyboard target, so the focused nested shell can
 handle unmodified M/H without a global shortcut. M toggles Map View, H
 returns to blank Home, and Esc closes only the profile when one is open.

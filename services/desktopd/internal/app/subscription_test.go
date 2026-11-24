@@ -189,3 +189,28 @@ func TestNodeAgeAndActualWorkspaceEntry(t *testing.T) {
 		t.Fatalf("bad restoration: %+v", after)
 	}
 }
+
+func TestShortcutSlotsDoNotLimitNodeCreation(t *testing.T) {
+	s := New(nil, nil, nil)
+	for i := 1; i <= 11; i++ {
+		if err := s.CreateNode(fmt.Sprintf("Node%02d", i), ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateNode("Alpha", ""); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Snapshot().Nodes
+	if len(got) != 12 || got[0].Name != "Alpha" || got[0].Shortcut != 0 {
+		t.Fatalf("new name took an existing slot: %+v", got)
+	}
+	for i, n := range got[1:] {
+		want := i + 1
+		if want > domain.ShortcutSlots {
+			want = 0
+		}
+		if n.Shortcut != want {
+			t.Fatalf("%s slot %d, want %d", n.Name, n.Shortcut, want)
+		}
+	}
+}

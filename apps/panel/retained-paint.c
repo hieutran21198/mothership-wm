@@ -66,13 +66,20 @@ static GdkTexture *image_texture(cairo_surface_t *surface) {
 static void prepare_tile(RetainedPaint *p) {
 	enum { pitch=88 };
 	unsigned char texels[pitch*pitch*4]={0};
+	GdkRGBA dot=map_grid_junction(p->grid);
 	for(int y=0;y<pitch;y++) for(int x=0;x<pitch;x++) {
-		if(x>=2 && y>=2) continue;
+		// The line is centered at .5 logical px, i.e. 1 texel at 2×.
+		// Wrap the mark at tile edges so each intersection is complete.
+		double ax=fabs(x+.5-1),ay=fabs(y+.5-1);
+		double dx=MIN(ax,pitch-ax),dy=MIN(ay,pitch-ay);
+		double dot_alpha=dot.alpha*CLAMP(2*MAP_GRID_JUNCTION_RADIUS+.5-hypot(dx,dy),0,1);
+		double line_alpha=(x<2 || y<2)?MAP_GRID_LINE_ALPHA*(1-dot_alpha):0;
+		if(dot_alpha==0 && line_alpha==0) continue;
 		unsigned char *c=texels+4*(y*pitch+x);
-		c[0]=(unsigned char)(p->grid.red*82+.5);
-		c[1]=(unsigned char)(p->grid.green*82+.5);
-		c[2]=(unsigned char)(p->grid.blue*82+.5);
-		c[3]=82;
+		c[0]=(unsigned char)((p->grid.red*line_alpha+dot.red*dot_alpha)*255+.5);
+		c[1]=(unsigned char)((p->grid.green*line_alpha+dot.green*dot_alpha)*255+.5);
+		c[2]=(unsigned char)((p->grid.blue*line_alpha+dot.blue*dot_alpha)*255+.5);
+		c[3]=(unsigned char)((line_alpha+dot_alpha)*255+.5);
 	}
 	GBytes *bytes=g_bytes_new(texels,sizeof(texels));
 	p->texture=gdk_memory_texture_new(pitch,pitch,GDK_MEMORY_R8G8B8A8_PREMULTIPLIED,bytes,pitch*4);
@@ -152,7 +159,7 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 		graphene_rect_t tile=GRAPHENE_RECT_INIT(x,y,pitch,pitch);
 		// The content's long edges are rectangular; mask only its tiny corners.
 		// A full output-sized mask is needless GPU work during the radar pass.
-		double inset=padding+.5,edge=margin+.5+inset,cut=map_frame_cut_at(inset);
+		double inset=map_frame_content_inset(padding+.5),edge=margin+.5+inset,cut=map_frame_cut_at(inset);
 		double right=w-edge,bottom=h-edge;
 		grid_repeat(snap,p->texture,&tile,edge,edge+cut,right-edge,bottom-edge-2*cut);
 		grid_repeat(snap,p->texture,&tile,edge+cut,edge,right-edge-2*cut,cut);

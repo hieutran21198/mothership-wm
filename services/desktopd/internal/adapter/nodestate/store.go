@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"mothership-wm/services/desktopd/internal/domain"
 )
@@ -22,6 +23,8 @@ func Open(stateHome, home string) (Store, []domain.Node, error) {
 	}
 	s := Store{dir: filepath.Join(stateHome, "mothership-wm", "nodes")}
 	var nodes []domain.Node
+	legacy := make(map[string]bool)
+	var seen [domain.ShortcutSlots + 1]bool
 	entries, err := os.ReadDir(s.dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil, nil
@@ -46,11 +49,46 @@ func Open(stateHome, home string) (Store, []domain.Node, error) {
 			return Store{}, nil, err
 		}
 		var n domain.Node
-		if err := json.Unmarshal(b, &n); err != nil || n.CreatedAt <= 0 || !domain.ValidName(n.Name) || !domain.ValidDescription(n.Description) ||
+		var record struct {
+			Shortcut *int `json:"shortcut"`
+		}
+		if err := json.Unmarshal(b, &n); err != nil || json.Unmarshal(b, &record) != nil || n.CreatedAt <= 0 || !domain.ValidName(n.Name) || !domain.ValidDescription(n.Description) ||
 			name != n.Name+".json" || (n.LastActive != 0 && n.LastActive < n.CreatedAt) {
 			return Store{}, nil, fmt.Errorf("invalid Node record %q", name)
 		}
+		if n.Shortcut < 0 || n.Shortcut > domain.ShortcutSlots || (n.Shortcut > 0 && seen[n.Shortcut]) {
+			return Store{}, nil, fmt.Errorf("invalid shortcut in Node record %q", name)
+		}
+		if record.Shortcut == nil {
+			legacy[n.Name] = true
+		}
+		if n.Shortcut > 0 {
+			seen[n.Shortcut] = true
+		}
 		nodes = append(nodes, n)
+	}
+	// Keep legacy name-only slots deterministic on first launch, then persist.
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].CreatedAt == nodes[j].CreatedAt {
+			return nodes[i].Name < nodes[j].Name
+		}
+		return nodes[i].CreatedAt < nodes[j].CreatedAt
+	})
+	for i, n := range nodes {
+		if !legacy[n.Name] {
+			continue
+		}
+		for slot := 1; slot <= domain.ShortcutSlots; slot++ {
+			if !seen[slot] {
+				n.Shortcut = slot
+				seen[slot] = true
+				break
+			}
+		}
+		if err := s.Save(n); err != nil {
+			return Store{}, nil, err
+		}
+		nodes[i] = n
 	}
 	return s, nodes, nil
 }

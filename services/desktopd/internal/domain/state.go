@@ -9,6 +9,7 @@ import (
 )
 
 const MaxNodeWindows = 8
+const ShortcutSlots = 9
 
 var (
 	ErrStaleSession  = errors.New("unknown WM session")
@@ -28,6 +29,7 @@ type Node struct {
 	Description string `json:"description,omitempty"`
 	CreatedAt   int64  `json:"created_at"`
 	LastActive  int64  `json:"last_active,omitempty"`
+	Shortcut    int    `json:"shortcut"`
 }
 
 type Session struct {
@@ -72,6 +74,22 @@ func (s *State) Create(name string) bool {
 	}
 	s.Put(Node{Name: name})
 	return true
+}
+
+// FreeShortcut leaves existing assignments alone; larger catalogs still work.
+func (s *State) FreeShortcut() int {
+	var claimed [ShortcutSlots + 1]bool
+	for _, n := range s.nodes {
+		if n.Shortcut > 0 && n.Shortcut <= ShortcutSlots {
+			claimed[n.Shortcut] = true
+		}
+	}
+	for slot := 1; slot <= ShortcutSlots; slot++ {
+		if !claimed[slot] {
+			return slot
+		}
+	}
+	return 0
 }
 
 func (s *State) Exists(name string) bool { _, ok := s.nodes[name]; return ok }

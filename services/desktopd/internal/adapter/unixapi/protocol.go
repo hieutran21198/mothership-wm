@@ -29,7 +29,12 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 		case domainipc.SubscribeMethod:
 			d.subscribe(ctx, c, req.ID)
 		case domainipc.MapShowMethod, domainipc.MapHideMethod:
+			d.mu.Lock()
+			if req.Method == domainipc.MapHideMethod {
+				d.prepared = nil
+			}
 			d.service.SetMapVisible(req.Method == domainipc.MapShowMethod)
+			d.mu.Unlock()
 			sendSuccess(c, req.ID)
 		case domainipc.SnapshotMethod:
 			sendSnapshot(c, req.ID, d.service.Snapshot())
@@ -51,6 +56,30 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			return
 		}
 		if err := d.service.CreateNode(b.Domain, b.Description); err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		sendSuccess(c, req.ID)
+	case domainipc.PrepareFocusMethod:
+		b, err := domainipc.Decode[domainipc.DomainBody](req.Body)
+		if err != nil || !validWord(b.Domain) {
+			badBody()
+			return
+		}
+		ticket, err := d.prepareFocus(b.Domain)
+		if err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		body, _ := json.Marshal(domainipc.FocusTicket{Ticket: ticket})
+		_ = domainipc.WriteJSON(c, domainipc.Response{ID: req.ID, Body: body})
+	case domainipc.RevealFocusMethod:
+		b, err := domainipc.Decode[domainipc.FocusTicket](req.Body)
+		if err != nil || b.Ticket == 0 {
+			badBody()
+			return
+		}
+		if err := d.focusView("", b.Ticket); err != nil {
 			sendCommandError(c, req.ID, err)
 			return
 		}
@@ -117,6 +146,8 @@ func sendCommandError(c *net.UnixConn, id uint64, err error) {
 		code = "unknown_domain"
 	case errors.Is(err, domain.ErrDomainFull):
 		code = "domain_full"
+	case errors.Is(err, errStalePrepared):
+		code = "stale_connect"
 	case errors.Is(err, errOutcomeUnknown):
 		code = "outcome_unknown"
 	case errors.Is(err, errAssignmentViewUnknown):
@@ -150,7 +181,7 @@ func windowWire(w domain.Window) domainipc.Window {
 }
 
 func nodeWire(n domain.Node) domainipc.NodeProfile {
-	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive}
+	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive, Shortcut: n.Shortcut}
 }
 
 func sendSnapshot(c *net.UnixConn, id uint64, s app.Snapshot) bool {

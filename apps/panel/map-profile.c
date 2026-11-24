@@ -1,6 +1,7 @@
 //go:build linux && cgo && panel
 
 #include "map-profile.h"
+#include "shell-type.h"
 #include <gio/gdesktopappinfo.h>
 #include <math.h>
 
@@ -52,10 +53,8 @@ static void rim(cairo_t *cr,struct profile_rect inner) {
 
 static void label(cairo_t *cr,const char *value,double x,double y,double w,double size,gboolean strong) {
 	PangoLayout *layout=pango_cairo_create_layout(cr);
-	PangoFontDescription *font=pango_font_description_new();
-	pango_font_description_set_family(font,"Sans");
-	pango_font_description_set_absolute_size(font,size*PANGO_SCALE);
-	pango_font_description_set_weight(font,strong?PANGO_WEIGHT_SEMIBOLD:PANGO_WEIGHT_NORMAL);
+	PangoFontDescription *font=shell_font_description(NULL,size,
+		strong?PANGO_WEIGHT_SEMIBOLD:PANGO_WEIGHT_MEDIUM);
 	pango_layout_set_font_description(layout,font);
 	pango_layout_set_text(layout,value,-1);
 	pango_layout_set_single_paragraph_mode(layout,TRUE);
@@ -81,22 +80,23 @@ GHashTable *profile_parse(const char *rows) {
 	GHashTable *out=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,profile_data_free);
 	g_auto(GStrv) lines=g_strsplit(rows,"\n",-1);
 	for(char **line=lines; *line; ++line) {
-		g_auto(GStrv) fields=g_strsplit(*line,"\t",6);
-		if(g_strv_length(fields)!=6) continue;
+		g_auto(GStrv) fields=g_strsplit(*line,"\t",7);
+		int count=g_strv_length(fields);
+		if(count!=6 && count!=7) continue;
 		struct profile_data *d=g_new0(struct profile_data,1);
 		d->created_at=g_ascii_strtoll(fields[1],NULL,10);
 		d->last_active=g_ascii_strtoll(fields[2],NULL,10);
 		d->empty=g_str_equal(fields[3],"true");
 		d->description=g_strdup(fields[4]);
 		d->app_ids=g_strsplit(fields[5],",",-1);
+		d->shortcut=count==7?CLAMP((int)g_ascii_strtoll(fields[6],NULL,10),0,9):0;
 		g_hash_table_replace(out,g_strdup(fields[0]),d);
 	}
 	return out;
 }
 
 double profile_height(const struct profile_data *d) {
-	return 95+(d && *d->description?24:0)+(d && d->created_at>0?22:0)+
-		(d && d->last_active>0?22:0)+(d && (d->empty || d->app_ids[0])?27:0);
+	return 108+(d && *d->description?24:0)+(d && (d->created_at>0 || d->last_active>0)?22:0)+(d && (d->empty || d->app_ids[0])?27:0);
 }
 
 static char *elapsed(gint64 from,gint64 now) {
@@ -105,6 +105,88 @@ static char *elapsed(gint64 from,gint64 now) {
 	if(min<60) return g_strdup_printf("%" G_GINT64_FORMAT "m",min);
 	if(min<1440) return g_strdup_printf("%" G_GINT64_FORMAT "h %" G_GINT64_FORMAT "m",min/60,min%60);
 	return g_strdup_printf("%" G_GINT64_FORMAT "d %" G_GINT64_FORMAT "h",min/1440,(min%1440)/60);
+}
+
+static PangoLayout *stat_layout(cairo_t *cr,const char *caption,const char *value) {
+	PangoLayout *layout=pango_cairo_create_layout(cr);
+	PangoFontDescription *font=shell_font_description(NULL,12,PANGO_WEIGHT_MEDIUM);
+	pango_layout_set_font_description(layout,font);
+	pango_font_description_free(font);
+	pango_layout_set_single_paragraph_mode(layout,TRUE);
+	g_autofree char *line=g_markup_printf_escaped(
+		"<span foreground=\"#9eb6c9\">%s</span>  <span foreground=\"#e8f2fa\" weight=\"semibold\">%s</span>",
+		caption,value);
+	pango_layout_set_markup(layout,line,-1);
+	return layout;
+}
+
+static void stat_icon(cairo_t *cr,double x,double y,gboolean activity) {
+	cairo_new_path(cr);
+	cairo_set_source_rgb(cr,.56,.72,.81);
+	cairo_set_line_width(cr,1);
+	cairo_set_line_join(cr,CAIRO_LINE_JOIN_ROUND);
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
+	if(!activity) {
+		cairo_arc(cr,x+5,y,4.5,0,2*G_PI);
+		cairo_move_to(cr,x+5,y-2.5);
+		cairo_line_to(cr,x+5,y);
+		cairo_line_to(cr,x+7,y+1.5);
+	} else {
+		cairo_move_to(cr,x,y);cairo_line_to(cr,x+3,y);
+		cairo_line_to(cr,x+4.6,y-3.2);cairo_line_to(cr,x+6.1,y+3.1);
+		cairo_line_to(cr,x+7.8,y-1.0);cairo_line_to(cr,x+9,y);
+		cairo_line_to(cr,x+11,y);
+	}
+	cairo_stroke(cr);
+}
+
+static void profile_stats(cairo_t *cr,const struct profile_data *d,double x,double y,double w,gint64 now) {
+	g_autofree char *age=d->created_at>0?elapsed(d->created_at,now):NULL;
+	g_autofree char *idle=d->last_active>0?elapsed(d->last_active,now):NULL;
+	g_autofree char *active=idle?g_strdup_printf("%s ago",idle):NULL;
+	const char *values[]={age,active};
+	const char *captions[]={"Running time","Last active"};
+	PangoLayout *layouts[2]={NULL,NULL};
+	int natural[2]={0,0};
+	const double icon_gap=16,seam_gap=19;
+	gboolean paired=age && active;
+	double available=MAX(0,w-icon_gap*(paired?2:1)-(paired?seam_gap:0));
+	for(int n=0;n<2;n++) if(values[n]) {
+		layouts[n]=stat_layout(cr,captions[n],values[n]);
+		pango_layout_get_pixel_size(layouts[n],&natural[n],NULL);
+	}
+	if(paired && natural[0]+natural[1]>available) {
+		// At narrow windows keep both groups on the same row and prefer
+		// both real values to squeezing each of the long captions.
+		const char *compact[]={"Run","Active"};
+		for(int n=0;n<2;n++) {
+			g_object_unref(layouts[n]);
+			layouts[n]=stat_layout(cr,compact[n],values[n]);
+			pango_layout_get_pixel_size(layouts[n],&natural[n],NULL);
+		}
+	}
+	double widths[2]={MIN(natural[0],available),MIN(natural[1],available)};
+	if(paired && natural[0]+natural[1]>available) {
+		widths[0]=MIN(natural[0],available-MIN(natural[1],available*.5));
+		widths[1]=available-widths[0];
+	}
+	for(int n=0;n<2;n++) if(layouts[n]) {
+		int h;pango_layout_get_pixel_size(layouts[n],NULL,&h);
+		stat_icon(cr,x,y+h*.5,n==1);
+		pango_layout_set_width(layouts[n],MAX(1,widths[n])*PANGO_SCALE);
+		pango_layout_set_ellipsize(layouts[n],PANGO_ELLIPSIZE_END);
+		cairo_move_to(cr,x+icon_gap,y);
+		pango_cairo_show_layout(cr,layouts[n]);
+		x+=icon_gap+widths[n];
+		if(n==0 && paired) {
+			cairo_set_source_rgba(cr,.56,.72,.81,.42);
+			cairo_set_line_width(cr,1);
+			cairo_move_to(cr,x+9.5,y+3);cairo_line_to(cr,x+9.5,y+h-3);
+			cairo_stroke(cr);
+			x+=seam_gap;
+		}
+		g_object_unref(layouts[n]);
+	}
 }
 
 static void icons_resolve(GtkWidget *widget,struct profile_data *d) {
@@ -127,35 +209,35 @@ static void icons_resolve(GtkWidget *widget,struct profile_data *d) {
 	}
 }
 
+void profile_draw_chrome(cairo_t *cr,struct profile_rect r,gboolean flat) {
+	cutout(cr,r,PROFILE_CORNER);
+	if(flat) {
+		cairo_set_source_rgb(cr,.055,.105,.15);
+		cairo_fill_preserve(cr);
+	} else {
+		cairo_pattern_t *p=cairo_pattern_create_linear(r.x,r.y,r.x,r.y+r.h);
+		cairo_pattern_add_color_stop_rgb(p,0,.085,.16,.21);
+		cairo_pattern_add_color_stop_rgb(p,1,.055,.103,.151);
+		cairo_set_source(cr,p);cairo_fill_preserve(cr);cairo_pattern_destroy(p);
+	}
+	cairo_set_source_rgb(cr,.50,.64,.71);cairo_set_line_width(cr,1.3);cairo_stroke(cr);
+	rim(cr,r);
+}
+
 static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d) {
 	struct profile_rect r=layout.card,b=layout.fly;
 	double extent=PROFILE_RIM_GAP+2;
 	graphene_rect_t bounds=GRAPHENE_RECT_INIT(r.x-extent,r.y-extent,r.w+2*extent,r.h+2*extent);
 	cairo_t *cr=gtk_snapshot_append_cairo(snap,&bounds);
-	cutout(cr,r,PROFILE_CORNER);
-	cairo_pattern_t *p=cairo_pattern_create_linear(r.x,r.y,r.x,r.y+r.h);
-	cairo_pattern_add_color_stop_rgb(p,0,.085,.16,.21);
-	cairo_pattern_add_color_stop_rgb(p,1,.055,.103,.151);
-	cairo_set_source(cr,p);cairo_fill_preserve(cr);cairo_pattern_destroy(p);
-	cairo_set_source_rgb(cr,.50,.64,.71);cairo_set_line_width(cr,1.3);cairo_stroke(cr);
-	rim(cr,r);
-	double x=r.x+15,y=r.y+12,w=r.w-30;
+	profile_draw_chrome(cr,r,FALSE);
+	double x=r.x+PROFILE_PADDING,y=r.y+PROFILE_PADDING,w=r.w-2*PROFILE_PADDING;
 	label(cr,name,x,y,w,26,TRUE);y+=36;
 	if(d && *d->description) { label(cr,d->description,x,y,w,15,FALSE);y+=24; }
 	gint64 now=g_get_real_time()/G_USEC_PER_SEC;
-	if(d && d->created_at>0) {
-		g_autofree char *t=elapsed(d->created_at,now);
-		g_autofree char *s=g_strdup_printf("Running time   %s",t);
-		label(cr,s,x,y,MAX(1,w-44),12,FALSE);y+=22;
-	}
-	if(d && d->last_active>0) {
-		g_autofree char *t=elapsed(d->last_active,now);
-		g_autofree char *s=g_strdup_printf("Last active   %s ago",t);
-		label(cr,s,x,y,MAX(1,w-44),12,FALSE);y+=22;
-	}
-	double row=r.y+r.h-46;
-	if(d && d->empty) label(cr,"No windows open",x,row+8,MAX(1,w-53),12,FALSE);
-	double available=b.x-x-8;
+	if(d && (d->created_at>0 || d->last_active>0)) profile_stats(cr,d,x,y,w,now);
+	double row=b.y+(b.h-29)*.5;
+	double available=b.x-x-12;
+	if(d && d->empty) label(cr,"No windows open",x,row+6,MAX(1,available),12,FALSE);
 	int shown=0;
 	if(widget) icons_resolve(widget,d);
 	int count=d && d->icons ? (int)d->icons->len : 0;
@@ -168,7 +250,7 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 	}
 	if(d && (d->empty || count)) {
 		cairo_set_source_rgba(cr,.32,.48,.56,.75);cairo_set_line_width(cr,1);
-		cairo_move_to(cr,x,row-8);cairo_line_to(cr,r.x+r.w-15,row-8);cairo_stroke(cr);
+		cairo_move_to(cr,x,b.y-8);cairo_line_to(cr,r.x+r.w-PROFILE_PADDING,b.y-8);cairo_stroke(cr);
 	}
 	for(int i=0;i<shown;i++) {
 		cutout(cr,(struct profile_rect){x+i*33,row,28,29},4);

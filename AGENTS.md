@@ -23,8 +23,12 @@ use the templates to draft the missing knowledge before proposing implementation
 Add only affected rules and contracts. Review unapproved design with the owner.
 A behavior-preserving fix within approved knowledge needs no new documents.
 
-For shell styling, references, mockups or visual review, use the
-[mothership-shell-design skill](.agents/skills/mothership-shell-design/SKILL.md).
+Before implementing or reviewing Center Map or shell UI, open the
+[mothership-shell-design skill](.agents/skills/mothership-shell-design/SKILL.md),
+then the linked UI spec, source assets and reviewer checklist. This
+applies to delegated agents too. In a spawn brief, include the affected
+feature, exact rule/reference paths and required native evidence; do not
+assume the new agent has the chat or its screenshots.
 
 Use the project tooling and its local instructions. Do not add global tools,
 extra process gates, duplicate runbooks, or stale copies of task handoffs.

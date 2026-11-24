@@ -1,6 +1,7 @@
 //go:build linux && cgo && wlroots
 
 #include "nested-seat.h"
+#include "generated-map-pointer.h"
 
 #include <stdint.h>
 #include <math.h>
@@ -31,13 +32,13 @@ struct nested_seat {
 	nested_move_start start_move;
 	nested_move_update update_move;
 	nested_map_scroll map_scroll;
-	nested_map_click map_click;
+	nested_map_contact map_contact;
 	nested_chrome_action chrome;
 	nested_flow_scroll flow_scroll;
 	nested_flow_cycle cycle;
 	int cycle_steps;
 	bool cycle_tab;
-	bool map_pressed;
+	bool map_pressed, map_release_pending;
 	double map_pressed_x,map_pressed_y;
 	struct pending_axis axes[2];
 	enum wl_pointer_axis_source axis_source;
@@ -62,6 +63,14 @@ static struct wlr_surface *keyboard_target(struct nested_seat *seat) {
 static struct wlr_surface *map_panel(struct nested_seat *seat) {
 	if (!seat->keyboard_inside) return NULL;
 	return seat->panel_focus ? seat->panel_focus : (seat->selected ? NULL : seat->blank_shell);
+}
+
+void nested_seat_cancel_map_pointer(struct nested_seat *seat) {
+	if (!seat || !seat->map_pressed) return;
+	seat->map_pressed = false;
+	seat->map_release_pending = seat->buttons_held[BTN_LEFT];
+	seat->map_contact(seat->data,NULL,seat->x,seat->y,
+		MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_CANCEL);
 }
 
 static void keyboard_focus(struct nested_seat *seat) {
@@ -114,6 +123,7 @@ void nested_seat_blank_shell(struct nested_seat *seat,struct wlr_surface *panel)
 	struct wlr_surface *before=keyboard_target(seat);
 	seat->blank_shell=panel;
 	if (keyboard_target(seat)!=before) {
+		nested_seat_cancel_map_pointer(seat);
 		isolate_keys(seat);
 		keyboard_focus(seat);
 	}
@@ -134,7 +144,7 @@ void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool
 		return;
 	}
 	struct wlr_surface *before=keyboard_target(seat);
-	seat->map_pressed = false;
+	nested_seat_cancel_map_pointer(seat);
 	seat->panel_focus = acquire ? panel : NULL;
 	if (keyboard_target(seat)!=before) {
 		isolate_keys(seat);
@@ -161,7 +171,7 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bo
 	wlr_seat_pointer_clear_focus(seat->child);
 	seat->child->pointer_state.button_count = 0;
 	seat->child->pointer_state.grab_serial = 0;
-	seat->map_pressed = false;
+	nested_seat_cancel_map_pointer(seat);
 	if (!keep_panel) seat->panel_focus = NULL;
 	seat->selected = target;
 	keyboard_focus(seat);
@@ -199,7 +209,7 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->pointer_inside = false;
-		seat->map_pressed = false;
+		nested_seat_cancel_map_pointer(seat);
 		if (seat->moving) {
 			seat->update_move(seat->data, false, seat->x, seat->y);
 			seat->moving = false;
@@ -224,6 +234,11 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 		return;
 	}
 	struct nested_hit hit = pointer_focus(seat);
+	if (seat->map_pressed) {
+		if (hit.surface || !seat->map_contact(seat->data,map_panel(seat),seat->x,seat->y,
+				MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_MOTION))
+			nested_seat_cancel_map_pointer(seat);
+	}
 	if (hit.surface != NULL) {
 		wlr_seat_pointer_notify_motion(seat->child, time, hit.x, hit.y);
 	}
@@ -240,6 +255,14 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	}
 	bool was_held = seat->buttons_held[button];
 	seat->buttons_held[button] = state == WL_POINTER_BUTTON_STATE_PRESSED;
+	if (button == BTN_LEFT && seat->map_release_pending) {
+		seat->map_release_pending = false;
+		seat->buttons_blocked[button] = false;
+		if (!seat->buttons_held[button]) return;
+		// A fresh press means the previous release happened outside our
+		// surface. Never require an extra click to rearm navigation.
+		was_held = false;
+	}
 	if (seat->buttons_blocked[button]) {
 		seat->buttons_blocked[button] = seat->buttons_held[button];
 		return;
@@ -275,15 +298,19 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		return;
 	}
 	if (button == BTN_LEFT && seat->map_pressed && state == WL_POINTER_BUTTON_STATE_RELEASED) {
-		seat->map_pressed = false;
-		if (!hit.surface && map &&
-				fabs(seat->x-seat->map_pressed_x)<6 && fabs(seat->y-seat->map_pressed_y)<6)
-			seat->map_click(seat->data,map,seat->x,seat->y,true);
+		if (hit.surface || !seat->map_contact(seat->data,map,seat->x,seat->y,
+				MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_END)) {
+			nested_seat_cancel_map_pointer(seat);
+		} else {
+			seat->map_pressed = false;
+			if (fabs(seat->x-seat->map_pressed_x)<6 && fabs(seat->y-seat->map_pressed_y)<6)
+				seat->map_contact(seat->data,map,seat->x,seat->y,NESTED_MAP_LEGACY_CLICK);
+		}
 		return;
 	}
-	if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED && !hit.surface &&
-			map &&
-			seat->map_click(seat->data,map,seat->x,seat->y,false)) {
+	if (button == BTN_LEFT && !was_held && state == WL_POINTER_BUTTON_STATE_PRESSED && !hit.surface &&
+			seat->map_contact(seat->data,map,seat->x,seat->y,
+				MOTHERSHIP_MAP_POINTER_V1_CONTACT_PHASE_BEGIN)) {
 		seat->map_pressed = true;
 		seat->map_pressed_x = seat->x;
 		seat->map_pressed_y = seat->y;
@@ -450,7 +477,7 @@ static void keyboard_leave(void *data, struct wl_keyboard *keys, uint32_t serial
 		seat->keyboard_inside = false;
 		seat->cycle_steps=0;
 		seat->cycle_tab=false;
-		seat->map_pressed = false;
+		nested_seat_cancel_map_pointer(seat);
 		seat->keyboard.num_keycodes = 0;
 		keyboard_focus(seat);
 	}
@@ -526,6 +553,7 @@ static const struct wl_keyboard_listener keyboard_listener = {
 };
 
 static void drop_pointer(struct nested_seat *seat) {
+	nested_seat_cancel_map_pointer(seat);
 	if (seat->pointer != NULL) {
 		if (wl_pointer_get_version(seat->pointer) >= WL_POINTER_RELEASE_SINCE_VERSION) {
 			wl_pointer_release(seat->pointer);
@@ -535,12 +563,14 @@ static void drop_pointer(struct nested_seat *seat) {
 		seat->pointer = NULL;
 	}
 	seat->pointer_inside = false;
+	seat->map_release_pending = false;
 	memset(seat->buttons_held, 0, sizeof(seat->buttons_held));
 	memset(seat->buttons_blocked, 0, sizeof(seat->buttons_blocked));
 	wlr_seat_pointer_notify_clear_focus(seat->child);
 }
 
 static void drop_keyboard(struct nested_seat *seat) {
+	nested_seat_cancel_map_pointer(seat);
 	seat->cycle_steps=0;
 	seat->cycle_tab=false;
 	if (seat->keys != NULL) {
@@ -623,7 +653,7 @@ static const struct wl_registry_listener registry_listener = {
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
 		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
-		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,nested_map_click click,
+		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,nested_map_contact contact,
 		nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_flow_cycle cycle,void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
@@ -642,7 +672,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->start_move = start_move;
 	seat->update_move = update_move;
 	seat->map_scroll=scroll;
-	seat->map_click=click;
+	seat->map_contact=contact;
 	seat->chrome=chrome;
 	seat->flow_scroll=flow_scroll;
 	seat->cycle=cycle;

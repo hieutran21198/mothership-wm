@@ -26,6 +26,8 @@ struct layer {
 	struct wl_subsurface *subsurface;
 	struct wp_viewport *viewport;
 	struct artwork *shown;
+	graphene_rect_t crop;
+	int x,y;
 };
 
 static struct {
@@ -34,7 +36,7 @@ static struct {
 	struct wl_subcompositor *subcompositor;
 	struct wl_shm *shm;
 	struct wp_viewporter *viewporter;
-	struct layer anchor,beam,locks[4];
+	struct layer anchor,beam[4],locks[4];
 	struct artwork blank,strip,edges[EDGE_BUFFERS],corners[4][EDGE_BUFFERS];
 	double strip_width,strip_height,strip_scale;
 } radar;
@@ -139,7 +141,7 @@ static void destroy_layer(struct layer *s) {
 }
 
 void map_radar_end(void) {
-	destroy_layer(&radar.beam);
+	for (int i=0;i<4;i++) destroy_layer(&radar.beam[i]);
 	for (int i=0;i<4;i++) destroy_layer(&radar.locks[i]);
 	destroy_layer(&radar.anchor);
 	destroy_buffer(&radar.blank);
@@ -177,8 +179,11 @@ gboolean map_radar_begin(GtkWindow *hud) {
 	wl_surface_attach(radar.anchor.surface,radar.blank.buffer,0,0);
 	radar.blank.busy=TRUE;
 	wl_surface_commit(radar.anchor.surface);
-	if (!create_layer(&radar.beam,radar.anchor.surface,TRUE)) goto fail;
 	for(int i=0;i<4;i++) {
+		if (!create_layer(&radar.beam[i],radar.anchor.surface,TRUE)) goto fail;
+		// Crop, attachment and position must all change at the same parent
+		// commit; otherwise an old crop can flash at its new position.
+		wl_subsurface_set_sync(radar.beam[i].subsurface);
 		if (!create_layer(&radar.locks[i],radar.anchor.surface,TRUE)) goto fail;
 	}
 	return TRUE;
@@ -189,6 +194,7 @@ fail:
 
 static void attach_at(struct layer *s,struct artwork *tile,int w,int h,int x,int y) {
 	wl_subsurface_set_position(s->subsurface,x,y);
+	wp_viewport_set_source(s->viewport,-256,-256,-256,-256);
 	wp_viewport_set_destination(s->viewport,w,h);
 	wl_surface_attach(s->surface,tile->buffer,0,0);
 	wl_surface_damage(s->surface,0,0,w,h);
@@ -204,7 +210,29 @@ static void hide_layer(struct layer *s) {
 	s->shown=NULL;
 }
 
-struct radar_paint { double left,top,right,bottom,cut,tail,head; };
+static void place_crop(struct layer *layer,struct artwork *tile,graphene_rect_t strip,
+		graphene_rect_t piece) {
+	int x=(int)piece.origin.x,y=(int)piece.origin.y;
+	graphene_rect_t crop=GRAPHENE_RECT_INIT(x-strip.origin.x,y-strip.origin.y,
+		piece.size.width,piece.size.height);
+	if(layer->shown!=tile || x!=layer->x || y!=layer->y)
+		wl_subsurface_set_position(layer->subsurface,x,y);
+	if(layer->shown==tile && graphene_rect_equal(&layer->crop,&crop)) {
+		layer->x=x;layer->y=y;return;
+	}
+	if(layer->shown!=tile) wl_surface_attach(layer->surface,tile->buffer,0,0);
+	double sx=tile->width/strip.size.width,sy=tile->height/strip.size.height;
+	wl_fixed_t l=wl_fixed_from_double(crop.origin.x*sx),t=wl_fixed_from_double(crop.origin.y*sy);
+	wl_fixed_t r=wl_fixed_from_double((crop.origin.x+crop.size.width)*sx);
+	wl_fixed_t b=wl_fixed_from_double((crop.origin.y+crop.size.height)*sy);
+	wp_viewport_set_source(layer->viewport,l,t,r-l,b-t);
+	wp_viewport_set_destination(layer->viewport,(int)piece.size.width,(int)piece.size.height);
+	wl_surface_damage(layer->surface,0,0,(int)piece.size.width,(int)piece.size.height);
+	wl_surface_commit(layer->surface);
+	layer->shown=tile;layer->crop=crop;layer->x=x;layer->y=y;
+}
+
+struct radar_paint { double left,top,right,bottom,cut,tail,head; const graphene_rect_t *exclude; };
 static void paint_beam(cairo_t *cr,const void *arg) {
 	const struct radar_paint *p=arg;
 	double l=p->left,t=p->top,r=p->right,b=p->bottom,c=p->cut;
@@ -221,6 +249,12 @@ static void paint_beam(cairo_t *cr,const void *arg) {
 	cairo_set_source(cr,gradient);
 	cairo_paint(cr);
 	cairo_pattern_destroy(gradient);
+	if(p->exclude) {
+		const graphene_rect_t *e=p->exclude;
+		cairo_set_operator(cr,CAIRO_OPERATOR_CLEAR);
+		cairo_rectangle(cr,e->origin.x,e->origin.y,e->size.width,e->size.height);
+		cairo_fill(cr);
+	}
 }
 
 struct lock_paint { double x,y; int i; GdkRGBA color; };
@@ -236,7 +270,7 @@ static void paint_lock(cairo_t *cr,const void *data) {
 }
 
 gboolean map_radar_step(GtkWindow *hud,graphene_rect_t frame,gint64 elapsed,gint64 duration,
-		const GdkRGBA *color) {
+		const GdkRGBA *color,const graphene_rect_t *exclude) {
 	if (!radar.anchor.surface) return FALSE;
 	GdkSurface *surface=gtk_native_get_surface(GTK_NATIVE(hud));
 	if (!surface) return FALSE;
@@ -249,22 +283,33 @@ gboolean map_radar_step(GtkWindow *hud,graphene_rect_t frame,gint64 elapsed,gint
 			int bx=(int)round(s.tail);
 			double width=s.width,height=s.bottom-s.top;
 			if (!radar.strip.buffer || radar.strip_width!=width || radar.strip_height!=height || radar.strip_scale!=scale) {
-				if (radar.beam.shown==&radar.strip) hide_layer(&radar.beam);
+				for (int i=0;i<4;i++) if(radar.beam[i].shown==&radar.strip) hide_layer(&radar.beam[i]);
 				destroy_buffer(&radar.strip);
-				struct radar_paint p={0,s.top-by,width,s.bottom-by,0,0,width};
+				struct radar_paint p={0,s.top-by,width,s.bottom-by,0,0,width,NULL};
 				if (!paint_tile(&radar.strip,bw,bh,scale,paint_beam,&p)) return FALSE;
 				radar.strip_width=width;radar.strip_height=height;radar.strip_scale=scale;
 			}
-			if (radar.beam.shown==&radar.strip) wl_subsurface_set_position(radar.beam.subsurface,bx,by);
-			else attach_at(&radar.beam,&radar.strip,bw,bh,bx,by);
+			// All pieces share one immutable pixel buffer. There is no outline,
+			// gradient, raster or upload work when the crop moves.
+			graphene_rect_t strip=GRAPHENE_RECT_INIT(bx,by,bw,bh),pieces[4];
+			int count=map_radar_visible_rects(strip,exclude,pieces);
+			for(int i=0;i<4;i++) {
+				if(i<count) place_crop(&radar.beam[i],&radar.strip,strip,pieces[i]);
+				else hide_layer(&radar.beam[i]);
+			}
 		} else {
 			int bx=(int)floor(s.tail);
-			struct radar_paint p={s.left-bx,s.top-by,s.right-bx,s.bottom-by,s.cut,s.tail-bx,s.head-bx};
+			graphene_rect_t e;
+			if(exclude) e=GRAPHENE_RECT_INIT(exclude->origin.x-bx,exclude->origin.y-by,
+				exclude->size.width,exclude->size.height);
+			struct radar_paint p={s.left-bx,s.top-by,s.right-bx,s.bottom-by,s.cut,s.tail-bx,s.head-bx,
+				exclude?&e:NULL};
 			struct artwork *tile=paint_available(radar.edges,bw,bh,scale,paint_beam,&p);
 			if (!tile) return FALSE;
-			attach_at(&radar.beam,tile,bw,bh,bx,by);
+			attach_at(&radar.beam[0],tile,bw,bh,bx,by);
+			for(int i=1;i<4;i++) hide_layer(&radar.beam[i]);
 		}
-	} else hide_layer(&radar.beam);
+	} else for(int i=0;i<4;i++) hide_layer(&radar.beam[i]);
 	GdkRGBA lock=map_radar_lock_color(elapsed,color);
 	for(int i=0;i<4;i++) {
 		if (lock.alpha<=0) { hide_layer(&radar.locks[i]);continue; }

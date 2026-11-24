@@ -149,7 +149,7 @@ func (s *Service) CreateNode(name, description string) error {
 	if s.names.Exists(name) {
 		return nil
 	}
-	n := domain.Node{Name: name, Description: description, CreatedAt: s.unixNow()}
+	n := domain.Node{Name: name, Description: description, CreatedAt: s.unixNow(), Shortcut: s.names.FreeShortcut()}
 	if s.saveNode != nil {
 		if err := s.saveNode(n); err != nil {
 			return fmt.Errorf("could not save Node: %w", err)
@@ -189,6 +189,12 @@ func (s *Service) Assign(sessionID string, id uint64, name string) (Assignment, 
 		result.Members = s.members(selected.Domain)
 	}
 	return result, nil
+}
+
+func (s *Service) MapOverview() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready && s.mapVisible && s.selection.Kind == SelectionAcknowledged && s.selection.Overview
 }
 
 func (s *Service) ResolveHome() (string, error) {

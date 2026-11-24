@@ -20,6 +20,8 @@ has either a `body` or an `error` with `code` and `message`.
 | `create` | `{"domain":"Dev","description":"Backend Platform"}` (description optional) | `{}` |
 | `assign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7,"domain":"Dev"}` | `{}` |
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
+| `focus.prepare` | `{"domain":"Dev"}` | `{"ticket":42}` after WM preparation; no selection change |
+| `focus.reveal` | `{"ticket":42}` | `{}` after the first clipped WM output state |
 | `home` | `{}` | `{}` after WM acknowledgement |
 | `overview` | `{}` | `{}` after clearing the app projection in WM |
 | `map.show` / `map.hide` | `{}` | `{}` after updating the HUD visibility preference only |
@@ -52,7 +54,8 @@ false. A native session starts with this preference enabled, but the HUD
 draws only in Overview. It does not affect selection. Each window has `id`,
 `mapped`, `domain` when assigned, and bounded `app_id` if WM has one.
 `node_profiles` carries durable `domain`, optional `description`,
-`created_at` and optional `last_active`. Times are Unix seconds. The
+`created_at`, optional `last_active` and optional stable `shortcut` (1–9).
+Times are Unix seconds. The
 selection has `state`
 (`not_selected`, `acknowledged`, or `unknown`) and includes `domain`
 only for an acknowledged named Domain. Confirmed Home is
@@ -89,3 +92,11 @@ ID/epoch pairs for a named Node; full-width decimal IDs fit within its
 512-byte packet bound for both select and assignment reprojection. The WM
 reports optional app metadata with `app WINDOW_ID APP_ID`, or
 `app WINDOW_ID` to clear it. Metadata never changes membership.
+
+
+Animated Map-only focus uses one private, single-use preparation ticket
+bound to the current WM peer and acknowledged Map Overview. Regular focus,
+Home, Overview or Map hide supersedes a prepared request. Reveal resolves
+live membership again; the ticket does not store stale window IDs.
+Read selection only from the normal snapshot/subscription, never from the
+preparation response. A stale ticket returns `stale_connect`.

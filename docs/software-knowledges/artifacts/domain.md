@@ -13,8 +13,8 @@ Domain does not own seats.
 | DOM-2 | Destroy or session end removes old refs. Unmap changes visibility, not membership. Reopening creates a new unassigned ref. Old-session and closed IDs cannot be assigned. |
 | DOM-3 | `FocusDomain` names an existing Domain and resolves its members. Only WM applies the visible set and determines the eligible keyboard target. Membership grants no authority to send input. |
 
-Only Node name, optional plain-text description, creation time and latest
-acknowledged workspace entry are durable, local to the current user.
+Only Node name, optional plain-text description, creation time, latest
+acknowledged workspace entry and optional Map shortcut slot are durable, local to the current user.
 Creation time is set once. Last active advances only when WM acknowledges an
 explicit entry into that named workspace, including an empty Node; layout,
 assignment, hover and profile changes do not affect it. Node age and activity

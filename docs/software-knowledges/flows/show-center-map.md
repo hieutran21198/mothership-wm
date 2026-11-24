@@ -25,8 +25,8 @@ the [Overview selection flow](view-node-layouts.md).
 Start Panel with a theme and show the HUD. Read only the existing live
 Node names and Overview slots. After adding a Node whose name sorts earlier,
 the already assigned positions remain; hide and show do not allocate new
-positions. The canvas has separate global passes for tint/grid and the single chamfered border,
-Node symbols, then leaders and labels. Only the tint honors the configured
+positions. The canvas has separate global passes for tint/grid and the chamfered border,
+then Node symbols and their labels. Only the tint honors the configured
 opacity, which defaults to 0. The grid has no coordinate rulers. The font style is local to map labels. Missing assets and invalid
 styles preserve a usable view.
 
@@ -47,10 +47,13 @@ defaults when the override is invalid.
 In Command Center, choose Map View or press M from blank Home. The Panel waits for Overview
 and Map visibility and uses the existing shell keyboard target. WASD pans
 only Nodes and labels with the configured speed. Wheel inside the frame
-zooms around the cursor and scales the icons, not the label font, grid, frame or wallpaper. M, H or Done cancels movement and hides the Map, leaving the wallpaper
+zooms around the cursor and scales the icons, not the label font, grid, frame
+or wallpaper. Drag from blank space inside the frame pulls the map with the
+pointer after a movement threshold. Release, leaving the frame or focus loss
+stops drag. M or H cancels movement and hides the Map, leaving the wallpaper
 and Command Center entry without reopening apps. Escape dismisses a
 profile only; it does not close the Map. Focus loss stops movement. Outside Map
-View these controls keep their ordinary routing. Fly requests the named
+View these controls keep their ordinary routing. Connect requests the named
 workspace and reveals it after acknowledgement, without map movement.
 
 ### F-MAP-5
@@ -59,7 +62,7 @@ While Map View owns the existing shell input, click a Node marker or name.
 The Panel shows its profile beside the projected anchor and keeps the card
 inside the frame. Clicking a different Node replaces it; clicking empty
 space, including the margin, dismisses it. It also closes when its Node
-scrolls out of view or Map View loses focus. Fly in the profile uses the
+scrolls out of view or Map View loses focus. Connect in the profile uses the
 existing named-workspace request and acknowledgement. Node selection does
 not itself request a workspace switch or change Last active. Render the
 real name and optional description. Running time is Node age (now minus

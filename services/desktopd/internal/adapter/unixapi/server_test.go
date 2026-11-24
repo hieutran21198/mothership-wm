@@ -470,3 +470,45 @@ func TestNodeOverviewAndLayoutRequireWMAcknowledgement(t *testing.T) {
 	apply(14, "focus", `{"domain":"Dev"}`, "node", "flow-vertical")
 	want(11, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow-vertical"}, true)
 }
+
+func TestPrepareDoesNotSelectAndRevealUsesSingleLiveTicket(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	send(t, wm, "ready_handoff")
+	success(t, s.request(1, "create", `{"domain":"Dev"}`), 1)
+	success(t, s.request(2, "map.show", "{}"), 2)
+	c := s.request(3, "overview", "{}")
+	packet := strings.Fields(read(t, wm))
+	send(t, wm, "applied "+packet[1])
+	success(t, c, 3)
+	p := s.request(4, "focus.prepare", `{"domain":"Dev"}`)
+	packet = strings.Fields(read(t, wm))
+	if packet[0] != "prepare" {
+		t.Fatal(packet)
+	}
+	send(t, wm, "applied "+packet[1])
+	ticket := decode[domainipc.FocusTicket](t, success(t, p, 4))
+	snap := func() domainipc.Snapshot {
+		return decode[domainipc.Snapshot](t, success(t, s.request(5, "snapshot", "{}"), 5))
+	}
+	if before := snap(); before.Selection.View != "overview" || before.NodeProfiles[0].LastActive != 0 {
+		t.Fatalf("prepare changed state: %+v", before)
+	}
+	body := `{"ticket":` + strconv.FormatUint(ticket.Ticket, 10) + `}`
+	r := s.request(6, "focus.reveal", body)
+	packet = strings.Fields(read(t, wm))
+	if packet[0] != "reveal" || packet[2] != "flow" {
+		t.Fatal(packet)
+	}
+	if snap().Selection.View != "overview" {
+		t.Fatal("selection changed without frame ACK")
+	}
+	send(t, wm, "applied "+packet[1])
+	success(t, r, 6)
+	if after := snap(); after.Selection.Domain != "Dev" || after.NodeProfiles[0].LastActive == 0 {
+		t.Fatalf("no reveal selection: %+v", after)
+	}
+	if r := reply(t, s.request(7, "focus.reveal", body), 7); r.Error == nil || r.Error.Code != "stale_connect" {
+		t.Fatalf("ticket reused: %+v", r)
+	}
+}
