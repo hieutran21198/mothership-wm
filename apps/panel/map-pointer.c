@@ -17,7 +17,12 @@ static void zoom(void *data,struct mothership_map_pointer_v1 *p,wl_fixed_t x,wl_
 	if (zoom_enabled) panel_map_scroll(wl_fixed_to_double(x),wl_fixed_to_double(y),wl_fixed_to_double(delta));
 }
 
-static const struct mothership_map_pointer_v1_listener events={.zoom=zoom};
+static void click(void *data,struct mothership_map_pointer_v1 *p,wl_fixed_t x,wl_fixed_t y) {
+	(void)data;(void)p;
+	if (zoom_enabled) panel_map_click(wl_fixed_to_double(x),wl_fixed_to_double(y));
+}
+
+static const struct mothership_map_pointer_v1_listener events={.zoom=zoom,.click=click};
 
 static void watch(void) {
 	if(!pointer || !gtk_widget_get_mapped(GTK_WIDGET(command))) return;
@@ -37,7 +42,7 @@ static void command_mapped(GtkWidget *widget,gpointer data) {
 static void global(void *data,struct wl_registry *r,uint32_t name,const char *interface,uint32_t version) {
 	(void)data;(void)version;
 	if(pointer || strcmp(interface,mothership_map_pointer_v1_interface.name)!=0) return;
-	pointer=wl_registry_bind(r,name,&mothership_map_pointer_v1_interface,MIN(version,1));
+	pointer=wl_registry_bind(r,name,&mothership_map_pointer_v1_interface,MIN(version,2));
 	if(pointer) {
 		pointer_name=name;
 		mothership_map_pointer_v1_add_listener(pointer,&events,NULL);

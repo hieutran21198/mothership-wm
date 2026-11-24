@@ -6,6 +6,10 @@ changes. Keep technical choices and their rationale in
 Flows for behavior, and Artifacts for domain rules.
 
 - [Mothership WM system overview](mothership-wm.md): actors, current slice, and planned parts.
+- [Center Map UI contract](center-map-ui.md): layers, Node Detail, and minimap design.
+
+- [Mothership shell design system](shell-design.md): shared visual rules,
+  component contracts, and review checks; not a runtime contract.
 
 ## Template
 

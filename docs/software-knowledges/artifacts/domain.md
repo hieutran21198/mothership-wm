@@ -13,8 +13,14 @@ Domain does not own seats.
 | DOM-2 | Destroy or session end removes old refs. Unmap changes visibility, not membership. Reopening creates a new unassigned ref. Old-session and closed IDs cannot be assigned. |
 | DOM-3 | `FocusDomain` names an existing Domain and resolves its members. Only WM applies the visible set and determines the eligible keyboard target. Membership grants no authority to send input. |
 
-For this slice membership is in memory only. No persistence, app rules,
-agent or public API. See the [FocusDomain Flow](../flows/focus-domain.md).
+Only Node name, optional plain-text description, creation time and latest
+acknowledged workspace entry are durable, local to the current user.
+Creation time is set once. Last active advances only when WM acknowledges an
+explicit entry into that named workspace, including an empty Node; layout,
+assignment, hover and profile changes do not affect it. Node age and activity
+can be absent for a client that has no reliable source. Window IDs,
+membership, layouts and focus remain session-only. App IDs are display
+metadata, not an assignment rule. See the [FocusDomain Flow](../flows/focus-domain.md).
 
 ## Active projection on assignment
 

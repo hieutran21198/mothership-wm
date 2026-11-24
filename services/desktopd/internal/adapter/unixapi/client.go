@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/services/desktopd/internal/domain"
 )
 
 // Request keeps the existing CLI syntax and output. Its wire uses the same
@@ -18,7 +19,10 @@ func Request(ctx context.Context, path string, args []string) (string, error) {
 	if len(args) == 0 {
 		return "", errors.New("expected list, create, assign, focus, home, overview or map show|hide")
 	}
-	for _, s := range args {
+	for i, s := range args {
+		if i == 2 && args[0] == "create" && len(args) == 3 && domain.ValidDescription(s) {
+			continue
+		}
 		if !validWord(s) {
 			return "", errors.New("invalid command argument")
 		}
@@ -37,7 +41,16 @@ func Request(ctx context.Context, path string, args []string) (string, error) {
 		body = domainipc.Empty{}
 	case method == "list" && len(args) == 1:
 		method, body = domainipc.SnapshotMethod, domainipc.Empty{}
-	case (method == "create" || method == "focus") && len(args) == 2:
+	case method == "create" && (len(args) == 2 || len(args) == 3):
+		create := domainipc.CreateBody{Domain: args[1]}
+		if len(args) == 3 {
+			if !domain.ValidDescription(args[2]) {
+				return "", errors.New("invalid Node description")
+			}
+			create.Description = args[2]
+		}
+		body = create
+	case method == "focus" && len(args) == 2:
 		body = domainipc.DomainBody{Domain: args[1]}
 	case method == "assign" && len(args) == 4:
 		id, err := strconv.ParseUint(args[2], 10, 64)

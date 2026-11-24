@@ -142,7 +142,7 @@ struct xdg_view {
 	bool mapped, assigned;
 	int slot;
 	struct wl_list link;
-	struct wl_listener map, unmap, commit, destroy, tree_destroy;
+	struct wl_listener map, unmap, commit, destroy, tree_destroy, app_id;
 };
 
 struct shell_panel {
@@ -176,6 +176,12 @@ static void position_panel(struct shell_panel *panel) {
 	wlr_layer_surface_v1_configure(panel->layer, pw, ph);
 }
 
+static void refresh_blank_shell(struct nested *wm) {
+	bool blank=wm->overview_active || (wm->home_active && wm->visible_count==0);
+	nested_seat_blank_shell(wm->seat,blank && wm->panel && wm->panel->layer->surface->mapped
+		? wm->panel->layer->surface : NULL);
+}
+
 static void panel_commit(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, commit);
@@ -195,6 +201,7 @@ static void panel_map(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, map);
 	if (panel->paint_only) return;
+	refresh_blank_shell(panel->wm);
 	puts("SHELL_READY");
 	fflush(stdout);
 }
@@ -203,6 +210,7 @@ static void panel_unmap(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, unmap);
 	if (!panel->paint_only) {
+		nested_seat_blank_shell(panel->wm->seat,NULL);
 		panel->wants_keyboard = false;
 		nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
 	}
@@ -212,6 +220,7 @@ static void panel_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, destroy);
 	if (!panel->paint_only) {
+		nested_seat_blank_shell(panel->wm->seat,NULL);
 		nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
 		panel->wm->map_zoom_enabled=false;
 		panel->wm->map_pointer=NULL;
@@ -501,15 +510,26 @@ static void map_pointer_set_zoom(struct wl_client *client,struct wl_resource *re
 	wm->map_zoom_margin=(int)margin;
 }
 
+static bool map_target(struct nested *wm,struct wlr_surface *panel) {
+	return wm->map_zoom_enabled && wm->overview_active && wm->map_pointer &&
+		wm->panel && panel==wm->panel->layer->surface && wm->map_hud &&
+		wm->map_hud->layer->surface->mapped;
+}
+
 static bool map_scroll(void *data,struct wlr_surface *panel,double x,double y,double delta) {
 	struct nested *wm=data;
-	if (!wm->map_zoom_enabled || !wm->overview_active || !wm->map_pointer ||
-			!wm->panel || panel!=wm->panel->layer->surface || !wm->map_hud ||
-			!wm->map_hud->layer->surface->mapped ||
+	if (!map_target(wm,panel) ||
 			!map_frame_contains(wm->parent_window.width,wm->parent_window.height,wm->map_zoom_margin,x,y) ||
 			hit_view(wm,x,y).panel_keyboard==panel) return false;
 	if (delta) mothership_map_pointer_v1_send_zoom(wm->map_pointer,
 		wl_fixed_from_double(x),wl_fixed_from_double(y),wl_fixed_from_double(delta));
+	return true;
+}
+
+static bool map_click(void *data,struct wlr_surface *panel,double x,double y,bool send) {
+	struct nested *wm=data;
+	if (!map_target(wm,panel) || wl_resource_get_version(wm->map_pointer)<2) return false;
+	if (send) mothership_map_pointer_v1_send_click(wm->map_pointer,wl_fixed_from_double(x),wl_fixed_from_double(y));
 	return true;
 }
 
@@ -528,7 +548,7 @@ static void map_pointer_gone(struct wl_resource *resource) {
 }
 
 static void map_pointer_bind(struct wl_client *client,void *data,uint32_t version,uint32_t id) {
-	struct wl_resource *resource=wl_resource_create(client,&mothership_map_pointer_v1_interface,version<1?version:1,id);
+	struct wl_resource *resource=wl_resource_create(client,&mothership_map_pointer_v1_interface,version<2?version:2,id);
 	if(!resource) {wl_client_post_no_memory(client);return;}
 	wl_resource_set_implementation(resource,&map_pointer_requests,data,map_pointer_gone);
 }
@@ -616,22 +636,49 @@ static void domain_disconnect(struct nested *wm) {
 	}
 }
 
-static bool domain_send(struct nested *wm, const char *event, uint64_t id) {
-	if (wm->domain_fd < 0) {
-		return false;
-	}
-	char packet[64];
-	int n = id == 0 ? snprintf(packet, sizeof(packet), "%s", event) :
-		snprintf(packet, sizeof(packet), "%s %" PRIu64, event, id);
+static bool domain_write(struct nested *wm, const char *packet, size_t n) {
+	if (wm->domain_fd < 0) return false;
 	ssize_t sent;
 	do {
 		sent = send(wm->domain_fd, packet, n, MSG_NOSIGNAL | MSG_DONTWAIT);
 	} while (sent < 0 && errno == EINTR);
-	if (sent != n) {
+	if (sent < 0 || (size_t)sent != n) {
 		domain_disconnect(wm);
 		return false;
 	}
 	return true;
+}
+
+static bool domain_send(struct nested *wm, const char *event, uint64_t id) {
+	char packet[64];
+	int n = id == 0 ? snprintf(packet, sizeof(packet), "%s", event) :
+		snprintf(packet, sizeof(packet), "%s %" PRIu64, event, id);
+	return domain_write(wm, packet, n);
+}
+
+static bool valid_app_id(const char *s) {
+	if (!s || !*s || strnlen(s, 129) > 128) return false;
+	for (; *s; ++s) {
+		unsigned char b = *s;
+		if (!((b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') ||
+				(b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.')) return false;
+	}
+	return true;
+}
+
+static void publish_app_id(struct xdg_view *view) {
+	const char *value = view->toplevel->app_id;
+	char packet[160];
+	if (!valid_app_id(value)) value = NULL;
+	int n = value ? snprintf(packet, sizeof(packet), "app %" PRIu64 " %s", view->id, value) :
+		snprintf(packet,sizeof(packet), "app %" PRIu64, view->id);
+	domain_write(view->wm, packet, n);
+}
+
+static void on_view_app_id(struct wl_listener *listener, void *data) {
+	(void)data;
+	struct xdg_view *view = wl_container_of(listener, view, app_id);
+	if (!view->wm->cleaning) publish_app_id(view);
 }
 
 static struct xdg_view *find_view(struct nested *wm, uint64_t id) {
@@ -738,6 +785,7 @@ static void refresh_home(struct nested *wm) {
 				view_target(wm));
 		}
 	}
+	refresh_blank_shell(wm);
 	nested_seat_refresh(wm->seat);
 }
 
@@ -846,6 +894,7 @@ static void select_projection(struct nested *wm, bool keep_panel) {
 	wm->drag = NULL;
 	position_panel(wm->panel);
 	nested_seat_switch(wm->seat, view_target(wm), keep_panel);
+	refresh_blank_shell(wm);
 }
 
 static int on_domain_fd(int fd, uint32_t mask, void *data) {
@@ -1037,6 +1086,7 @@ static void on_view_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->map.link);
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->commit.link);
+	wl_list_remove(&view->app_id.link);
 	wl_list_remove(&view->destroy.link);
 	if (view->tree != NULL) {
 		wl_list_remove(&view->tree_destroy.link);
@@ -1081,8 +1131,10 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&surface->events.commit, &view->commit);
 	view->destroy.notify = on_view_destroy;
 	wl_signal_add(&toplevel->events.destroy, &view->destroy);
+	view->app_id.notify = on_view_app_id;
+	wl_signal_add(&toplevel->events.set_app_id, &view->app_id);
 	wl_list_insert(wm->views.prev, &view->link);
-	domain_send(wm, "new", view->id);
+	if (domain_send(wm, "new", view->id) && valid_app_id(toplevel->app_id)) publish_app_id(view);
 }
 
 int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int domain_fd, const char **reason) {
@@ -1186,7 +1238,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		/* GTK needs the core data-device global to open Wayland. Do not
 		 * handle selection/drag requests or bridge clipboard to the host. */
 		if (layer == NULL || wlr_data_device_manager_create(wm.server) == NULL ||
-				wl_global_create(wm.server,&mothership_map_pointer_v1_interface,1,&wm,map_pointer_bind)==NULL) {
+				wl_global_create(wm.server,&mothership_map_pointer_v1_interface,2,&wm,map_pointer_bind)==NULL) {
 			goto done;
 		}
 		wm.new_panel.notify = on_new_panel;
@@ -1217,7 +1269,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	*reason = "could not create the nested input seat";
 	wm.seat = nested_seat_create(wm.server, parent,
 		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, move_cursor,
-		start_view_move, update_view_move,map_scroll,&wm);
+		start_view_move, update_view_move,map_scroll,map_click,&wm);
 	if (wm.seat == NULL) {
 		goto done;
 	}

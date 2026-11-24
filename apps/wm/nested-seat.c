@@ -3,6 +3,7 @@
 #include "nested-seat.h"
 
 #include <stdint.h>
+#include <math.h>
 #include <linux/input-event-codes.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,13 +24,16 @@ struct nested_seat {
 	struct wl_pointer *pointer;
 	struct wl_keyboard *keys;
 	struct wl_surface *output;
-	struct wlr_surface *selected, *panel_focus;
+	struct wlr_surface *selected, *panel_focus, *blank_shell;
 	nested_hit_test hit_test;
 	nested_selected select_window;
 	nested_cursor_move move_cursor;
 	nested_move_start start_move;
 	nested_move_update update_move;
 	nested_map_scroll map_scroll;
+	nested_map_click map_click;
+	bool map_pressed;
+	double map_pressed_x,map_pressed_y;
 	struct pending_axis axes[2];
 	enum wl_pointer_axis_source axis_source;
 	bool moving;
@@ -45,9 +49,19 @@ struct nested_seat {
 
 static const struct wlr_keyboard_impl keyboard_impl = { .name = "nested-wayland" };
 
+static struct wlr_surface *keyboard_target(struct nested_seat *seat) {
+	if (seat->panel_focus) return seat->panel_focus;
+	return seat->selected ? seat->selected : seat->blank_shell;
+}
+
+static struct wlr_surface *map_panel(struct nested_seat *seat) {
+	if (!seat->keyboard_inside) return NULL;
+	return seat->panel_focus ? seat->panel_focus : (seat->selected ? NULL : seat->blank_shell);
+}
+
 static void keyboard_focus(struct nested_seat *seat) {
 	struct wlr_keyboard *kb = &seat->keyboard;
-	struct wlr_surface *target = seat->panel_focus != NULL ? seat->panel_focus : seat->selected;
+	struct wlr_surface *target = keyboard_target(seat);
 	if (seat->keyboard_inside && seat->has_keymap && target != NULL) {
 		wlr_seat_keyboard_notify_enter(seat->child, target,
 			kb->keycodes, kb->num_keycodes, &kb->modifiers);
@@ -88,24 +102,37 @@ static void isolate_keys(struct nested_seat *seat) {
 	seat->keyboard.modifiers.latched = 0;
 }
 
+void nested_seat_blank_shell(struct nested_seat *seat,struct wlr_surface *panel) {
+	if (!seat || seat->blank_shell==panel) return;
+	struct wlr_surface *before=keyboard_target(seat);
+	seat->blank_shell=panel;
+	if (keyboard_target(seat)!=before) {
+		isolate_keys(seat);
+		keyboard_focus(seat);
+	}
+}
+
 void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool acquire) {
 	if (seat == NULL || panel == NULL) {
 		return;
 	}
 	if (acquire) {
-		// Layer-shell requests alone do not take focus: the physical pointer
-		// must currently be over that layer's input surface.
-		if (!seat->pointer_inside ||
-				seat->hit_test(seat->data, seat->x, seat->y).panel_keyboard != panel ||
-				seat->panel_focus == panel) {
-			return;
-		}
+		// The already-focused blank shell may enter Map without a pointer.
+		// Elsewhere only intentional pointer focus can select the shell.
+		bool owns_blank=seat->blank_shell==panel && seat->selected==NULL;
+		bool pointer_over=seat->pointer_inside &&
+			seat->hit_test(seat->data,seat->x,seat->y).panel_keyboard==panel;
+		if ((!owns_blank && !pointer_over) || seat->panel_focus==panel) return;
 	} else if (seat->panel_focus != panel) {
 		return;
 	}
-	isolate_keys(seat);
+	struct wlr_surface *before=keyboard_target(seat);
+	seat->map_pressed = false;
 	seat->panel_focus = acquire ? panel : NULL;
-	keyboard_focus(seat);
+	if (keyboard_target(seat)!=before) {
+		isolate_keys(seat);
+		keyboard_focus(seat);
+	}
 }
 
 void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bool keep_panel) {
@@ -119,13 +146,15 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bo
 	}
 	// The explicit Map View action can carry the already-focused shell
 	// across projection. No app focus is kept and no shell focus is granted.
-	if (!keep_panel || !seat->panel_focus) isolate_keys(seat);
+	bool stays_blank=target==NULL && seat->blank_shell && keyboard_target(seat)==seat->blank_shell;
+	if ((!keep_panel || !seat->panel_focus) && !stays_blank) isolate_keys(seat);
 	memcpy(seat->buttons_blocked, seat->buttons_held, sizeof(seat->buttons_held));
 	// A button released after switching cannot complete an old grab.
 	wlr_seat_pointer_end_grab(seat->child);
 	wlr_seat_pointer_clear_focus(seat->child);
 	seat->child->pointer_state.button_count = 0;
 	seat->child->pointer_state.grab_serial = 0;
+	seat->map_pressed = false;
 	if (!keep_panel) seat->panel_focus = NULL;
 	seat->selected = target;
 	keyboard_focus(seat);
@@ -163,6 +192,7 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->pointer_inside = false;
+		seat->map_pressed = false;
 		if (seat->moving) {
 			seat->update_move(seat->data, false, seat->x, seat->y);
 			seat->moving = false;
@@ -222,6 +252,7 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		return;
 	}
 	struct nested_hit hit = pointer_focus(seat);
+	struct wlr_surface *map=map_panel(seat);
 	if (hit.handle != NULL && button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
 		if (seat->panel_focus != NULL) {
 			isolate_keys(seat);
@@ -236,7 +267,22 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		seat->moving = true;
 		return;
 	}
-	/* Empty space has no input target. Cross-window drags are out of scope. */
+	if (button == BTN_LEFT && seat->map_pressed && state == WL_POINTER_BUTTON_STATE_RELEASED) {
+		seat->map_pressed = false;
+		if (!hit.surface && map &&
+				fabs(seat->x-seat->map_pressed_x)<6 && fabs(seat->y-seat->map_pressed_y)<6)
+			seat->map_click(seat->data,map,seat->x,seat->y,true);
+		return;
+	}
+	if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED && !hit.surface &&
+			map &&
+			seat->map_click(seat->data,map,seat->x,seat->y,false)) {
+		seat->map_pressed = true;
+		seat->map_pressed_x = seat->x;
+		seat->map_pressed_y = seat->y;
+		return;
+	}
+	/* Other empty space has no input target. Cross-window drags are out of scope. */
 	if (hit.surface == NULL) {
 		return;
 	}
@@ -260,8 +306,9 @@ static void flush_axis(struct nested_seat *seat,unsigned orientation) {
 	struct pending_axis e=seat->axes[orientation];
 	seat->axes[orientation]=(struct pending_axis){0};
 	if (!e.pending || !seat->pointer_inside || seat->moving) return;
-	if (orientation==WL_POINTER_AXIS_VERTICAL_SCROLL && seat->keyboard_inside &&
-			seat->panel_focus && seat->map_scroll(seat->data,seat->panel_focus,seat->x,seat->y,e.delta)) return;
+	struct wlr_surface *map=map_panel(seat);
+	if (orientation==WL_POINTER_AXIS_VERTICAL_SCROLL && map &&
+			seat->map_scroll(seat->data,map,seat->x,seat->y,e.delta)) return;
 	if (pointer_focus(seat).surface)
 		wlr_seat_pointer_notify_axis(seat->child,e.time,orientation,e.delta,e.discrete,
 			seat->axis_source,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
@@ -387,6 +434,7 @@ static void keyboard_leave(void *data, struct wl_keyboard *keys, uint32_t serial
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->keyboard_inside = false;
+		seat->map_pressed = false;
 		seat->keyboard.num_keycodes = 0;
 		keyboard_focus(seat);
 	}
@@ -535,7 +583,7 @@ static const struct wl_registry_listener registry_listener = {
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
 		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
-		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,void *data) {
+		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,nested_map_click click,void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -553,6 +601,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->start_move = start_move;
 	seat->update_move = update_move;
 	seat->map_scroll=scroll;
+	seat->map_click=click;
 	seat->data = data;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {

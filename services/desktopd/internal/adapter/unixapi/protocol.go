@@ -44,15 +44,21 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			}
 			sendSuccess(c, req.ID)
 		}
-	case domainipc.CreateMethod, domainipc.FocusMethod:
-		b, err := domainipc.Decode[domainipc.DomainBody](req.Body)
-		if err != nil || !validWord(b.Domain) {
+	case domainipc.CreateMethod:
+		b, err := domainipc.Decode[domainipc.CreateBody](req.Body)
+		if err != nil || !domain.ValidName(b.Domain) || !domain.ValidDescription(b.Description) {
 			badBody()
 			return
 		}
-		if req.Method == domainipc.CreateMethod {
-			d.service.Create(b.Domain)
-			sendSuccess(c, req.ID)
+		if err := d.service.CreateNode(b.Domain, b.Description); err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		sendSuccess(c, req.ID)
+	case domainipc.FocusMethod:
+		b, err := domainipc.Decode[domainipc.DomainBody](req.Body)
+		if err != nil || !validWord(b.Domain) {
+			badBody()
 			return
 		}
 		if err := d.focus(b.Domain); err != nil {
@@ -140,13 +146,20 @@ func selectionWire(s app.Selection) domainipc.Selection {
 }
 
 func windowWire(w domain.Window) domainipc.Window {
-	return domainipc.Window{ID: w.ID, Mapped: w.Mapped, Domain: w.Domain}
+	return domainipc.Window{ID: w.ID, Mapped: w.Mapped, Domain: w.Domain, AppID: w.AppID}
+}
+
+func nodeWire(n domain.Node) domainipc.NodeProfile {
+	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive}
 }
 
 func sendSnapshot(c *net.UnixConn, id uint64, s app.Snapshot) bool {
 	wire := domainipc.Snapshot{
 		Revision: s.Revision, WMReady: s.WMReady, Session: s.Session, Domains: s.Domains, MapVisible: s.MapVisible,
 		Windows: make([]domainipc.Window, 0, len(s.Windows)), Selection: selectionWire(s.Selection),
+	}
+	for _, n := range s.Nodes {
+		wire.NodeProfiles = append(wire.NodeProfiles, nodeWire(n))
 	}
 	for _, w := range s.Windows {
 		wire.Windows = append(wire.Windows, windowWire(w))
@@ -166,13 +179,15 @@ func eventWire(u app.Update) domainipc.Event {
 	case app.WMChanged:
 		body = domainipc.WMChangedBody{WMReady: u.WMReady, Session: u.Session, Selection: selectionWire(u.Selection)}
 	case app.DomainCreated:
-		body = domainipc.DomainBody{Domain: u.Domain}
+		body = nodeWire(u.Node)
 	case app.WindowUpdated:
 		body = windowWire(u.Window)
 	case app.WindowClosed:
 		body = domainipc.WindowClosedBody{WindowID: u.Window.ID}
 	case app.SelectionChanged:
-		body = selectionWire(u.Selection)
+		sel := selectionWire(u.Selection)
+		sel.LastActive = u.Node.LastActive
+		body = sel
 	case app.MapVisibilityChanged:
 		body = domainipc.MapVisibility{Visible: u.MapVisible}
 	}

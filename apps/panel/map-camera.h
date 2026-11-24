@@ -9,7 +9,7 @@ enum map_animation { MAP_ANIMATION_OFF, MAP_ANIMATION_LINEAR, MAP_ANIMATION_EASE
 enum { MAP_PAN_MIN=50, MAP_PAN_DEFAULT=100, MAP_PAN_MAX=200, MAP_PAN_STEP=10 };
 struct map_camera {double x, y;};
 struct map_wallpaper_fit {double x, y, width, height;};
-struct map_zoom {double scale,grid_x,grid_y;bool anchored;};
+struct map_zoom {double scale;};
 
 #define MAP_ZOOM_MIN .65
 #define MAP_ZOOM_MAX 2.25
@@ -50,12 +50,9 @@ static inline double map_zoom_sample(double from,double to,double progress,int a
 static inline bool map_zoom_to(struct map_camera *camera,struct map_zoom *z,
 		double w,double h,double x,double y,double next) {
 	if (next==z->scale) return false;
-	double ratio=next/z->scale;
 	struct map_camera anchor={camera->x+x/z->scale-x/next,camera->y+y/z->scale-y/next};
 	*camera=map_tabletop_clamp(anchor,w/next,h/next);
-	z->grid_x=x+(z->grid_x-x)*ratio;
-	z->grid_y=y+(z->grid_y-y)*ratio;
-	z->scale=next;z->anchored=true;
+	z->scale=next;
 	return true;
 }
 

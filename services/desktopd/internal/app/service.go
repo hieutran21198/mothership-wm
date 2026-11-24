@@ -4,7 +4,9 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"mothership-wm/services/desktopd/internal/domain"
 )
@@ -17,15 +19,33 @@ var (
 )
 
 type Service struct {
-	mu          sync.Mutex
-	names       domain.State
-	active      *domain.Session
-	ready       bool
-	selection   Selection
-	mapVisible  bool
-	layouts     map[string]string
-	revision    uint64
-	subscribers map[chan Update]struct{}
+	mu                sync.Mutex
+	names             domain.State
+	saveNode          func(domain.Node) error
+	now               func() time.Time
+	reportPersistence func(error)
+	active            *domain.Session
+	ready             bool
+	selection         Selection
+	mapVisible        bool
+	layouts           map[string]string
+	revision          uint64
+	subscribers       map[chan Update]struct{}
+}
+
+// New loads durable Node records; no session reference crosses a restart.
+func New(nodes []domain.Node, save func(domain.Node) error, report func(error)) *Service {
+	s := &Service{saveNode: save, reportPersistence: report}
+	for _, n := range nodes {
+		s.names.Put(n)
+	}
+	return s
+}
+func (s *Service) unixNow() int64 {
+	if s.now != nil {
+		return s.now().Unix()
+	}
+	return time.Now().Unix()
 }
 
 func (s *Service) Connect(id string) *domain.Session {
@@ -95,6 +115,22 @@ func (s *Service) WindowMapping(conn *domain.Session, id uint64, visible bool) b
 	return true
 }
 
+func (s *Service) WindowAppID(conn *domain.Session, id uint64, appID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready || s.active != conn {
+		return false
+	}
+	before := conn.Get(id)
+	if !conn.SetAppID(id, appID) {
+		return false
+	}
+	if before.AppID != appID {
+		s.publish(Update{Kind: WindowUpdated, Window: conn.Get(id)})
+	}
+	return true
+}
+
 func (s *Service) WindowClosed(conn *domain.Session, id uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,12 +141,23 @@ func (s *Service) WindowClosed(conn *domain.Session, id uint64) bool {
 	return true
 }
 
-func (s *Service) Create(name string) {
+func (s *Service) Create(name string) { _ = s.CreateNode(name, "") }
+
+func (s *Service) CreateNode(name, description string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.names.Create(name) {
-		s.publish(Update{Kind: DomainCreated, Domain: name})
+	if s.names.Exists(name) {
+		return nil
 	}
+	n := domain.Node{Name: name, Description: description, CreatedAt: s.unixNow()}
+	if s.saveNode != nil {
+		if err := s.saveNode(n); err != nil {
+			return fmt.Errorf("could not save Node: %w", err)
+		}
+	}
+	s.names.Put(n)
+	s.publish(Update{Kind: DomainCreated, Domain: name, Node: n})
+	return nil
 }
 
 // Assignment describes the WM projection work after membership is committed.

@@ -45,6 +45,18 @@ type MapVisibility struct {
 	Visible bool `json:"visible"`
 }
 
+type NodeProfile struct {
+	Domain      string `json:"domain"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   int64  `json:"created_at,omitempty"`
+	LastActive  int64  `json:"last_active,omitempty"`
+}
+
+type CreateBody struct {
+	Domain      string `json:"domain"`
+	Description string `json:"description,omitempty"`
+}
+
 type DomainBody struct {
 	Domain string `json:"domain"`
 }
@@ -71,26 +83,29 @@ type AssignBody struct {
 }
 
 type Selection struct {
-	View   string `json:"view,omitempty"`
-	State  string `json:"state"`
-	Domain string `json:"domain,omitempty"`
-	Mode   string `json:"mode,omitempty"`
+	View       string `json:"view,omitempty"`
+	State      string `json:"state"`
+	Domain     string `json:"domain,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	LastActive int64  `json:"last_active,omitempty"`
 }
 
 type Window struct {
 	ID     uint64 `json:"id"`
 	Domain string `json:"domain,omitempty"`
 	Mapped bool   `json:"mapped"`
+	AppID  string `json:"app_id,omitempty"`
 }
 
 type Snapshot struct {
-	Revision   uint64    `json:"revision"`
-	WMReady    bool      `json:"wm_ready"`
-	Session    string    `json:"session,omitempty"`
-	Domains    []string  `json:"domains"`
-	Windows    []Window  `json:"windows"`
-	MapVisible bool      `json:"map_visible,omitempty"`
-	Selection  Selection `json:"selection"`
+	Revision     uint64        `json:"revision"`
+	WMReady      bool          `json:"wm_ready"`
+	Session      string        `json:"session,omitempty"`
+	Domains      []string      `json:"domains"`
+	NodeProfiles []NodeProfile `json:"node_profiles,omitempty"`
+	Windows      []Window      `json:"windows"`
+	MapVisible   bool          `json:"map_visible,omitempty"`
+	Selection    Selection     `json:"selection"`
 }
 
 type Event struct {

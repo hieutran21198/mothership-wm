@@ -62,3 +62,55 @@ func TestMapVisibilityEventLeavesSelectionAlone(t *testing.T) {
 		t.Fatalf("wrong view after hide: %+v", s)
 	}
 }
+
+func TestProfileEmptyRequiresAuthoritativeWindowMembership(t *testing.T) {
+	var got view
+	c := controller{online: true, show: func(v view) { got = v }}
+	c.state.Domains = []string{"Dev", "Empty", "Unmapped"}
+	c.state.Windows = []domainipc.Window{
+		{ID: 1, Domain: "Dev", Mapped: true},
+		{ID: 2, Domain: "Unmapped"},
+	}
+	c.render()
+	if len(got.emptyDomains) != 0 {
+		t.Fatalf("unknown state should not claim empty Nodes: %v", got.emptyDomains)
+	}
+	c.state.WMReady = true
+	c.render()
+	if len(got.emptyDomains) != 1 || got.emptyDomains[0] != "Empty" {
+		t.Fatalf("empty Nodes = %v, want [Empty]", got.emptyDomains)
+	}
+}
+
+func TestNodeDetailReflectsAppLifecycleAndActivity(t *testing.T) {
+	s := domainipc.Snapshot{WMReady: true, Domains: []string{"Dev", "Review"},
+		NodeProfiles: []domainipc.NodeProfile{{Domain: "Dev", Description: "Backend", CreatedAt: 100}},
+		Windows: []domainipc.Window{
+			{ID: 1, Domain: "Dev", Mapped: true, AppID: "org.example.Editor"},
+			{ID: 2, Domain: "Dev", Mapped: true, AppID: "org.example.Editor.desktop"},
+			{ID: 3, Domain: "Dev", AppID: "org.example.Hidden"},
+		}}
+	update := func(kind, body string) {
+		t.Helper()
+		if err := reduce(&s, domainipc.Event{Revision: s.Revision + 1, Event: kind, Body: []byte(body)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := profileRows(s)
+	if len(rows[0].apps) != 1 || rows[0].apps[0] != "org.example.Editor" || rows[0].empty || !rows[1].empty || rows[0].LastActive != 0 || rows[0].Description != "Backend" {
+		t.Fatalf("wrong starting detail: %+v", rows)
+	}
+	update("window.updated", `{"id":2,"mapped":true,"domain":"Review","app_id":"org.example.Terminal"}`)
+	update("window.closed", `{"window_id":1}`)
+	update("selection.changed", `{"state":"acknowledged","domain":"Dev","last_active":220}`)
+	rows = profileRows(s)
+	if len(rows[0].apps) != 0 || rows[0].empty || rows[0].LastActive != 220 || rows[0].CreatedAt != 100 ||
+		len(rows[1].apps) != 1 || rows[1].apps[0] != "org.example.Terminal" || rows[1].empty {
+		t.Fatalf("wrong updated detail: %+v", rows)
+	}
+	update("wm.changed", `{"wm_ready":false,"selection":{"state":"unknown"}}`)
+	rows = profileRows(s)
+	if rows[0].empty || rows[1].empty || len(rows[1].apps) != 0 || rows[0].LastActive != 220 {
+		t.Fatalf("wrong disconnected detail: %+v", rows)
+	}
+}

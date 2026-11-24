@@ -4,6 +4,8 @@ package domain
 import (
 	"errors"
 	"sort"
+	"unicode"
+	"unicode/utf8"
 )
 
 const MaxNodeWindows = 8
@@ -18,7 +20,14 @@ var (
 // State is used by one serialized owner. Domain names are independent of any
 // WM; a Session is discarded in its entirety when its WM disconnects.
 type State struct {
-	names map[string]bool
+	nodes map[string]Node
+}
+
+type Node struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
+	LastActive  int64  `json:"last_active,omitempty"`
 }
 
 type Session struct {
@@ -28,27 +37,62 @@ type Session struct {
 }
 
 type Window struct {
-	ID, Epoch uint64
-	Domain    string
-	Mapped    bool
+	ID, Epoch     uint64
+	Domain, AppID string
+	Mapped        bool
+}
+
+func ValidName(s string) bool {
+	if len(s) == 0 || len(s) > 32 {
+		return false
+	}
+	for _, b := range []byte(s) {
+		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func ValidDescription(s string) bool {
+	if len(s) > 160 || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *State) Create(name string) bool {
 	if s.Exists(name) {
 		return false
 	}
-	if s.names == nil {
-		s.names = make(map[string]bool)
-	}
-	s.names[name] = true
+	s.Put(Node{Name: name})
 	return true
 }
 
-func (s *State) Exists(name string) bool { return s.names[name] }
+func (s *State) Exists(name string) bool { _, ok := s.nodes[name]; return ok }
+func (s *State) Node(name string) Node   { return s.nodes[name] }
+func (s *State) Put(n Node) {
+	if s.nodes == nil {
+		s.nodes = make(map[string]Node)
+	}
+	s.nodes[n.Name] = n
+}
+func (s *State) Nodes() []Node {
+	out := make([]Node, 0, len(s.nodes))
+	for _, name := range s.Names() {
+		out = append(out, s.nodes[name])
+	}
+	return out
+}
 
 func (s *State) Names() []string {
-	names := make([]string, 0, len(s.names))
-	for name := range s.names {
+	names := make([]string, 0, len(s.nodes))
+	for name := range s.nodes {
 		names = append(names, name)
 	}
 	sort.Strings(names)
@@ -77,6 +121,16 @@ func (s *Session) SetMapped(id uint64, mapped bool) bool {
 		s.windows[id] = w
 	}
 	return exists
+}
+
+func (s *Session) SetAppID(id uint64, appID string) bool {
+	w, ok := s.windows[id]
+	if !ok {
+		return false
+	}
+	w.AppID = appID
+	s.windows[id] = w
+	return true
 }
 
 func (s *Session) Remove(id uint64) bool {

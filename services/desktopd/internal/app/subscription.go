@@ -31,6 +31,7 @@ type Snapshot struct {
 	WMReady    bool
 	Session    string
 	Domains    []string
+	Nodes      []domain.Node
 	Windows    []domain.Window
 	Selection  Selection
 }
@@ -42,6 +43,7 @@ type Update struct {
 	WMReady    bool
 	Session    string
 	Domain     string
+	Node       domain.Node
 	Window     domain.Window
 	Selection  Selection
 }
@@ -55,7 +57,7 @@ func (s *Service) Snapshot() Snapshot {
 
 func (s *Service) snapshot() Snapshot {
 	v := Snapshot{
-		Revision: s.revision, WMReady: s.ready, Domains: s.names.Names(), MapVisible: s.mapVisible,
+		Revision: s.revision, WMReady: s.ready, Domains: s.names.Names(), Nodes: s.names.Nodes(), MapVisible: s.mapVisible,
 		Windows: make([]domain.Window, 0), Selection: s.currentSelection(),
 	}
 	if s.ready {
@@ -123,21 +125,36 @@ func (s *Service) drop(ch chan Update) {
 }
 
 func (s *Service) AcknowledgeView(conn *domain.Session, selection Selection) {
-	s.setSelection(conn, selection)
+	s.setSelection(conn, selection, false)
+}
+
+func (s *Service) AcknowledgeEntry(conn *domain.Session, selection Selection) {
+	s.setSelection(conn, selection, true)
 }
 
 func (s *Service) MarkFocusUnknown(conn *domain.Session) {
-	s.setSelection(conn, Selection{Kind: SelectionUnknown})
+	s.setSelection(conn, Selection{Kind: SelectionUnknown}, false)
 }
 
-func (s *Service) setSelection(conn *domain.Session, selection Selection) {
+func (s *Service) setSelection(conn *domain.Session, selection Selection, entry bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.ready && s.active == conn && s.selection != selection {
+		var n domain.Node
+		if entry && selection.Kind == SelectionAcknowledged && selection.Domain != "" && s.selection.Domain != selection.Domain {
+			n = s.names.Node(selection.Domain)
+			n.LastActive = max(s.unixNow(), n.CreatedAt, n.LastActive)
+			s.names.Put(n)
+			if s.saveNode != nil {
+				if err := s.saveNode(n); err != nil && s.reportPersistence != nil {
+					s.reportPersistence(err)
+				}
+			}
+		}
 		s.selection = selection
 		if selection.Kind == SelectionAcknowledged && selection.Domain != "" && selection.Mode != "" {
 			s.layouts[selection.Domain] = selection.Mode
 		}
-		s.publish(Update{Kind: SelectionChanged, Selection: selection})
+		s.publish(Update{Kind: SelectionChanged, Selection: selection, Node: n})
 	}
 }

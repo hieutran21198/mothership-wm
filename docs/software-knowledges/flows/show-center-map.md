@@ -44,12 +44,27 @@ defaults when the override is invalid.
 
 ### F-MAP-4
 
-In Command Center, choose Map View. Panel requests and waits for Overview
+In Command Center, choose Map View or press M from blank Home. The Panel waits for Overview
 and Map visibility and uses the existing shell keyboard target. WASD pans
 only Nodes and labels with the configured speed. Wheel inside the frame
-zooms around the cursor and scales the icons and grid pitch, not the label
-font, frame or wallpaper. Escape or Done cancels movement, releases
-keyboard focus, and hides the Map, leaving the wallpaper and Command Center
-entry without reopening any apps. Focus loss stops movement. Outside Map
+zooms around the cursor and scales the icons, not the label font, grid, frame or wallpaper. M, H or Done cancels movement and hides the Map, leaving the wallpaper
+and Command Center entry without reopening apps. Escape dismisses a
+profile only; it does not close the Map. Focus loss stops movement. Outside Map
 View these controls keep their ordinary routing. Fly requests the named
 workspace and reveals it after acknowledgement, without map movement.
+
+### F-MAP-5
+
+While Map View owns the existing shell input, click a Node marker or name.
+The Panel shows its profile beside the projected anchor and keeps the card
+inside the frame. Clicking a different Node replaces it; clicking empty
+space, including the margin, dismisses it. It also closes when its Node
+scrolls out of view or Map View loses focus. Fly in the profile uses the
+existing named-workspace request and acknowledgement. Node selection does
+not itself request a workspace switch or change Last active. Render the
+real name and optional description. Running time is Node age (now minus
+creation time), not window uptime. Last active is the last acknowledged
+entry into that named workspace, not layout or window events. Omit missing
+fields. Group mapped members with matching app IDs into one recognizable
+icon per app. Omit unknown IDs and show the empty line only when live
+membership is known empty. See the [Center Map UI contract](../system/center-map-ui.md).

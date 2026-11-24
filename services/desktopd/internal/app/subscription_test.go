@@ -2,8 +2,10 @@ package app
 
 import (
 	"fmt"
+	"mothership-wm/services/desktopd/internal/domain"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSubscribeBoundaryDoesNotLoseMutation(t *testing.T) {
@@ -137,5 +139,53 @@ func TestMapVisibilityDoesNotAlterNodeView(t *testing.T) {
 		default:
 			t.Fatal("missing event")
 		}
+	}
+}
+
+func TestNodeAgeAndActualWorkspaceEntry(t *testing.T) {
+	var written []domain.Node
+	s := New(nil, func(n domain.Node) error { written = append(written, n); return nil }, nil)
+	now := int64(100)
+	s.now = func() time.Time { return time.Unix(now, 0) }
+	if err := s.CreateNode("Dev", "Backend"); err != nil {
+		t.Fatal(err)
+	}
+	now = 150
+	if err := s.CreateNode("Dev", "Ignored"); err != nil {
+		t.Fatal(err)
+	}
+	wm := s.Connect("test")
+	s.Ready(wm, true)
+	if !s.WindowAdded(wm, 42) || !s.WindowAppID(wm, 42, "org.example.App") || !s.WindowMapping(wm, 42, true) {
+		t.Fatal("reported window lifecycle")
+	}
+	if _, err := s.Assign(wm.ID, 42, "Dev"); err != nil {
+		t.Fatal(err)
+	}
+	s.SetMapVisible(true)
+	if len(written) != 1 || s.Snapshot().Nodes[0].LastActive != 0 {
+		t.Fatal("non-entry set activity")
+	}
+	s.AcknowledgeEntry(wm, Selection{Kind: SelectionAcknowledged, Domain: "Dev", Mode: "tiling"})
+	if p := s.Snapshot().Nodes[0]; p.CreatedAt != 100 || p.LastActive != 150 || p.Description != "Backend" {
+		t.Fatalf("metadata: %+v", p)
+	}
+	now = 170
+	s.AcknowledgeView(wm, Selection{Kind: SelectionAcknowledged, Domain: "Dev", Mode: "float"})
+	s.AcknowledgeEntry(wm, Selection{Kind: SelectionAcknowledged, Domain: "Dev", Mode: "float"})
+	if len(written) != 2 || written[1].LastActive != 150 {
+		t.Fatal("layout or redundant focus changed activity")
+	}
+	s.AcknowledgeView(wm, Selection{Kind: SelectionAcknowledged, Overview: true})
+	s.AcknowledgeEntry(wm, Selection{Kind: SelectionAcknowledged, Domain: "Dev", Mode: "float"})
+	if !s.WindowAppID(wm, 42, "org.example.Other") || s.Snapshot().Windows[0].AppID != "org.example.Other" {
+		t.Fatal("app metadata update lost")
+	}
+	if !s.WindowClosed(wm, 42) || len(s.Snapshot().Windows) != 0 {
+		t.Fatal("closed window persisted")
+	}
+	after := New(written[2:], nil, nil).Snapshot()
+	if after.Nodes[0].LastActive != 170 || after.Nodes[0].CreatedAt != 100 || len(after.Windows) != 0 || after.Session != "" {
+		t.Fatalf("bad restoration: %+v", after)
 	}
 }

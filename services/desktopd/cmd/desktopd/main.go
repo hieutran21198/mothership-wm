@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/services/desktopd/internal/adapter/nodestate"
 	"mothership-wm/services/desktopd/internal/adapter/unixapi"
 	"mothership-wm/services/desktopd/internal/app"
 )
@@ -24,7 +25,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Println("usage: mothership-desktopd serve | list | create DOMAIN | assign SESSION WINDOW DOMAIN | focus DOMAIN | home | overview | map show | map hide")
+		fmt.Println("usage: mothership-desktopd serve | list | create DOMAIN [DESCRIPTION] | assign SESSION WINDOW DOMAIN | focus DOMAIN | home | overview | map show | map hide")
 		return nil
 	}
 	path, err := domainipc.Path(os.Getenv("XDG_RUNTIME_DIR"))
@@ -40,8 +41,12 @@ func run(ctx context.Context, args []string) error {
 		if err := os.Chmod(path, 0600); err != nil {
 			return err
 		}
+		store, nodes, err := nodestate.Open(os.Getenv("XDG_STATE_HOME"), os.Getenv("HOME"))
+		if err != nil {
+			return fmt.Errorf("load Nodes: %w", err)
+		}
+		service := app.New(nodes, store.Save, func(err error) { fmt.Fprintln(os.Stderr, "mothership-desktopd: save Last active:", err) })
 		fmt.Println("DESKTOPD_READY")
-		service := &app.Service{}
 		// Map visibility is independent of the acknowledged app projection.
 		service.SetMapVisible(true)
 		return unixapi.Serve(ctx, l, service)

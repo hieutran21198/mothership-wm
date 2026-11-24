@@ -2,7 +2,10 @@
 
 A local Go service that owns live Window-to-Domain assignments and resolves
 [FocusDomain](../../docs/software-knowledges/flows/focus-domain.md). The WM
-owns visibility and the human seat’s focus. Domain state is in memory only.
+owns visibility and the human seat’s focus. Live membership, layout and focus remain session-only. Node names,
+descriptions and timestamps are stored as private records in
+`$XDG_STATE_HOME/mothership-wm/nodes` (default `~/.local/state/mothership-wm/nodes`).
+Set a disposable absolute `XDG_STATE_HOME` when testing.
 
 - `cmd/desktopd`: process composition.
 - `internal/app`: Domain commands and WM session lifecycle.
@@ -27,7 +30,7 @@ From the repo root in another terminal, create Domains, read the current
 session and Window IDs, assign explicitly, and select a view:
 
 ```sh
-bin/mothership-desktopd create A
+bin/mothership-desktopd create A "Backend Platform"
 bin/mothership-desktopd create B
 bin/mothership-desktopd list
 bin/mothership-desktopd assign SESSION WINDOW_ID A

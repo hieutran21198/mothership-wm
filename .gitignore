@@ -9,3 +9,4 @@
 /apps/wm/parent-*-protocol.c
 /apps/wm/generated-map-pointer.*
 /apps/panel/generated-map-pointer.*
+/apps/panel/generated-viewporter.*

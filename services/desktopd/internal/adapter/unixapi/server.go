@@ -32,6 +32,7 @@ type wmPeer struct {
 	applied   chan struct{}
 	pending   uint64
 	selection *app.Selection
+	entry     bool
 }
 
 type desktop struct {
@@ -133,7 +134,7 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 		w.ready = d.service.Ready(w.session, w.home)
 		return w.ready
 	}
-	if len(a) != 2 {
+	if len(a) != 2 && !(len(a) == 3 && a[0] == "app") {
 		return false
 	}
 	id, err := strconv.ParseUint(a[1], 10, 64)
@@ -146,11 +147,24 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 			return false
 		}
 		if w.selection != nil {
-			d.service.AcknowledgeView(w.session, *w.selection)
+			if w.entry {
+				d.service.AcknowledgeEntry(w.session, *w.selection)
+			} else {
+				d.service.AcknowledgeView(w.session, *w.selection)
+			}
 		}
 		w.pending = 0
 		close(w.applied)
 		return true
+	case "app":
+		appID := ""
+		if len(a) == 3 {
+			appID = a[2]
+			if !validAppID(appID) {
+				return false
+			}
+		}
+		return d.service.WindowAppID(w.session, id, appID)
 	case "new":
 		return d.service.WindowAdded(w.session, id)
 	case "map", "unmap":
@@ -159,6 +173,18 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 		return d.service.WindowClosed(w.session, id)
 	}
 	return false
+}
+
+func validAppID(s string) bool {
+	if len(s) == 0 || len(s) > 128 {
+		return false
+	}
+	for _, b := range []byte(s) {
+		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func validWord(s string) bool {
@@ -239,6 +265,7 @@ func (d *desktop) focus(name string) error {
 		}
 	}
 	ack := d.beginApply(w, &selection)
+	w.entry = name != ""
 	packet := fmt.Sprintf("focus %d", ack.serial)
 	if name == "" {
 		packet = fmt.Sprintf("home %d", ack.serial)
@@ -264,7 +291,7 @@ type applyAck struct {
 func (d *desktop) beginApply(w *wmPeer, selection *app.Selection) applyAck {
 	d.next++
 	ack := applyAck{serial: d.next, done: make(chan struct{})}
-	w.pending, w.applied, w.selection = ack.serial, ack.done, selection
+	w.pending, w.applied, w.selection, w.entry = ack.serial, ack.done, selection, false
 	return ack
 }
 

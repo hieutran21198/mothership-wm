@@ -23,6 +23,9 @@ use the templates to draft the missing knowledge before proposing implementation
 Add only affected rules and contracts. Review unapproved design with the owner.
 A behavior-preserving fix within approved knowledge needs no new documents.
 
+For shell styling, references, mockups or visual review, use the
+[mothership-shell-design skill](.agents/skills/mothership-shell-design/SKILL.md).
+
 Use the project tooling and its local instructions. Do not add global tools,
 extra process gates, duplicate runbooks, or stale copies of task handoffs.
 

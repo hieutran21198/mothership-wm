@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,13 +27,59 @@ type controller struct {
 }
 
 type view struct {
-	title, message, node, mode    string
-	domains                       []string
-	windows                       []windowRow
-	enabled, overview, mapVisible bool
+	title, message, node, mode               string
+	domains, emptyDomains                    []string
+	windows                                  []windowRow
+	profiles                                 []profileRow
+	enabled, overview, mapVisible, blankHome bool
 }
 
 type windowRow struct{ key, label string }
+
+type profileRow struct {
+	domainipc.NodeProfile
+	empty bool
+	apps  []string
+}
+
+func profileRows(s domainipc.Snapshot) []profileRow {
+	metadata := make(map[string]domainipc.NodeProfile, len(s.NodeProfiles))
+	for _, n := range s.NodeProfiles {
+		metadata[n.Domain] = n
+	}
+	occupied := make(map[string]bool)
+	apps := make(map[string]map[string]bool)
+	if s.WMReady {
+		for _, w := range s.Windows {
+			if w.Domain == "" {
+				continue
+			}
+			occupied[w.Domain] = true
+			if !w.Mapped || w.AppID == "" {
+				continue
+			}
+			id := strings.TrimSuffix(w.AppID, ".desktop")
+			if id == "" {
+				continue
+			}
+			if apps[w.Domain] == nil {
+				apps[w.Domain] = make(map[string]bool)
+			}
+			apps[w.Domain][id] = true
+		}
+	}
+	rows := make([]profileRow, 0, len(s.Domains))
+	for _, name := range s.Domains {
+		row := profileRow{NodeProfile: metadata[name], empty: s.WMReady && !occupied[name]}
+		row.Domain = name
+		for id := range apps[name] {
+			row.apps = append(row.apps, id)
+		}
+		sort.Strings(row.apps)
+		rows = append(rows, row)
+	}
+	return rows
+}
 
 func (c *controller) render() {
 	s := c.state
@@ -56,8 +103,23 @@ func (c *controller) render() {
 		v.node, v.mode = s.Selection.Domain, s.Selection.Mode
 		v.overview = s.Selection.View == "overview"
 	}
+	if c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home" {
+		v.blankHome = true
+		for _, w := range s.Windows {
+			if w.Mapped && w.Domain == "" {
+				v.blankHome = false
+				break
+			}
+		}
+	}
 	if c.online {
 		v.domains = append([]string(nil), s.Domains...)
+		v.profiles = profileRows(s)
+		for _, row := range v.profiles {
+			if row.empty {
+				v.emptyDomains = append(v.emptyDomains, row.Domain)
+			}
+		}
 		for _, w := range s.Windows {
 			target := w.Domain
 			if target == "" {
@@ -176,6 +238,10 @@ func (c *controller) openMap(enterOverview bool) {
 	c.submitAfter(domainipc.MapShowMethod, domainipc.Empty{}, enterOverview)
 }
 
+func (c *controller) blankHome(enterOverview bool) {
+	c.submitAfter(domainipc.MapHideMethod, domainipc.Empty{}, enterOverview)
+}
+
 func (c *controller) submit(method string, body any) {
 	c.submitAfter(method, body, false)
 }
@@ -199,7 +265,12 @@ func (c *controller) submitAfter(method string, body any, enterOverview bool) {
 	go func() {
 		var err error
 		if enterOverview {
-			_, _, done, status := connection(c.ctx, c.path, domainipc.OverviewMethod, id, domainipc.Empty{})
+			first := domainipc.OverviewMethod
+			if method == domainipc.MapHideMethod {
+				// Hide before selecting Overview so Home cannot flash the Map.
+				first, method = method, first
+			}
+			_, _, done, status := connection(c.ctx, c.path, first, id, domainipc.Empty{})
 			done()
 			err = status
 			id++
@@ -236,11 +307,12 @@ func reduce(s *domainipc.Snapshot, e domainipc.Event) error {
 		}
 		s.WMReady, s.Session, s.Selection, s.Windows = v.WMReady, v.Session, v.Selection, nil
 	case "domain.created":
-		v, err := domainipc.Decode[domainipc.DomainBody](e.Body)
+		v, err := domainipc.Decode[domainipc.NodeProfile](e.Body)
 		if err != nil {
 			return err
 		}
 		s.Domains = append(s.Domains, v.Domain)
+		s.NodeProfiles = append(s.NodeProfiles, v)
 		sort.Strings(s.Domains)
 	case "window.updated":
 		v, err := domainipc.Decode[domainipc.Window](e.Body)
@@ -277,6 +349,15 @@ func reduce(s *domainipc.Snapshot, e domainipc.Event) error {
 		if err != nil {
 			return err
 		}
+		if v.Domain != "" && v.LastActive > 0 {
+			for i := range s.NodeProfiles {
+				if s.NodeProfiles[i].Domain == v.Domain {
+					s.NodeProfiles[i].LastActive = v.LastActive
+					break
+				}
+			}
+		}
+		v.LastActive = 0
 		s.Selection = v
 	default:
 		return fmt.Errorf("unknown desktopd event %q", e.Event)

@@ -3,7 +3,7 @@
 package main
 
 /*
-#cgo pkg-config: gtk4 librsvg-2.0 epoxy wayland-client
+#cgo pkg-config: gtk4 gio-unix-2.0 librsvg-2.0 epoxy wayland-client
 #cgo LDFLAGS: -lgtk4-layer-shell
 #include <stdlib.h>
 #include "native.h"
@@ -80,7 +80,11 @@ func showNative(v view) {
 	for _, w := range v.windows {
 		fmt.Fprintf(&ws, "%s\t%s\n", w.key, w.label)
 	}
-	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode}
+	var profiles strings.Builder
+	for _, p := range v.profiles {
+		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","))
+	}
+	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode, profiles.String()}
 	ptr := make([]*C.char, len(s))
 	for i, value := range s {
 		ptr[i] = C.CString(value)
@@ -98,7 +102,11 @@ func showNative(v view) {
 	if v.mapVisible {
 		mapVisible = 1
 	}
-	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], enabled, overview, mapVisible)
+	var blankHome C.int
+	if v.blankHome {
+		blankHome = 1
+	}
+	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], enabled, overview, mapVisible, blankHome)
 }
 
 func configureWallpaper() {
@@ -216,6 +224,6 @@ func panelAction(op C.int, a, b *C.char) {
 	case 13:
 		active.openMap(name == "overview")
 	case 14:
-		active.submit(domainipc.MapHideMethod, domainipc.Empty{})
+		active.blankHome(name == "overview")
 	}
 }

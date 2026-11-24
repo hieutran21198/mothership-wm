@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	MaxPacket = 4096
+	MaxPacket = 16384
 	Timeout   = 3 * time.Second
 )
 

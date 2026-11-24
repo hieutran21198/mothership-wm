@@ -37,7 +37,7 @@ in
   };
 
   profiles.panel-native.module = {
-    packages = [ pkgs.pkg-config pkgs.stdenv.cc pkgs.gtk4 pkgs.librsvg pkgs.libepoxy pkgs.wayland pkgs.wayland-scanner ];
+    packages = [ pkgs.pkg-config pkgs.stdenv.cc pkgs.gtk4 pkgs.librsvg pkgs.libepoxy pkgs.wayland pkgs.wayland-protocols pkgs.wayland-scanner ];
     # The stable layer-shell runtime supplies the linker symlink; the panel
     # uses a small ABI shim, not a second toolkit binding.
     env.CGO_ENABLED = "1";

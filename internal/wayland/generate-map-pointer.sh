@@ -14,4 +14,12 @@ for role in "$@"; do
     printf '//go:build linux && cgo && %s\n\n' "$tag"
     wayland-scanner private-code < mothership-map-pointer-v1.xml
   } > "$out/generated-map-pointer.c"
+  if [ "$role" = panel ]; then
+    xml="$(pkg-config --variable=pkgdatadir wayland-protocols)/stable/viewporter/viewporter.xml"
+    wayland-scanner client-header "$xml" "$out/generated-viewporter.h"
+    {
+      printf '//go:build linux && cgo && panel\n\n'
+      wayland-scanner private-code < "$xml"
+    } > "$out/generated-viewporter.c"
+  fi
 done

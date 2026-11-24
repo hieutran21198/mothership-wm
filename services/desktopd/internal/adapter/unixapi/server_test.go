@@ -301,7 +301,7 @@ func TestHomeReadinessAssignmentAndNamedHomeAreDistinct(t *testing.T) {
 	send(t, wm, "applied "+prep[1])
 	success(t, named, 40)
 	selected := decode[domainipc.Selection](t, next(t, sub, 6, app.SelectionChanged))
-	if selected != (domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Home"}) {
+	if selected.State != app.SelectionAcknowledged || selected.Domain != "Home" || selected.View != "" || selected.LastActive <= 0 {
 		t.Fatalf("unexpected named selection: %+v", selected)
 	}
 	back := s.request(50, "home", "{}")
@@ -435,26 +435,30 @@ func TestNodeOverviewAndLayoutRequireWMAcknowledgement(t *testing.T) {
 		send(t, wm, "applied "+a[1])
 		success(t, c, id)
 	}
-	want := func(rev uint64, v domainipc.Selection) {
+	want := func(rev uint64, v domainipc.Selection, entry bool) {
 		t.Helper()
 		got := decode[domainipc.Selection](t, next(t, sub, rev, app.SelectionChanged))
+		if (got.LastActive > 0) != entry {
+			t.Fatalf("Last active %d on selection %+v; entry %t", got.LastActive, got, entry)
+		}
+		got.LastActive = 0
 		if got != v {
 			t.Fatalf("selection %v; want %v", got, v)
 		}
 	}
 	apply(4, "focus", `{"domain":"Dev"}`, "node", "tiling")
-	want(4, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "tiling"})
+	want(4, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "tiling"}, true)
 	apply(5, "layout", `{"domain":"Dev","mode":"stack"}`, "layout", "stack")
-	want(5, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"})
+	want(5, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"}, false)
 	apply(6, "stack.next", `{"domain":"Dev"}`, "next", "")
 	assertQuiet(t, sub)
 	apply(7, "overview", `{}`, "overview", "")
-	want(6, domainipc.Selection{State: app.SelectionAcknowledged, View: "overview"})
+	want(6, domainipc.Selection{State: app.SelectionAcknowledged, View: "overview"}, false)
 	if r := reply(t, s.request(8, "layout", `{"domain":"Dev","mode":"float"}`), 8); r.Error == nil {
 		t.Fatal("layout accepted for an inactive Node")
 	}
 	apply(9, "focus", `{"domain":"Review"}`, "node", "tiling")
-	want(7, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "tiling"})
+	want(7, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "tiling"}, true)
 	apply(10, "focus", `{"domain":"Dev"}`, "node", "stack")
-	want(8, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"})
+	want(8, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"}, true)
 }

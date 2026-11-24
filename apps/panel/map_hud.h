@@ -7,11 +7,16 @@ void map_hud_camera_viewport(int width,int height);
 int map_hud_outer_margin(void);
 void map_hud_zoom(double x,double y,double delta,int animation);
 void map_hud_cancel_zoom(void);
+void map_hud_open_effect(int animation);
+void map_hud_finish_effect(void);
+void map_hud_dismiss_effect(void);
+gboolean map_hud_close_profile(void);
+void map_hud_click(double x,double y,void (*fly)(const char *));
 void map_hud_configure(const char *, double, const char *, const char *, const char *, const char *);
 void map_hud_set_spacing(const char *, int outer, int inner, gboolean frosted);
 int map_hud_set_font(const char *, double);
 int map_hud_icon(const char *, const unsigned char *, size_t);
-void map_hud_update(const char *names, GHashTable *positions, const char *node,
+void map_hud_update(const char *names, GHashTable *positions, const char *node, const char *profile_data,
 	gboolean overview, gboolean visible);
 void map_hud_show_fps(gboolean enabled);
 GtkWidget *map_hud_clock(void);
