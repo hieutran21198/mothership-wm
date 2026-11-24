@@ -446,8 +446,8 @@ func TestNodeOverviewAndLayoutRequireWMAcknowledgement(t *testing.T) {
 			t.Fatalf("selection %v; want %v", got, v)
 		}
 	}
-	apply(4, "focus", `{"domain":"Dev"}`, "node", "tiling")
-	want(4, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "tiling"}, true)
+	apply(4, "focus", `{"domain":"Dev"}`, "node", "flow")
+	want(4, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow"}, true)
 	apply(5, "layout", `{"domain":"Dev","mode":"stack"}`, "layout", "stack")
 	want(5, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"}, false)
 	apply(6, "stack.next", `{"domain":"Dev"}`, "next", "")
@@ -457,8 +457,16 @@ func TestNodeOverviewAndLayoutRequireWMAcknowledgement(t *testing.T) {
 	if r := reply(t, s.request(8, "layout", `{"domain":"Dev","mode":"float"}`), 8); r.Error == nil {
 		t.Fatal("layout accepted for an inactive Node")
 	}
-	apply(9, "focus", `{"domain":"Review"}`, "node", "tiling")
-	want(7, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "tiling"}, true)
+	apply(9, "focus", `{"domain":"Review"}`, "node", "flow")
+	want(7, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "flow"}, true)
 	apply(10, "focus", `{"domain":"Dev"}`, "node", "stack")
 	want(8, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stack"}, true)
+	apply(11, "layout", `{"domain":"Dev","mode":"flow-vertical"}`, "layout", "flow-vertical")
+	want(9, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow-vertical"}, false)
+	apply(12, "stack.next", `{"domain":"Dev"}`, "next", "")
+	assertQuiet(t, sub)
+	apply(13, "focus", `{"domain":"Review"}`, "node", "flow")
+	want(10, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "flow"}, true)
+	apply(14, "focus", `{"domain":"Dev"}`, "node", "flow-vertical")
+	want(11, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow-vertical"}, true)
 }

@@ -32,6 +32,11 @@ struct nested_seat {
 	nested_move_update update_move;
 	nested_map_scroll map_scroll;
 	nested_map_click map_click;
+	nested_chrome_action chrome;
+	nested_flow_scroll flow_scroll;
+	nested_flow_cycle cycle;
+	int cycle_steps;
+	bool cycle_tab;
 	bool map_pressed;
 	double map_pressed_x,map_pressed_y;
 	struct pending_axis axes[2];
@@ -90,6 +95,8 @@ void nested_seat_refresh(struct nested_seat *seat) {
 }
 
 static void isolate_keys(struct nested_seat *seat) {
+	seat->cycle_steps=0;
+	seat->cycle_tab=false;
 	memcpy(seat->keys_blocked, seat->keys_held, sizeof(seat->keys_held));
 	seat->blocked_count = 0;
 	for (size_t i = 0; i <= KEY_MAX; ++i) {
@@ -282,6 +289,11 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		seat->map_pressed_y = seat->y;
 		return;
 	}
+	if (hit.decoration && button==BTN_LEFT && state==WL_POINTER_BUTTON_STATE_PRESSED) {
+		seat->buttons_blocked[BTN_LEFT]=true;
+		seat->chrome(seat->data,hit);
+		return;
+	}
 	/* Other empty space has no input target. Cross-window drags are out of scope. */
 	if (hit.surface == NULL) {
 		return;
@@ -309,7 +321,9 @@ static void flush_axis(struct nested_seat *seat,unsigned orientation) {
 	struct wlr_surface *map=map_panel(seat);
 	if (orientation==WL_POINTER_AXIS_VERTICAL_SCROLL && map &&
 			seat->map_scroll(seat->data,map,seat->x,seat->y,e.delta)) return;
-	if (pointer_focus(seat).surface)
+	struct nested_hit hit=pointer_focus(seat);
+	if (!hit.surface && seat->flow_scroll(seat->data,seat->x,seat->y,orientation,e.delta)) return;
+	if (hit.surface)
 		wlr_seat_pointer_notify_axis(seat->child,e.time,orientation,e.delta,e.discrete,
 			seat->axis_source,WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
 }
@@ -434,6 +448,8 @@ static void keyboard_leave(void *data, struct wl_keyboard *keys, uint32_t serial
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->keyboard_inside = false;
+		seat->cycle_steps=0;
+		seat->cycle_tab=false;
 		seat->map_pressed = false;
 		seat->keyboard.num_keycodes = 0;
 		keyboard_focus(seat);
@@ -458,9 +474,31 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	if (seat->domain_mode && !was_held && !seat->keys_held[key]) {
 		return;
 	}
+	// The parent may reserve Alt+Tab; this runs only when the nested
+	// toplevel receives the actual chord. A held sequence commits once.
+	bool alt=seat->keys_held[KEY_LEFTALT];
+	bool reserved=seat->keys_held[KEY_LEFTCTRL] || seat->keys_held[KEY_RIGHTCTRL] ||
+		seat->keys_held[KEY_LEFTMETA] || seat->keys_held[KEY_RIGHTMETA];
+	if (key==KEY_TAB) {
+		if (seat->cycle_tab && !seat->keys_held[key]) {
+			seat->cycle_tab=false;
+			return;
+		}
+		if (seat->keys_held[key] && alt && !reserved && !seat->panel_focus && seat->cycle(seat->data,0)) {
+			bool reverse=seat->keys_held[KEY_LEFTSHIFT] || seat->keys_held[KEY_RIGHTSHIFT];
+			if (!was_held && labs(seat->cycle_steps)<1024) seat->cycle_steps+=reverse?-1:1;
+			seat->cycle_tab=true;
+			return;
+		}
+	}
 	struct wlr_keyboard_key_event e = { .time_msec = time, .keycode = key, .state = state };
 	wlr_keyboard_notify_key(&seat->keyboard, &e);
 	wlr_seat_keyboard_notify_key(seat->child, time, key, state);
+	if (key==KEY_LEFTALT && !alt && seat->cycle_steps) {
+		int steps=seat->cycle_steps;
+		seat->cycle_steps=0;
+		if (!seat->panel_focus && !reserved) seat->cycle(seat->data,steps);
+	}
 }
 
 static void keyboard_modifiers(void *data, struct wl_keyboard *keys, uint32_t serial,
@@ -503,6 +541,8 @@ static void drop_pointer(struct nested_seat *seat) {
 }
 
 static void drop_keyboard(struct nested_seat *seat) {
+	seat->cycle_steps=0;
+	seat->cycle_tab=false;
 	if (seat->keys != NULL) {
 		if (wl_keyboard_get_version(seat->keys) >= WL_KEYBOARD_RELEASE_SINCE_VERSION) {
 			wl_keyboard_release(seat->keys);
@@ -583,7 +623,8 @@ static const struct wl_registry_listener registry_listener = {
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
 		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
-		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,nested_map_click click,void *data) {
+		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,nested_map_click click,
+		nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_flow_cycle cycle,void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -602,6 +643,9 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->update_move = update_move;
 	seat->map_scroll=scroll;
 	seat->map_click=click;
+	seat->chrome=chrome;
+	seat->flow_scroll=flow_scroll;
+	seat->cycle=cycle;
 	seat->data = data;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {

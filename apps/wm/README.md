@@ -47,6 +47,16 @@ the child socket disappears and the same parent is still usable. Follow the
 [Flow scenarios](../../docs/software-knowledges/flows/boot-nested-wayland-compositor.md)
 for the failure check. A successful CLI test is not native acceptance.
 
+## Flow and window chrome
+
+Managed Nodes default to Flow. Check the [layout and frame behavior](../../docs/software-knowledges/flows/view-node-layouts.md#f-view-2)
+and the [native visual review checklist](../../docs/software-knowledges/system/window-frame.md#review).
+For a manual axis, from the nested runtime use
+`bin/mothership-desktopd layout Dev flow-vertical`, replacing `Dev` with the
+active Node. Use `flow-horizontal` or `flow` for horizontal or automatic.
+If COSMIC handles Alt+Tab before the nested output can see it, use **Next
+window** from Command Center or `bin/mothership-desktopd next Dev`.
+
 ## Two-window focus check
 
 Use the same child socket command to start two separate disposable instances of

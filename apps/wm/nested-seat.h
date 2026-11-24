@@ -12,7 +12,8 @@ struct nested_hit {
 	struct wlr_surface *surface;
 	struct wlr_surface *toplevel;
 	struct wlr_surface *panel_keyboard;
-	void *handle;
+	void *handle, *decoration;
+	int chrome_action;
 	bool resize;
 	double x, y;
 };
@@ -24,11 +25,15 @@ typedef bool (*nested_map_click)(void *data,struct wlr_surface *panel,double x,d
 typedef bool (*nested_map_scroll)(void *data,struct wlr_surface *panel,double x,double y,double delta);
 typedef void (*nested_move_start)(void *data, struct nested_hit hit, double x, double y);
 typedef void (*nested_move_update)(void *data, bool moving, double x, double y);
+typedef void (*nested_chrome_action)(void *data,struct nested_hit hit);
+typedef bool (*nested_flow_scroll)(void *data,double x,double y,unsigned axis,double delta);
+typedef bool (*nested_flow_cycle)(void *data,int steps);
 
 struct nested_seat *nested_seat_create(struct wl_display *server,
 	struct wl_display *parent, struct wl_surface *output,
 	nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
-	nested_move_start start_move, nested_move_update update_move, nested_map_scroll scroll,nested_map_click click,void *data);
+	nested_move_start start_move, nested_move_update update_move, nested_map_scroll scroll,nested_map_click click,
+	nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_flow_cycle cycle,void *data);
 void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 	struct wlr_surface *fallback);
 void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bool keep_panel);

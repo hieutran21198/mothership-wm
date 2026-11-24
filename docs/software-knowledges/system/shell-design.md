@@ -101,6 +101,10 @@ The [Center Map UI contract](center-map-ui.md) owns the Map, Node Detail,
 and the design-only minimap. Use the shell-wide rules above for the shared
 material and chamfer treatment.
 
+### Native window frame
+
+The [Flow window frame](window-frame.md) owns title, chrome, hit targets and visual review.
+
 ### Node callout
 
 - Preserve three rows: title, short purpose description, and open-app icons.

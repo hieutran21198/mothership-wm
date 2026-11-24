@@ -67,13 +67,20 @@ type LayoutBody struct {
 }
 
 const (
-	Tiling = "tiling"
-	Stack  = "stack"
-	Float  = "float"
+	Flow           = "flow"
+	FlowHorizontal = "flow-horizontal"
+	FlowVertical   = "flow-vertical"
+	Tiling         = "tiling"
+	Stack          = "stack"
+	Float          = "float"
 )
 
 func ValidLayout(mode string) bool {
-	return mode == Tiling || mode == Stack || mode == Float
+	return IsFlow(mode) || mode == Tiling || mode == Stack || mode == Float
+}
+
+func IsFlow(mode string) bool {
+	return mode == Flow || mode == FlowHorizontal || mode == FlowVertical
 }
 
 type AssignBody struct {

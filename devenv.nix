@@ -32,6 +32,9 @@ in
       pkgs.wayland-scanner
       pkgs.pixman
       pkgs.libxkbcommon
+      pkgs.cairo
+      pkgs.pango
+      pkgs.libdrm
     ];
     env.CGO_ENABLED = "1";
   };

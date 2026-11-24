@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -33,6 +34,7 @@
 #include "generated-map-pointer.h"
 #include "../../internal/wayland/map-frame.h"
 #include "nested-layout.h"
+#include "window-chrome.h"
 
 enum control_phase {
 	STARTING,
@@ -107,7 +109,8 @@ struct nested {
 	int map_zoom_margin;
 	struct wl_listener new_panel;
 	struct nested_seat *seat;
-	struct xdg_view *slots[NODE_WINDOWS], *drag;
+	struct xdg_view *slots[NODE_WINDOWS], *drag, *focused;
+	int flow_offset, flow_low, flow_high;
 	struct rect drag_rect;
 	int drag_x, drag_y;
 	bool drag_resize;
@@ -135,14 +138,17 @@ struct xdg_view {
 	struct wlr_xdg_toplevel *toplevel;
 	struct wlr_scene_tree *frame, *tree;
 	struct wlr_scene_rect *bar, *grip;
-	struct rect floating;
+	struct rect floating, placement, flow_base;
+	struct window_chrome *chrome;
+	int title_height, content_edge, flow_width, flow_height;
+	bool flowed_out, maximized, configured_maximized;
 	int configure_w, configure_h;
 	uint64_t id;
 	uint64_t epoch, focused_at, home_focused_at;
 	bool mapped, assigned;
 	int slot;
 	struct wl_list link;
-	struct wl_listener map, unmap, commit, destroy, tree_destroy, app_id;
+	struct wl_listener map, unmap, commit, destroy, tree_destroy, app_id, title;
 };
 
 struct shell_panel {
@@ -338,6 +344,72 @@ static bool named_view(struct nested *wm) {
 	return wm->domain_active && !wm->home_active && !wm->overview_active;
 }
 
+static bool is_flow(struct nested *wm) {
+	return named_view(wm) && flow_layout(wm->layout);
+}
+
+static bool view_floats(struct xdg_view *view) {
+	return view->wm->layout==FLOAT || (is_flow(view->wm) && view->flowed_out);
+}
+
+static int flow_center(struct nested *wm, struct xdg_view *view) {
+	int w=wm->parent_window.width,h=wm->parent_window.height;
+	struct rect r=view->flow_base;
+	if (flow_vertical(wm->layout,w,h)) return (h-r.height)/2-r.y;
+	return (w-r.width)/2-r.x;
+}
+
+/* A floated window keeps its position in slots, but occupies no strip space.
+ * Width/height are captured once from the native client's mapped geometry. */
+static void arrange_flow(struct nested *wm, struct xdg_view *center) {
+	if (!is_flow(wm)) return;
+	int w=wm->parent_window.width,h=wm->parent_window.height;
+	if (w<1 || h<1) return;
+	bool vertical=flow_vertical(wm->layout,w,h);
+	struct xdg_view *first=NULL,*last=NULL;
+	int cursor=0;
+	for (int i=0;i<wm->visible_count;i++) {
+		struct xdg_view *v=wm->slots[i];
+		if (v->flowed_out) continue;
+		if (!v->flow_width) {
+			struct wlr_box g=v->toplevel->base->geometry;
+			v->flow_width=g.width>0 && g.width<w ? g.width+2*WINDOW_CHROME_EDGE : 720+2*WINDOW_CHROME_EDGE;
+			v->flow_height=g.height>0 && g.height<h ? g.height+WINDOW_CHROME_TOP+WINDOW_CHROME_EDGE : 520+WINDOW_CHROME_TOP+WINDOW_CHROME_EDGE;
+		}
+		int vw=clamp_int(v->flow_width,w<180?w:180,w);
+		int vh=clamp_int(v->flow_height,h<100?h:100,h);
+		v->flow_base=(struct rect){vertical?(w-vw)/2:cursor,vertical?cursor:(h-vh)/2,vw,vh};
+		cursor+=(vertical?vh:vw)+FLOW_GAP;
+		if (!first) first=v;
+		last=v;
+	}
+	wm->flow_high=first?flow_center(wm,first):0;
+	wm->flow_low=last?flow_center(wm,last):0;
+	if (center && center->slot>=0 && !center->flowed_out)
+		wm->flow_offset=flow_center(wm,center);
+	wm->flow_offset=clamp_int(wm->flow_offset,wm->flow_low,wm->flow_high);
+}
+
+static void apply_view_clip(struct xdg_view *view) {
+	struct rect r=view->placement;
+	int bar=view->title_height,edge=view->content_edge;
+	struct wlr_box clip={
+		view->toplevel->base->geometry.x,view->toplevel->base->geometry.y,
+		r.width-2*edge,r.height-bar-edge,
+	};
+	wlr_scene_subsurface_tree_set_clip(&view->tree->node,&clip);
+	bool legacy=!is_flow(view->wm) && bar>0;
+	if (view->bar) {
+		wlr_scene_node_set_enabled(&view->bar->node,legacy);
+		if (legacy) wlr_scene_rect_set_size(view->bar,r.width,bar);
+	}
+	if (view->grip) {
+		wlr_scene_node_set_enabled(&view->grip->node,legacy);
+		if (legacy) wlr_scene_node_set_position(&view->grip->node,r.width-FLOAT_GRIP,r.height-FLOAT_GRIP);
+	}
+	if (view->chrome && is_flow(view->wm) && bar>0) window_chrome_show(view->chrome,true);
+}
+
 static void place_view(struct xdg_view *view) {
 	if (view == NULL || view->slot < 0 || view->tree == NULL || view->wm->output == NULL ||
 			!view->frame->node.enabled) {
@@ -349,51 +421,53 @@ static void place_view(struct xdg_view *view) {
 	if (width <= 0 || height <= FLOAT_BAR + FLOAT_GRIP) {
 		return;
 	}
-	bool named = named_view(wm), floating = named && wm->layout == FLOAT;
+	bool named=named_view(wm),flow=is_flow(wm),floating=named && view_floats(view);
 	struct rect r;
 	if (!named) {
 		int middle = width / 2;
 		r = view->slot == 0 ? (struct rect){0, 0, middle, height} :
 			(struct rect){middle, 0, width - middle, height};
-	} else if (wm->layout == STACK) {
+	} else if ((flow && view->maximized) || wm->layout==STACK) {
 		r = (struct rect){0, 0, width, height};
 	} else if (floating) {
 		if (view->floating.width == 0) {
 			view->floating = float_start(view->slot, width, height);
 		}
 		r = view->floating = float_rect(view->floating, width, height);
+	} else if (flow) {
+		r=view->flow_base;
+		if (flow_vertical(wm->layout,width,height)) r.y+=wm->flow_offset;
+		else r.x+=wm->flow_offset;
 	} else {
 		r = tile_rect(view->slot, wm->visible_count, width, height);
 	}
-	int bar = floating ? FLOAT_BAR : 0;
-	struct wlr_box clip = {
-		.x = view->toplevel->base->geometry.x,
-		.y = view->toplevel->base->geometry.y,
-		.width = r.width,
-		.height = r.height - bar,
-	};
-	wlr_scene_node_set_position(&view->frame->node, r.x, r.y);
-	wlr_scene_node_set_position(&view->tree->node, 0, bar);
-	wlr_scene_subsurface_tree_set_clip(&view->tree->node, &clip);
-	if (floating && view->bar == NULL) {
+	bool framed=flow && r.width>2*WINDOW_CHROME_EDGE && r.height>WINDOW_CHROME_TOP+WINDOW_CHROME_EDGE;
+	int bar=framed?WINDOW_CHROME_TOP:(!flow && floating)?FLOAT_BAR:0;
+	int edge=framed?WINDOW_CHROME_EDGE:0;
+	view->placement=r;
+	view->title_height=bar;
+	view->content_edge=edge;
+	wlr_scene_node_set_position(&view->frame->node,r.x,r.y);
+	wlr_scene_node_set_position(&view->tree->node,edge,bar);
+	if (framed && !view->chrome) view->chrome=window_chrome_create(view->frame);
+	if (view->chrome) {
+		if (framed) window_chrome_update(view->chrome,r.width,r.height,(double)wm->parent_window.scale_120/120,
+			view->toplevel->title,wm->focused==view,floating,view->maximized);
+		else window_chrome_show(view->chrome,false);
+	}
+	if (floating && !flow && view->bar == NULL) {
 		const float title_color[4] = {0.19f, 0.32f, 0.46f, 1.0f};
 		const float grip_color[4] = {0.42f, 0.68f, 0.87f, 1.0f};
 		view->bar = wlr_scene_rect_create(view->frame, r.width, FLOAT_BAR, title_color);
 		view->grip = wlr_scene_rect_create(view->frame, FLOAT_GRIP, FLOAT_GRIP, grip_color);
 	}
-	if (view->bar != NULL) {
-		wlr_scene_node_set_enabled(&view->bar->node, floating);
-		if (floating) {
-			wlr_scene_rect_set_size(view->bar, r.width, FLOAT_BAR);
-		}
+	apply_view_clip(view);
+	bool maximized=flow && view->maximized;
+	if (view->configured_maximized!=maximized) {
+		view->configured_maximized=maximized;
+		wlr_xdg_toplevel_set_maximized(view->toplevel,maximized);
 	}
-	if (view->grip != NULL) {
-		wlr_scene_node_set_enabled(&view->grip->node, floating);
-		if (floating) {
-			wlr_scene_node_set_position(&view->grip->node, r.width - FLOAT_GRIP, r.height - FLOAT_GRIP);
-		}
-	}
-	int request_w = named ? clip.width : 0, request_h = named ? clip.height : 0;
+	int request_w=named?r.width-2*edge:0, request_h=named?r.height-bar-edge:0;
 	if (request_w != view->configure_w || request_h != view->configure_h) {
 		view->configure_w = request_w;
 		view->configure_h = request_h;
@@ -416,6 +490,22 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 	}
 	if (node == NULL) {
 		return hit;
+	}
+	if (is_flow(wm)) {
+		for (int i=0;i<wm->visible_count;i++) {
+			struct xdg_view *v=wm->slots[i];
+			if (!v || !v->chrome || !window_chrome_owns_node(v->chrome,node)) continue;
+			enum window_chrome_hit action=window_chrome_hit_at(v->chrome,x-v->placement.x,y-v->placement.y);
+			if (action==WINDOW_CHROME_NONE) return hit;
+			hit.toplevel=v->toplevel->base->surface;
+			hit.decoration=v;
+			hit.chrome_action=action;
+			if (view_floats(v) && !v->maximized &&
+					(action==WINDOW_CHROME_TITLE || action==WINDOW_CHROME_RESIZE)) {
+				hit.handle=v;hit.resize=action==WINDOW_CHROME_RESIZE;
+			}
+			return hit;
+		}
 	}
 	if (node->type == WLR_SCENE_NODE_RECT && named_view(wm) && wm->layout == FLOAT) {
 		for (int i = 0; i < NODE_WINDOWS; ++i) {
@@ -473,7 +563,7 @@ static void update_view_move(void *data, bool moving, double x, double y) {
 		return;
 	}
 	struct xdg_view *view = wm->drag;
-	if (view == NULL || !named_view(wm) || wm->layout != FLOAT) {
+	if (view == NULL || !named_view(wm) || !view_floats(view) || (is_flow(wm) && view->maximized)) {
 		return;
 	}
 	struct rect r = wm->drag_rect;
@@ -608,10 +698,10 @@ static void parent_geometry_changed(void *data) {
 		stop(wm, "parent size or scale could not be applied to the nested output");
 		return;
 	}
+	if (resized) arrange_flow(wm,wm->focused);
+	// A scale-only change refreshes cached chrome without resizing clients.
+	for (int i=0;i<NODE_WINDOWS;i++) place_view(wm->slots[i]);
 	if (resized) {
-		for (int i = 0; i < NODE_WINDOWS; ++i) {
-			place_view(wm->slots[i]);
-		}
 		position_panel(wm->panel);
 		position_panel(wm->map_hud);
 		position_panel(wm->wallpaper);
@@ -691,6 +781,31 @@ static struct xdg_view *find_view(struct nested *wm, uint64_t id) {
 	return NULL;
 }
 
+static void present_flow(struct nested *wm) {
+	// Recompose low-to-high: strip, independently raised floats, focused max.
+	uint64_t float_order[NODE_WINDOWS]={0};
+	// A maximized client may take time to commit its new buffer, or decline
+	// the requested size. Do not expose other windows around its old buffer.
+	bool exclusive=wm->focused && wm->focused->slot>=0 && wm->focused->maximized;
+	for (int i=0;i<wm->visible_count;i++) {
+		struct xdg_view *v=wm->slots[i];
+		wlr_scene_node_set_enabled(&v->frame->node,exclusive ? v==wm->focused : !v->maximized);
+		place_view(v);
+		if (!v->maximized && !v->flowed_out) wlr_scene_node_raise_to_top(&v->frame->node);
+		else if (!v->maximized) float_order[i]=v->focused_at+1;
+	}
+	for (int n=0;n<wm->visible_count;n++) {
+		int first=-1;
+		for (int i=0;i<wm->visible_count;i++)
+			if (float_order[i] && (first<0 || float_order[i]<float_order[first])) first=i;
+		if (first<0) break;
+		wlr_scene_node_raise_to_top(&wm->slots[first]->frame->node);
+		float_order[first]=0;
+	}
+	if (wm->focused && wm->focused->slot>=0 && wm->focused->maximized)
+		wlr_scene_node_raise_to_top(&wm->focused->frame->node);
+}
+
 static void remember_focus(void *data, struct wlr_surface *surface) {
 	struct nested *wm = data;
 	if (!wm->domain_active) {
@@ -703,7 +818,10 @@ static void remember_focus(void *data, struct wlr_surface *surface) {
 				view->home_focused_at = ++wm->focus_order;
 			} else {
 				view->focused_at = ++wm->focus_order;
-				if (wm->layout == FLOAT) {
+				if (is_flow(wm)) {
+					wm->focused=view;
+					present_flow(wm);
+				} else if (wm->layout == FLOAT) {
 					wlr_scene_node_raise_to_top(&view->frame->node);
 				}
 			}
@@ -748,6 +866,7 @@ static void clear_slots(struct nested *wm) {
 		wm->slots[i] = NULL;
 	}
 	wm->visible_count = 0;
+	wm->focused = NULL;
 }
 
 static void project_home(struct nested *wm) {
@@ -827,7 +946,13 @@ static bool read_layout(const char *value, enum node_layout *layout) {
 	if (value == NULL) {
 		return false;
 	}
-	if (strcmp(value, "tiling") == 0) {
+	if (strcmp(value,"flow")==0) {
+		*layout=FLOW;
+	} else if (strcmp(value,"flow-horizontal")==0) {
+		*layout=FLOW_HORIZONTAL;
+	} else if (strcmp(value,"flow-vertical")==0) {
+		*layout=FLOW_VERTICAL;
+	} else if (strcmp(value, "tiling") == 0) {
 		*layout = TILING;
 	} else if (strcmp(value, "stack") == 0) {
 		*layout = STACK;
@@ -839,7 +964,7 @@ static bool read_layout(const char *value, enum node_layout *layout) {
 	return true;
 }
 
-static void project_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS]) {
+static void project_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS],bool recenter) {
 	clear_slots(wm);
 	if (members != wm->members) {
 		memcpy(wm->members, members, sizeof(wm->members));
@@ -853,6 +978,8 @@ static void project_named(struct nested *wm, const struct domain_member members[
 			view->epoch = members[i].epoch;
 			view->focused_at = 0;
 			view->floating = (struct rect){0};
+			view->flowed_out=view->maximized=false;
+			view->flow_width=view->flow_height=0;
 		}
 		if (view->mapped && view->tree != NULL) {
 			view->slot = wm->visible_count;
@@ -861,6 +988,17 @@ static void project_named(struct nested *wm, const struct domain_member members[
 	}
 	struct xdg_view *selected = best_view(wm, false);
 	struct xdg_view *top = selected != NULL ? selected : wm->slots[0];
+	wm->focused=selected;
+	if (is_flow(wm)) {
+		struct xdg_view *center=top;
+		if(recenter && center && center->flowed_out) {
+			center=NULL;
+			for(int i=0;i<wm->visible_count;i++) if(!wm->slots[i]->flowed_out) {center=wm->slots[i];break;}
+		}
+		arrange_flow(wm,recenter?center:NULL);
+		present_flow(wm);
+		return;
+	}
 	for (int i = 0; i < wm->visible_count; ++i) {
 		struct xdg_view *view = wm->slots[i];
 		wlr_scene_node_set_enabled(&view->frame->node, wm->layout != STACK || view == top);
@@ -872,13 +1010,17 @@ static void project_named(struct nested *wm, const struct domain_member members[
 }
 
 static void refresh_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS]) {
-	struct xdg_view *old[NODE_WINDOWS];
+	struct xdg_view *old[NODE_WINDOWS],*previous=wm->focused;
 	memcpy(old, wm->slots, sizeof(old));
-	project_named(wm, members);
+	project_named(wm, members,false);
 	struct wlr_surface *fallback = view_target(wm);
-	if (fallback == NULL && wm->slots[0] != NULL) {
-		fallback = wm->slots[0]->toplevel->base->surface;
-	}
+	if (fallback==NULL)
+		for (int i=0;i<wm->visible_count;i++) if(wm->slots[i]->frame->node.enabled) {
+			fallback=wm->slots[i]->toplevel->base->surface;
+			break;
+		}
+	if (is_flow(wm) && previous && previous->slot<0 && fallback && !wm->focused)
+		remember_focus(wm,fallback);
 	for (int i = 0; i < NODE_WINDOWS; ++i) {
 		if (old[i] != NULL && (old[i]->slot < 0 || !old[i]->frame->node.enabled)) {
 			nested_seat_forget(wm->seat, old[i]->toplevel->base->surface, fallback);
@@ -888,6 +1030,62 @@ static void refresh_named(struct nested *wm, const struct domain_member members[
 		wm->drag = NULL;
 	}
 	nested_seat_refresh(wm->seat);
+}
+
+static bool cycle_window(void *data,int steps) {
+	struct nested *wm=data;
+	if (!is_flow(wm) || wm->visible_count<1) return false;
+	if (!steps) return true; // applicability only, no change
+	int n=wm->visible_count;
+	int from=wm->focused?wm->focused->slot:(steps>0?-1:0);
+	int i=(from+steps%n+n)%n;
+	struct xdg_view *target=wm->slots[i];
+	if (!target) return false;
+	if (target==wm->focused && n==1) return true;
+	// Do not shift the strip to focus an independent float or a maximized window.
+	if (!target->flowed_out && !target->maximized)
+		wm->flow_offset=clamp_int(flow_center(wm,target),wm->flow_low,wm->flow_high);
+	struct wlr_surface *surface=target->toplevel->base->surface;
+	remember_focus(wm,surface);
+	nested_seat_switch(wm->seat,surface,false);
+	return true;
+}
+
+static bool scroll_flow(void *data,double x,double y,unsigned axis,double delta) {
+	struct nested *wm=data;
+	if (!is_flow(wm) || !delta || (wm->focused && wm->focused->maximized)) return false;
+	if (axis==WL_POINTER_AXIS_HORIZONTAL_SCROLL &&
+		flow_vertical(wm->layout,wm->parent_window.width,wm->parent_window.height)) return false;
+	int move=(int)fmax(-200,fmin(200,delta*3));
+	int next=clamp_int(wm->flow_offset-move,wm->flow_low,wm->flow_high);
+	if (next!=wm->flow_offset) {
+		wm->flow_offset=next;
+		present_flow(wm);
+		nested_seat_refresh(wm->seat);
+	}
+	(void)x;(void)y;
+	return true;
+}
+
+static void activate_chrome(void *data,struct nested_hit hit) {
+	struct nested *wm=data;
+	struct xdg_view *v=hit.decoration;
+	if (!v || v->slot<0 || !is_flow(wm)) return;
+	if (hit.chrome_action==WINDOW_CHROME_CLOSE) {
+		wlr_xdg_toplevel_send_close(v->toplevel);
+		return;
+	}
+	if (hit.chrome_action==WINDOW_CHROME_FLOAT && !v->maximized) {
+		v->flowed_out=!v->flowed_out;
+		if(v->flowed_out && !v->floating.width)
+			v->floating=float_rect(v->placement,wm->parent_window.width,wm->parent_window.height);
+		arrange_flow(wm,v->flowed_out?NULL:v);
+	} else if (hit.chrome_action==WINDOW_CHROME_MAXIMIZE) {
+		// Keep the existing strip offset when restoring a strip member.
+		v->maximized=!v->maximized;
+	}
+	remember_focus(wm,hit.toplevel);
+	nested_seat_switch(wm->seat,hit.toplevel,false);
 }
 
 static void select_projection(struct nested *wm, bool keep_panel) {
@@ -969,14 +1167,19 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 			domain_disconnect(wm);
 			return 0;
 		}
-		project_named(wm, wm->members);
-	} else if (strcmp(op, "next") == 0 && named_view(wm) && wm->layout == STACK &&
+		project_named(wm, wm->members,true);
+	} else if (strcmp(op, "next") == 0 && named_view(wm) && (wm->layout == STACK || is_flow(wm)) &&
 			strtok_r(NULL, " ", &tail) == NULL) {
+		if (is_flow(wm)) {
+			cycle_window(wm,1);
+			domain_send(wm,"applied",serial);
+			return 0;
+		}
 		if (wm->visible_count > 0) {
 			struct xdg_view *top = best_view(wm, true);
 			int next = top != NULL ? (top->slot + 1) % wm->visible_count : 1 % wm->visible_count;
 			remember_focus(wm, wm->slots[next]->toplevel->base->surface);
-			project_named(wm, wm->members);
+			project_named(wm, wm->members,true);
 		}
 	} else if (strcmp(op, "node") == 0 || strcmp(op, "focus") == 0) {
 		struct domain_member members[NODE_WINDOWS] = {0};
@@ -990,7 +1193,7 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		wm->overview_active = false;
 		wm->domain_active = true;
 		wm->layout = mode;
-		project_named(wm, members);
+		project_named(wm, members,true);
 	} else {
 		domain_disconnect(wm);
 		return 0;
@@ -1065,6 +1268,12 @@ static void on_view_tree_destroy(struct wl_listener *listener, void *data) {
 	view->tree = NULL;
 }
 
+static void on_view_title(struct wl_listener *listener,void *data) {
+	(void)data;
+	struct xdg_view *view=wl_container_of(listener,view,title);
+	if (!view->wm->cleaning && view->slot>=0) place_view(view);
+}
+
 static void on_view_commit(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct xdg_view *view = wl_container_of(listener, view, commit);
@@ -1087,10 +1296,12 @@ static void on_view_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->commit.link);
 	wl_list_remove(&view->app_id.link);
+	wl_list_remove(&view->title.link);
 	wl_list_remove(&view->destroy.link);
 	if (view->tree != NULL) {
 		wl_list_remove(&view->tree_destroy.link);
 	}
+	if (view->chrome) window_chrome_destroy(view->chrome);
 	wlr_scene_node_destroy(&view->frame->node);
 	free(view);
 }
@@ -1133,6 +1344,8 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&toplevel->events.destroy, &view->destroy);
 	view->app_id.notify = on_view_app_id;
 	wl_signal_add(&toplevel->events.set_app_id, &view->app_id);
+	view->title.notify=on_view_title;
+	wl_signal_add(&toplevel->events.set_title,&view->title);
 	wl_list_insert(wm->views.prev, &view->link);
 	if (domain_send(wm, "new", view->id) && valid_app_id(toplevel->app_id)) publish_app_id(view);
 }
@@ -1269,7 +1482,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	*reason = "could not create the nested input seat";
 	wm.seat = nested_seat_create(wm.server, parent,
 		wlr_wl_output_get_surface(wm.output), hit_view, remember_focus, move_cursor,
-		start_view_move, update_view_move,map_scroll,map_click,&wm);
+		start_view_move, update_view_move,map_scroll,map_click,activate_chrome,scroll_flow,cycle_window,&wm);
 	if (wm.seat == NULL) {
 		goto done;
 	}

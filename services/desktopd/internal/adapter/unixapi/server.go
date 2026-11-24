@@ -261,7 +261,7 @@ func (d *desktop) focus(name string) error {
 	if w.views && name != "" {
 		selection.Mode = d.service.NodeMode(name)
 		if selection.Mode == "" {
-			selection.Mode = domainipc.Tiling
+			selection.Mode = domainipc.Flow
 		}
 	}
 	ack := d.beginApply(w, &selection)
@@ -347,9 +347,9 @@ func (d *desktop) viewAction(method, name, mode string) error {
 			return err
 		}
 		if method == domainipc.NextMethod {
-			if active.Mode != domainipc.Stack {
+			if active.Mode != domainipc.Stack && !domainipc.IsFlow(active.Mode) {
 				d.mu.Unlock()
-				return errors.New("Stack mode is not active")
+				return errors.New("Flow or Stack mode is not active")
 			}
 			command = "next"
 		} else {

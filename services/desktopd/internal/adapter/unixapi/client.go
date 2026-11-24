@@ -17,7 +17,7 @@ import (
 // JSON request/response contract as other desktopd clients.
 func Request(ctx context.Context, path string, args []string) (string, error) {
 	if len(args) == 0 {
-		return "", errors.New("expected list, create, assign, focus, home, overview or map show|hide")
+		return "", errors.New("expected list, create, assign, focus, home, overview, layout, next or map show|hide")
 	}
 	for i, s := range args {
 		if i == 2 && args[0] == "create" && len(args) == 3 && domain.ValidDescription(s) {
@@ -52,6 +52,10 @@ func Request(ctx context.Context, path string, args []string) (string, error) {
 		body = create
 	case method == "focus" && len(args) == 2:
 		body = domainipc.DomainBody{Domain: args[1]}
+	case method == "layout" && len(args) == 3 && domainipc.ValidLayout(args[2]):
+		body = domainipc.LayoutBody{Domain: args[1], Mode: args[2]}
+	case method == "next" && len(args) == 2:
+		method, body = domainipc.NextMethod, domainipc.DomainBody{Domain: args[1]}
 	case method == "assign" && len(args) == 4:
 		id, err := strconv.ParseUint(args[2], 10, 64)
 		if err != nil || id == 0 {
@@ -62,7 +66,7 @@ func Request(ctx context.Context, path string, args []string) (string, error) {
 		}
 		body = domainipc.AssignBody{Session: args[1], WindowID: id, Domain: args[3]}
 	default:
-		return "", errors.New("expected list, create, assign, focus, home, overview or map show|hide")
+		return "", errors.New("expected list, create, assign, focus, home, overview, layout, next or map show|hide")
 	}
 	c, err := domainipc.Dial(ctx, path)
 	if err != nil {

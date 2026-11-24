@@ -215,7 +215,7 @@ func panelAction(op C.int, a, b *C.char) {
 	case C.int(openTerminal), C.int(openFiles):
 		apps.start(appAction(op))
 	case 8, 9, 10:
-		modes := []string{domainipc.Stack, domainipc.Float, domainipc.Tiling}
+		modes := []string{domainipc.Stack, domainipc.Float, domainipc.Flow}
 		active.submit(domainipc.LayoutMethod, domainipc.LayoutBody{Domain: name, Mode: modes[int(op)-8]})
 	case 11:
 		active.submit(domainipc.NextMethod, domainipc.DomainBody{Domain: name})

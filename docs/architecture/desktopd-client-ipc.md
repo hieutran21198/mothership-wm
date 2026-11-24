@@ -24,7 +24,7 @@ has either a `body` or an `error` with `code` and `message`.
 | `overview` | `{}` | `{}` after clearing the app projection in WM |
 | `map.show` / `map.hide` | `{}` | `{}` after updating the HUD visibility preference only |
 | `layout` | `{"domain":"Dev","mode":"float"}` | `{}` after applying the mode in the currently selected Node |
-| `stack.next` | `{"domain":"Dev"}` | `{}` after advancing only the current Node's Stack |
+| `stack.next` | `{"domain":"Dev"}` | `{}` after advancing only the current Node's Flow or Stack |
 
 For example, request `{"id":12,"method":"create","body":{"domain":"Dev"}}`
 gets `{"id":12,"body":{}}` on success. Domain names are 1–32 ASCII
@@ -57,7 +57,7 @@ selection has `state`
 (`not_selected`, `acknowledged`, or `unknown`) and includes `domain`
 only for an acknowledged named Domain. Confirmed Home is
 `{"state":"acknowledged","view":"home"}`. Confirmed Overview has the same shape with `"view":"overview"` and no
-Domain or mode. Named selection from a current WM adds `mode` (`tiling`,
+Domain or mode. Named selection from a current WM adds `mode` (`flow`, `flow-horizontal`, `flow-vertical`, `tiling`,
 `float` or `stack`). Mode changes use the existing selection event; Next
 does not create a false selection event. A mode command names the Node it
 intends to change; a stale target is rejected. Unknown and not selected

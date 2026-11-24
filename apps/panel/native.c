@@ -80,14 +80,15 @@ static void refresh_actions(void) {
 	gtk_widget_set_sensitive(overview_home, enabled);
 	gboolean named = current_node != NULL && *current_node && current_mode != NULL && *current_mode;
 	gtk_widget_set_visible(node_layouts, named);
-	const char *modes[] = {"stack", "float", "tiling"};
+	const char *modes[] = {"stack", "float", "flow"};
+	gboolean flowing = named && (strcmp(current_mode,"flow")==0 || g_str_has_prefix(current_mode,"flow-"));
 	for (int i = 0; i < 3; ++i) {
-		gboolean active = named && strcmp(current_mode, modes[i]) == 0;
+		gboolean active = named && (strcmp(current_mode, modes[i]) == 0 || (i==2 && flowing));
 		gtk_widget_set_sensitive(layout_buttons[i], enabled && !active);
 		if (active) gtk_widget_add_css_class(layout_buttons[i], "suggested-action");
 		else gtk_widget_remove_css_class(layout_buttons[i], "suggested-action");
 	}
-	gtk_widget_set_visible(next_stack, named && g_strcmp0(current_mode, "stack") == 0);
+	gtk_widget_set_visible(next_stack, named && (flowing || g_strcmp0(current_mode, "stack") == 0));
 	gtk_widget_set_sensitive(next_stack, enabled);
 	for (GtkWidget *child = gtk_widget_get_first_child(node_grid); child != NULL;
 			child = gtk_widget_get_next_sibling(child)) {
@@ -975,7 +976,7 @@ int panel_init(void) {
 	gtk_box_append(GTK_BOX(normal), node_layouts);
 	layout_buttons[0] = button("Stack", 8, node_layouts);
 	layout_buttons[1] = button("Float", 9, node_layouts);
-	layout_buttons[2] = button("Tiling", 10, node_layouts);
+	layout_buttons[2] = button("Flow", 10, node_layouts);
 	next_stack = button("Next window", 11, node_layouts);
 
 	overview_form = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);

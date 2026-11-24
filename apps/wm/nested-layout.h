@@ -1,13 +1,24 @@
 #ifndef MOTHERSHIP_NESTED_LAYOUT_H
 #define MOTHERSHIP_NESTED_LAYOUT_H
 
+#include <stdbool.h>
+
 #define NODE_WINDOWS 8
 #define HOME_WINDOWS 2
 #define WM_PACKET_MAX 512
 #define FLOAT_BAR 20
 #define FLOAT_GRIP 16
 
-enum node_layout { TILING, STACK, FLOAT };
+enum node_layout { TILING, STACK, FLOAT, FLOW, FLOW_HORIZONTAL, FLOW_VERTICAL };
+enum { FLOW_GAP=18 };
+
+static inline bool flow_layout(enum node_layout layout) {
+	return layout==FLOW || layout==FLOW_HORIZONTAL || layout==FLOW_VERTICAL;
+}
+
+static inline bool flow_vertical(enum node_layout layout,int width,int height) {
+	return layout==FLOW_VERTICAL || (layout==FLOW && height>width);
+}
 struct rect { int x, y, width, height; };
 
 static inline int clamp_int(int v, int lo, int hi) {

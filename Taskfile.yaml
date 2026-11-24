@@ -29,7 +29,7 @@ tasks:
     desc: Build the nested-only WM in the wm-native devenv profile
     cmds:
       - |
-        if ! pkg-config --exists wlroots-0.20 wayland-client wayland-server wayland-protocols pixman-1 xkbcommon; then
+        if ! pkg-config --exists wlroots-0.20 wayland-client wayland-server wayland-protocols pixman-1 xkbcommon cairo pangocairo libdrm; then
           printf '%s\n' 'Missing native build dependencies; enter the wm-native devenv profile.' >&2
           exit 1
         fi
