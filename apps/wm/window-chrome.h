@@ -33,5 +33,6 @@ void window_chrome_update(struct window_chrome *,int width,int height,double sca
 // The aperture is relative to the outer frame. NULL restores all strips.
 void window_chrome_clip(struct window_chrome *,const struct wlr_box *);
 bool window_chrome_owns_node(const struct window_chrome *,const struct wlr_scene_node *);
+struct wlr_box window_chrome_maximize_box(const struct window_chrome *);
 enum window_chrome_hit window_chrome_hit_at(const struct window_chrome *,double x,double y);
 #endif

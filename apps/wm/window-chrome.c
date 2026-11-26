@@ -371,3 +371,7 @@ enum window_chrome_hit window_chrome_hit_at(const struct window_chrome *c,double
 	if (y<WINDOW_CHROME_TOP && painted(c,x,y)) return WINDOW_CHROME_TITLE;
 	return WINDOW_CHROME_NONE;
 }
+
+struct wlr_box window_chrome_maximize_box(const struct window_chrome *c) {
+	return c?control(c,1):(struct wlr_box){0};
+}

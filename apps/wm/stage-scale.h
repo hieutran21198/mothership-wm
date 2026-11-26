@@ -28,6 +28,7 @@ bool stage_scale_capture(struct stage_scale *,struct wlr_scene_tree *parent,
 	struct wlr_scene_tree *source,struct wlr_box full,
 	struct wlr_surface *owned_surface,struct owned_preview *owned);
 void stage_scale_draw(struct stage_scale *,struct wlr_box thumbnail,double amount);
+void stage_scale_draw_box(struct stage_scale *,struct wlr_box);
 void stage_scale_clear(struct stage_scale *);
 
 #endif

@@ -53,12 +53,27 @@ restore it. This also applies to Default Node.
 The [native frame](../system/window-frame.md) controls individual windows.
 A float keeps its stable slot but occupies no strip space; returning it
 reinserts it in current order. Float bounds are separate from Flow bounds.
-Maximize is explicit and restores the previous mode and bounds. Changes
-do not restart apps or change membership. Float or Return slides from the
+Maximize is explicit and restores the previous mode and bounds. With motion
+enabled, the frame and app content scale together between their current
+bounds and the workspace edge above the rail. A second click on the moving
+Maximize/Restore control reverses from the drawn bounds. The app receives
+pointer input again when its live frame returns. With reduced motion or an
+unavailable capture, apply the final placement immediately. Changes do not
+restart apps or change membership. Float or Return slides from the
 current painted position to the destination when the positions differ.
 If needed, request the final client size once; the slide only translates
 the compositor scene. The older explicit Stack, all-
 Float and Tiling modes remain compatible; Flow does not depend on Tiling.
+
+Repeat Maximize and Restore in a named Node and Default Node at 100% and
+150%. Try a strip window and a moved, resized Float. With a client that
+draws its own title bar, repeat using its Maximize and Restore controls.
+Check reduced motion,
+a second click during the transition, and a client that delays its resize.
+Check the protocol trace for one final size request per toggle. Close or
+minimize the window, change Node or layout, and resize the output during
+motion. Verify that the captured frame clears and pointer input follows
+the live frame.
 
 ### F-VIEW-3
 

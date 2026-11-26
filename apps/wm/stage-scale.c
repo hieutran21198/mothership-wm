@@ -64,10 +64,9 @@ static int blend(int from,int to,double t) {
 	return from+(int)round((to-from)*t);
 }
 
-void stage_scale_draw(struct stage_scale *scale,struct wlr_box thumbnail,double amount) {
+void stage_scale_draw_box(struct stage_scale *scale,struct wlr_box box) {
 	struct wlr_box f=scale->full;
-	int x=blend(thumbnail.x,f.x,amount),y=blend(thumbnail.y,f.y,amount);
-	int w=blend(thumbnail.width,f.width,amount),h=blend(thumbnail.height,f.height,amount);
+	int w=box.width,h=box.height;
 	for(int i=0;i<scale->count;i++) {
 		const struct wlr_box b=scale->layers[i].box;
 		struct wlr_scene_buffer *sprite=scale->layers[i].buffer;
@@ -79,8 +78,16 @@ void stage_scale_draw(struct stage_scale *scale,struct wlr_box thumbnail,double 
 		wlr_scene_buffer_set_dest_size(sprite,right-left,bottom-top);
 		wlr_scene_node_set_position(&sprite->node,left,top);
 	}
-	wlr_scene_node_set_position(&scale->tree->node,x,y);
+	wlr_scene_node_set_position(&scale->tree->node,box.x,box.y);
 	wlr_scene_node_set_enabled(&scale->tree->node,true);
+}
+
+void stage_scale_draw(struct stage_scale *scale,struct wlr_box thumbnail,double amount) {
+	struct wlr_box f=scale->full;
+	stage_scale_draw_box(scale,(struct wlr_box){
+		blend(thumbnail.x,f.x,amount),blend(thumbnail.y,f.y,amount),
+		blend(thumbnail.width,f.width,amount),blend(thumbnail.height,f.height,amount),
+	});
 }
 
 void stage_scale_clear(struct stage_scale *scale) {

@@ -195,6 +195,13 @@ struct nested {
 	struct xdg_view *stage_painted;
 	struct wlr_scene_tree *stage_overlay;
 	struct stage_scale stage_scale;
+	struct wlr_scene_tree *maximize_overlay;
+	struct {
+		struct stage_scale sprite;
+		struct xdg_view *view;
+		struct wlr_box from, painted, button;
+		int64_t start;
+	} maximize;
 	struct {
 		struct stage_scale sprite;
 		struct wlr_box anchor;
@@ -273,7 +280,7 @@ struct xdg_view {
 	int slot;
 	struct wl_list link;
 	struct wl_listener map, unmap, commit, configure, destroy, tree_destroy, app_id, title;
-	struct wl_listener request_minimize;
+	struct wl_listener request_maximize, request_minimize;
 };
 
 struct shell_panel {
@@ -1094,6 +1101,8 @@ static void picker_focus_draw(struct nested *wm,struct timespec now) {
 static void flow_slide_frame(struct nested *,struct timespec);
 static void mode_slide_frame(struct nested *,struct timespec);
 static void mode_slide_finish(struct nested *);
+static void maximize_finish(struct nested *);
+static void maximize_frame(struct nested *,struct timespec);
 static void stage_scale_frame(struct nested *,struct timespec);
 static void tray_flights_frame(struct nested *,struct timespec);
 static void display_commit(struct nested *,struct wl_resource *,int,int,int,int);
@@ -1114,9 +1123,9 @@ static void on_frame(struct wl_listener *listener, void *data) {
 	bool timed=clock_gettime(CLOCK_MONOTONIC,&now)==0;
 	bool tracing=timed && render_debug_active(wm->render_debug);
 	if(tracing && (wm->revealing || wm->flow_sliding || wm->mode_slide_view ||
-			wm->stage_scale.tree || wm->picker_rail_sliding))
+			wm->stage_scale.tree || wm->maximize.view || wm->picker_rail_sliding))
 		render_debug_source(wm->render_debug,RENDER_MOTION);
-	if (timed) {reveal_frame(wm,now);flow_slide_frame(wm,now);mode_slide_frame(wm,now);stage_scale_frame(wm,now);strip_draw(wm,now);picker_draw(wm);picker_focus_draw(wm,now);group_frame(wm,now);tray_flights_frame(wm,now);}
+	if (timed) {reveal_frame(wm,now);flow_slide_frame(wm,now);mode_slide_frame(wm,now);maximize_frame(wm,now);stage_scale_frame(wm,now);strip_draw(wm,now);picker_draw(wm);picker_focus_draw(wm,now);group_frame(wm,now);tray_flights_frame(wm,now);}
 	enum video_frost_result frost=FROST_OFF;
 	if (wm->video_frost_requested && wm->overview_active && wm->map_hud &&
 			wm->map_hud->layer->surface->mapped && wm->wallpaper)
@@ -1306,7 +1315,7 @@ static void clip_chrome(struct xdg_view *view,struct wlr_scene_rect *scene,struc
 }
 
 static void apply_view_clip(struct xdg_view *view) {
-	if(!view || !view->tree || !view->frame->node.enabled) return;
+	if(!view || !view->tree || (!view->frame->node.enabled && view->wm->maximize.view!=view)) return;
 	struct rect r=view->placement;
 	int bar=view->content_top,edge=view->content_edge;
 	struct wlr_box target={r.x+edge,r.y+bar,r.width-2*edge,r.height-bar-edge},visible=target;
@@ -1337,7 +1346,7 @@ static void apply_view_clip(struct xdg_view *view) {
 
 static void place_view(struct xdg_view *view) {
 	if (view == NULL || view->slot < 0 || view->tree == NULL || view->wm->output == NULL ||
-			view->minimized || (!view->frame->node.enabled && !is_stage(view->wm))) {
+			view->minimized || (!view->frame->node.enabled && !is_stage(view->wm) && view->wm->maximize.view!=view)) {
 		return;
 	}
 	struct nested *wm = view->wm;
@@ -1431,6 +1440,19 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		x, y, &hit.x, &hit.y);
 	if (node == NULL) {
 		if (wm->revealing) return hit;
+		struct xdg_view *moving=wm->maximize.view;
+		const struct wlr_box box=wm->maximize.painted;
+		if(moving && wlr_box_contains_point(&box,x,y)) {
+			const struct wlr_box source=wm->maximize.sprite.full;
+			double bx=(x-box.x)*source.width/box.width;
+			double by=(y-box.y)*source.height/box.height;
+			if(wlr_box_contains_point(&wm->maximize.button,bx,by)) {
+				hit.decoration=moving;
+				hit.toplevel=moving->toplevel->base->surface;
+				hit.chrome_action=WINDOW_CHROME_MAXIMIZE;
+			}
+			return hit;
+		}
 		node = wlr_scene_node_at(&wm->app_tree->node, x, y, &hit.x, &hit.y);
 	}
 	if (node == NULL) {
@@ -1684,6 +1706,7 @@ static void map_pointer_set_node_strip(struct wl_client *client,struct wl_resour
 	} else {
 		wm->node_strip=(struct wlr_box){x,y,w,h};
 	}
+	if(!wm->strip_motion)maximize_finish(wm);
 	if(wm->output)wlr_output_schedule_frame(wm->output);
 }
 static void map_pointer_strip_hover(struct wl_client *client,struct wl_resource *resource,wl_fixed_t x) {
@@ -1911,6 +1934,7 @@ static void parent_geometry_changed(void *data) {
 		stop(wm, "parent size or scale could not be applied to the nested output");
 		return;
 	}
+	maximize_finish(wm);
 	if(wm->cursor_size)reload_cursor(wm,wm->cursor_size);
 	if (resized) {mode_slide_finish(wm);arrange_flow(wm,wm->focused);}
 	// A scale-only change refreshes cached chrome without resizing clients.
@@ -2022,14 +2046,14 @@ static void present_stage(struct nested *wm) {
 	}
 }
 
-static bool flight_capture(struct nested *wm,struct stage_scale *scale,struct xdg_view *view) {
+static bool flight_capture(struct nested *wm,struct stage_scale *scale,struct xdg_view *view,struct wlr_scene_tree *overlay) {
 	struct rect r=view->placement;
 	struct wlr_surface *surface=view->toplevel->base->surface;
 	struct owned_preview *owned=NULL;
 	if(surface_has_explicit_sync(surface) &&
 		owned_preview_update(&view->preview_copy,wm->output,surface,view->preview_generation,
 			wl_display_get_event_loop(wm->server)))owned=&view->preview_copy;
-	return stage_scale_capture(scale,wm->stage_overlay,view->frame,
+	return stage_scale_capture(scale,overlay,view->frame,
 		(struct wlr_box){r.x,r.y,r.width,r.height},surface,owned);
 }
 static bool tray_flight_enabled(struct nested *wm,struct xdg_view *view) {
@@ -2070,7 +2094,7 @@ static struct wlr_box tray_flight_anchor(struct nested *wm,struct xdg_view *v,bo
 static void tray_flight_start(struct nested *wm,struct xdg_view *v,int index,bool opening,struct wlr_box anchor) {
 	if(!wm->strip_motion || !node_strip_active(wm) || v->slot<0 || !v->frame->node.enabled)return;
 	__typeof__(wm->tray_flight[0]) *f=&wm->tray_flight[index];
-	if(!flight_capture(wm,&f->sprite,v))return;
+	if(!flight_capture(wm,&f->sprite,v,wm->stage_overlay))return;
 	f->id=v->id;f->started=-1;f->opening=opening;f->anchor=anchor;
 	if(opening)wlr_scene_node_set_enabled(&v->frame->node,false);
 	wlr_output_schedule_frame(wm->output);
@@ -2104,7 +2128,7 @@ static bool stage_capture(struct nested *wm,struct xdg_view *view) {
 		wlr_scene_node_set_enabled(&view->frame->node,true);
 		apply_view_clip(view);
 	}
-	bool ok=flight_capture(wm,&wm->stage_scale,view);
+	bool ok=flight_capture(wm,&wm->stage_scale,view,wm->stage_overlay);
 	if(ok || !enabled) wlr_scene_node_set_enabled(&view->frame->node,false);
 	return ok;
 }
@@ -2184,6 +2208,7 @@ static void present_flow(struct nested *wm) {
 			(exclusive ? v==wm->focused : !v->maximized));
 		if(v->minimized) continue;
 		place_view(v);
+		if(wm->maximize.view==v)wlr_scene_node_set_enabled(&v->frame->node,false);
 		if (!v->maximized && !v->flowed_out) wlr_scene_node_raise_to_top(&v->frame->node);
 		else if (!v->maximized) float_order[i]=v->focused_at+1;
 	}
@@ -2224,7 +2249,7 @@ static unsigned decorate_frames(struct nested *wm) {
 	const struct wlr_box output={0,0,wm->parent_window.width,wm->parent_window.height};
 	if(output.width<=0 || output.height<=0)return 0;
 	bool framed=view_has_frame(wm) && !wm->revealing;
-	bool moving=wm->drag || wm->flow_sliding || wm->mode_slide_view || wm->stage_scale.tree;
+	bool moving=wm->drag || wm->flow_sliding || wm->mode_slide_view || wm->stage_scale.tree || wm->maximize.view;
 	bool assigned[NODE_WINDOWS]={0};
 	unsigned trace=0;
 	int g=0;
@@ -2371,6 +2396,7 @@ static void remember_focus(void *data, struct wlr_surface *surface) {
 				bool same_group=changed && view->group_id && wm->focused &&
 					wm->focused->group_id==view->group_id && group_large(wm) &&
 					group_visible(wm->focused) && group_visible(view);
+				if(changed && wm->maximize.view!=view)maximize_finish(wm);
 				wm->focused=view;
 				present_flow(wm);
 				if(changed && !same_group)flow_focus(wm,view);
@@ -2409,6 +2435,7 @@ static struct wlr_surface *view_target(struct nested *wm) {
 }
 
 static void clear_slots(struct nested *wm) {
+	maximize_finish(wm);
 	tray_flights_clear(wm);
 	wm->group_grab.source=wm->group_join.id=0;
 	stage_scale_clear(&wm->stage_scale);
@@ -2931,6 +2958,7 @@ static void map_pointer_window_pick(struct wl_client *client,struct wl_resource 
 static bool scroll_flow(void *data,double x,double y,unsigned axis,double delta) {
 	struct nested *wm=data;
 	if (!is_flow(wm) || wm->revealing || !delta || (wm->focused && wm->focused->maximized)) return false;
+	if(wm->maximize.view) return true;
 	if (axis==WL_POINTER_AXIS_HORIZONTAL_SCROLL &&
 		flow_vertical(wm->layout,wm->parent_window.width,wm->parent_window.height)) return false;
 	wm->flow_sliding=false;
@@ -2984,6 +3012,41 @@ static void mode_slide_frame(struct nested *wm,struct timespec now) {
 	else {wm->mode_slide_view=NULL;nested_seat_refresh(wm->seat);}
 }
 
+static void maximize_finish(struct nested *wm) {
+	struct xdg_view *view=wm->maximize.view;
+	if(!view)return;
+	wm->maximize.view=NULL;
+	stage_scale_clear(&wm->maximize.sprite);
+	if(is_flow(wm) && view->slot>=0 && view->mapped && !view->minimized) {
+		wlr_scene_node_set_enabled(&view->frame->node,true);
+		apply_view_clip(view);
+		nested_seat_refresh(wm->seat);
+	}
+}
+
+static void maximize_frame(struct nested *wm,struct timespec now) {
+	struct xdg_view *view=wm->maximize.view;
+	if(!view)return;
+	int64_t ms=now.tv_sec*1000LL+now.tv_nsec/1000000;
+	if(wm->maximize.start<0)wm->maximize.start=ms;
+	double t=(ms-wm->maximize.start)/200.;
+	if(t>=1 || !wm->strip_motion || !is_flow(wm) || wm->revealing) {
+		maximize_finish(wm);
+		return;
+	}
+	struct wlr_box a=wm->maximize.from;
+	struct rect b=view->placement;
+	double e=stage_ease(t);
+	wm->maximize.painted=(struct wlr_box){
+		preview_mix(a.x,b.x,e),preview_mix(a.y,b.y,e),
+		preview_mix(a.width,b.width,e),preview_mix(a.height,b.height,e),
+	};
+	stage_scale_draw_box(&wm->maximize.sprite,wm->maximize.painted);
+	// The hidden live surface can still need a callback before it redraws.
+	wlr_surface_for_each_surface(view->toplevel->base->surface,stage_send_frame,&now);
+	wlr_output_schedule_frame(wm->output);
+}
+
 static void request_window_close(struct xdg_view *view) {
 	wlr_xdg_toplevel_send_close(view->toplevel);
 }
@@ -3004,29 +3067,55 @@ static bool close_focused_window(void *data,struct wlr_surface *surface) {
 
 static void request_view_minimize(struct xdg_view *,bool);
 static void group_show_settings(struct nested *,struct xdg_view *,bool);
+static void set_view_maximized(struct xdg_view *v,bool maximized) {
+	struct nested *wm=v->wm;
+	if(wm->cleaning || wm->revealing || !is_flow(wm) || v->slot<0 ||
+			!v->mapped || v->minimized || v->maximized==maximized ||
+			(!v->frame->node.enabled && wm->maximize.view!=v)) return;
+	struct xdg_view *group[FLOW_GROUP_MAX];
+	if(group_members(wm,v,group,false)>=2)return;
+
+	if(wm->maximize.view!=v) {
+		maximize_finish(wm);
+		if(wm->strip_motion && flight_capture(wm,&wm->maximize.sprite,v,wm->maximize_overlay)) {
+			wm->maximize.view=v;
+			wm->maximize.button=window_chrome_maximize_box(v->chrome);
+			wm->maximize.painted=wm->maximize.sprite.full;
+		}
+	}
+	mode_slide_finish(wm);
+	// Keep the existing strip offset when restoring a strip member.
+	wm->flow_sliding=false;
+	v->maximized=maximized;
+	struct wlr_surface *surface=v->toplevel->base->surface;
+	remember_focus(wm,surface);
+	if(wm->maximize.view==v) {
+		wm->maximize.from=wm->maximize.painted;
+		wm->maximize.start=-1;
+		stage_scale_draw_box(&wm->maximize.sprite,wm->maximize.painted);
+	}
+	wlr_output_schedule_frame(wm->output);
+	nested_seat_switch(wm->seat,surface,false);
+}
+
 static void activate_chrome(void *data,struct nested_hit hit) {
 	struct nested *wm=data;
 	struct xdg_view *v=hit.decoration;
 	if (!v || v->slot<0 || !view_has_frame(wm) || wm->revealing) return;
 	if(hit.chrome_action==WINDOW_CHROME_GROUP_LAYOUT) {group_show_settings(wm,v,true);return;}
 	if(hit.chrome_action==WINDOW_CHROME_GROUP_MINIMIZE) {request_view_minimize(v,true);return;}
-	if (hit.chrome_action==WINDOW_CHROME_CLOSE) {
-		request_window_close(v);
-		return;
-	}
+	if(hit.chrome_action==WINDOW_CHROME_CLOSE) {request_window_close(v);return;}
 	if(hit.chrome_action==WINDOW_CHROME_MINIMIZE) {request_view_minimize(v,false);return;}
+	if(hit.chrome_action==WINDOW_CHROME_MAXIMIZE) {set_view_maximized(v,!v->maximized);return;}
+
 	bool slide=hit.chrome_action==WINDOW_CHROME_FLOAT && is_flow(wm) && !v->maximized;
 	struct rect previous=v->placement;
-	if(slide || hit.chrome_action==WINDOW_CHROME_MAXIMIZE)mode_slide_finish(wm);
-	if (slide) {
+	if(slide) {
+		mode_slide_finish(wm);
 		v->flowed_out=!v->flowed_out;
 		if(v->flowed_out && !v->floating.width)
 			v->floating=float_rect(v->placement,wm->parent_window.width,wm->parent_window.height);
 		arrange_flow(wm,v->flowed_out?NULL:v);
-	} else if (hit.chrome_action==WINDOW_CHROME_MAXIMIZE) {
-		// Keep the existing strip offset when restoring a strip member.
-		wm->flow_sliding=false;
-		v->maximized=!v->maximized;
 	}
 	remember_focus(wm,hit.toplevel);
 	if(slide) {
@@ -3285,6 +3374,7 @@ static void request_view_minimize(struct xdg_view *view,bool whole_group) {
 	struct xdg_view *group[FLOW_GROUP_MAX];
 	int n=view->slot>=0?group_members(wm,view,group,false):0;
 	if((n>=2)!=whole_group)return;
+	if(wm->maximize.view==view)maximize_finish(wm);
 	if(n<2) {group[0]=view;n=1;}
 	struct xdg_view *previous=wm->focused;
 	tray_flights_clear(wm);
@@ -3380,6 +3470,15 @@ static void map_pointer_group_action(struct wl_client *client,struct wl_resource
 	wlr_output_schedule_frame(wm->output);
 }
 
+static void on_view_request_maximize(struct wl_listener *listener,void *data) {
+	(void)data;
+	struct xdg_view *view=wl_container_of(listener,view,request_maximize);
+	set_view_maximized(view,view->toplevel->requested.maximized);
+	// XDG Shell requires a configure even when policy keeps the current state.
+	if(view->toplevel->base->initialized)
+		wlr_xdg_surface_schedule_configure(view->toplevel->base);
+}
+
 static void on_view_request_minimize(struct wl_listener *listener,void *data) {
 	(void)data;
 	struct xdg_view *view=wl_container_of(listener,view,request_minimize);
@@ -3412,6 +3511,7 @@ static void on_view_map(struct wl_listener *listener, void *data) {
 
 static void remove_view(struct xdg_view *view) {
 	struct nested *wm = view->wm;
+	if(wm->maximize.view==view)maximize_finish(wm);
 	if (wm->drag == view) {
 		wm->drag = NULL;
 	}
@@ -3475,7 +3575,8 @@ static void on_view_commit(struct wl_listener *listener, void *data) {
 		// wm_capabilities was added in xdg_toplevel version 5.
 		if(wl_resource_get_version(view->toplevel->resource)>=5)
 			wlr_xdg_toplevel_set_wm_capabilities(view->toplevel,
-				view->toplevel->scheduled.wm_capabilities | WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE);
+				view->toplevel->scheduled.wm_capabilities | WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MINIMIZE |
+				WLR_XDG_TOPLEVEL_WM_CAPABILITIES_MAXIMIZE);
 		set_view_decoration(view,false);
 		wlr_xdg_surface_schedule_configure(view->toplevel->base);
 	}
@@ -3505,6 +3606,7 @@ static void on_view_destroy(struct wl_listener *listener, void *data) {
 	wl_list_remove(&view->unmap.link);
 	wl_list_remove(&view->commit.link);
 	wl_list_remove(&view->configure.link);
+	wl_list_remove(&view->request_maximize.link);
 	wl_list_remove(&view->request_minimize.link);
 	wl_list_remove(&view->app_id.link);
 	wl_list_remove(&view->title.link);
@@ -3554,6 +3656,8 @@ static void on_toplevel(struct wl_listener *listener, void *data) {
 	wl_signal_add(&surface->events.commit, &view->commit);
 	view->configure.notify=on_view_configure;
 	wl_signal_add(&toplevel->base->events.configure,&view->configure);
+	view->request_maximize.notify=on_view_request_maximize;
+	wl_signal_add(&toplevel->events.request_maximize,&view->request_maximize);
 	view->request_minimize.notify=on_view_request_minimize;
 	wl_signal_add(&toplevel->events.request_minimize,&view->request_minimize);
 	view->destroy.notify = on_view_destroy;
@@ -3737,6 +3841,7 @@ static void display_commit(struct nested *wm,struct wl_resource *resource,int w,
 			return;
 		}
 
+		maximize_finish(wm);
 		native_logical_size(wm,w,h,scale120);
 		if(wm->cursor_size)reload_cursor(wm,wm->cursor_size);
 		mode_slide_finish(wm);wm->flow_sliding=false;
@@ -3885,9 +3990,10 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	}
 	wm.wallpaper_tree = wlr_scene_tree_create(&wm.scene->tree);
 	wm.app_tree = wlr_scene_tree_create(&wm.scene->tree);
+	wm.maximize_overlay = wlr_scene_tree_create(&wm.scene->tree);
 	wm.hud_tree = wlr_scene_tree_create(&wm.scene->tree);
 	wm.shell_tree = wlr_scene_tree_create(&wm.scene->tree);
-	if (wm.wallpaper_tree == NULL || wm.app_tree == NULL || wm.hud_tree == NULL || wm.shell_tree == NULL) {
+	if (wm.wallpaper_tree == NULL || wm.app_tree == NULL || wm.maximize_overlay == NULL || wm.hud_tree == NULL || wm.shell_tree == NULL) {
 		goto done;
 	}
 	wm.node_strip_tree=wlr_scene_tree_create(&wm.scene->tree);
