@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="23">
+  <interface name="mothership_map_pointer_v1" version="25">
     <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
       inside the frame and left-button sequences in the mapped, focused Map View.
@@ -220,5 +220,48 @@
     <event name="node_notifications" since="23">
       <description summary="open Notification Log for the active Node"/>
     </event>
+    <request name="screenshot_auth" since="24">
+      <description summary="authorize the watched, launcher-owned Panel for screenshots"/>
+    </request>
+    <request name="screenshot_begin" since="24"/>
+    <request name="screenshot_cancel" since="24"/>
+    <request name="screenshot_window" since="24">
+      <arg name="hi" type="uint"/><arg name="lo" type="uint"/>
+    </request>
+    <event name="screenshot_available" since="24">
+      <arg name="available" type="uint"/>
+    </event>
+    <event name="screenshot_open" since="24"/>
+    <event name="screenshot_frame" since="24">
+      <description summary="frozen output in RGBA8888 byte order">
+        The fd starts at byte zero and contains stride times height bytes.
+        Window targets for this frame arrive before this event.
+      </description>
+      <arg name="pixels" type="fd"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="stride" type="int"/>
+      <arg name="logical_width" type="int"/><arg name="logical_height" type="int"/>
+    </event>
+    <event name="screenshot_target" since="24">
+      <description summary="window target in logical output coordinates, sent back to front"/>
+      <arg name="hi" type="uint"/><arg name="lo" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="title" type="string"/>
+    </event>
+    <event name="screenshot_image" since="24">
+      <description summary="isolated window image in the same pixel format as the frame"/>
+      <arg name="pixels" type="fd"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="stride" type="int"/>
+    </event>
+    <event name="screenshot_problem" since="24">
+      <description summary="capture error or invalidation, terminal closes the overlay"/>
+      <arg name="message" type="string"/><arg name="terminal" type="uint"/>
+    </event>
+    <request name="set_strip_hover_scale" since="25">
+      <description summary="set the Node preview strip's hover zoom percentage"/>
+      <arg name="percent" type="uint"/>
+    </request>
   </interface>
 </protocol>

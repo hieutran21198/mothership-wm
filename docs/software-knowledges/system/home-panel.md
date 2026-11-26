@@ -242,7 +242,12 @@ When the fixed-size row exceeds its lane, clip it at the lane edges.
 Wheel or trackpad scroll over the preview lane moves only that row
 horizontally. App content, telemetry, and the rail do not move. A new
 Node starts at the left edge. Hover enlarges the
-target and, by a smaller amount, each immediate neighbor. The visible gaps
+target and, by a smaller amount, each immediate neighbor. **Hover zoom** in
+Node Panel Settings sets 100–300% (default 100%) for the fully hovered card,
+saved under `node_panel.hover_zoom_percent`. At 100% the card fills the
+lane height; above it the card rises over the rail from the same baseline,
+stays in front of its neighbors, and the gaps widen with it. Hover is
+still tracked only over the lane. The visible gaps
 expand in proportion to the lift on either side, with one easing curve for
 size and spacing. Feet stay on the same baseline. Hover uses stable cells; clicks follow
 the clipped, painted preview, not empty gaps.
@@ -251,6 +256,16 @@ extra frames when the transition settles. Click focuses that window using
 the Node's normal focus policy. Hover alone does not acquire keyboard focus. On focus change, scroll only
 enough to reveal the selected preview; leave its position in the order
 unchanged.
+
+During a [Flow reorder](../flows/view-node-layouts.md#f-view-6), slide the
+desktop frames and tray cards on the same compositor frames, easing over
+about 190 ms. The tray stays horizontal in both Flow orientations. Keep the
+focus corners and underline attached to the moving card. Within a group,
+swap the member previews inside the shared outline. Keep the rail fixed
+and scroll the tray only enough to keep the focused card visible.
+Use the clipped, painted card positions for clicks and overflow throughout
+the move. A new swap starts from the positions currently drawn. With reduced
+motion, apply both positions immediately.
 
 When some windows are outside the preview lane, show a `+N` button
 at its right end, centered on the resting preview row. Use a flat analog
@@ -274,7 +289,7 @@ The frame edges stay level and are limited to the output. Open the light
 and fade the image in over about 150 ms. Allow about 120 ms for a selection
 change, from the last painted position, with no animation queue.
 Only start the projection when the source thumbnail is visible.
-**Preview zoom** in Node Panel Settings sets 100–200% (default 150%).
+**Preview zoom** in Node Panel Settings sets 100–300% (default 150%).
 Save it under `node_panel.preview_zoom_percent`. At 100% leave only the
 selection marker. With system motion off, place the preview immediately.
 Ending the gesture clears all projection paint before focus changes.

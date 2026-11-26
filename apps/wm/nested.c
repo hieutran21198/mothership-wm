@@ -4,6 +4,7 @@
 #include <linux/input-event-codes.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -24,6 +25,7 @@
 #include <wlr/render/gles2.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/types/wlr_compositor.h>
+#include <wlr/types/wlr_damage_ring.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_viewporter.h>
@@ -45,6 +47,7 @@
 #include "../../internal/wayland/map-frame.h"
 #include "nested-layout.h"
 #include "flow-group.h"
+#include "flow-order.h"
 #include "group-chrome.h"
 
 enum { WINDOW_CHROME_GROUP_LAYOUT=100,WINDOW_CHROME_GROUP_MINIMIZE };
@@ -56,6 +59,7 @@ enum { WINDOW_CHROME_GROUP_LAYOUT=100,WINDOW_CHROME_GROUP_MINIMIZE };
 #include "stage-scale.h"
 #include "surface-sync.h"
 #include "owned-preview.h"
+#include "screenshot-capture.h"
 
 enum control_phase {
 	STARTING,
@@ -143,6 +147,7 @@ struct nested {
 		struct wlr_scene_buffer *image;
 		uint64_t id;
 		int painted_left,painted_right,painted_top,painted_height;
+		struct wlr_box painted, reorder_from;
 		double lift, lift_from, lift_to;
 		double focus_ink,focus_from,focus_to;
 		int64_t lift_start_ms,focus_start_ms;
@@ -167,13 +172,22 @@ struct nested {
 	int64_t picker_rail_started,picker_opened_at;
 	bool picker_rail_sliding;
 	uint64_t picker_focus_id;
-	int picker_scale;
+	int picker_scale,strip_hover_scale;
 	int64_t picker_focus_started;
 	uint32_t picker_serial;
 	bool picker_keyboard;
 	bool strip_motion;
 	struct shell_panel *wallpaper, *panel, *map_hud, *node_telemetry;
 	struct wl_resource *map_pointer;
+	struct {
+		struct wl_event_source *pid_source;
+		int pid_fd;
+		pid_t panel_pid;
+		struct wl_resource *resource;
+		bool opening, pending, active;
+		uint64_t window, targets[NODE_WINDOWS];
+		size_t target_count;
+	} screenshot;
 	bool map_aim_enabled,map_aim_valid;
 	double map_aim_x,map_aim_y;
 	bool map_zoom_enabled, video_frost_requested;
@@ -192,6 +206,12 @@ struct nested {
 	int flow_slide_from, flow_slide_to, flow_slide_duration;
 	int64_t flow_slide_start;
 	bool flow_sliding;
+	struct {
+		bool active;
+		int64_t start;
+		double remaining, flow_from, strip_from;
+	} reorder;
+	uint64_t next_layout_order;
 	struct xdg_view *stage_painted;
 	struct wlr_scene_tree *stage_overlay;
 	struct stage_scale stage_scale;
@@ -276,6 +296,8 @@ struct xdg_view {
 	int configure_w, configure_h;
 	uint64_t id;
 	uint64_t epoch, focused_at, home_focused_at;
+	uint64_t node_order, home_order;
+	int reorder_x, reorder_y;
 	bool mapped, assigned, minimized;
 	int slot;
 	struct wl_list link;
@@ -298,6 +320,9 @@ struct shell_popup {
 	struct wlr_xdg_popup *popup;
 	struct wl_listener commit, destroy;
 };
+
+static void screenshot_reset(struct nested *);
+static void screenshot_problem(struct nested *, const char *, bool);
 
 static void shell_popup_commit(struct wl_listener *listener, void *data) {
 	(void)data;
@@ -406,6 +431,8 @@ static void panel_unmap(struct wl_listener *listener, void *data) {
 	struct shell_panel *panel = wl_container_of(listener, panel, unmap);
 	if (panel->compact) panel->compact_width=panel->compact_height=0;
 	if (!panel->paint_only) {
+		if (panel == panel->wm->panel)
+			screenshot_problem(panel->wm, "The Panel closed.", true);
 		nested_seat_cancel_map_pointer(panel->wm->seat);
 		nested_seat_blank_shell(panel->wm->seat,NULL);
 		panel->wants_keyboard = false;
@@ -417,6 +444,7 @@ static void panel_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct shell_panel *panel = wl_container_of(listener, panel, destroy);
 	if (!panel->paint_only) {
+		if (panel == panel->wm->panel) screenshot_reset(panel->wm);
 		nested_seat_cancel_map_pointer(panel->wm->seat);
 		nested_seat_blank_shell(panel->wm->seat,NULL);
 		nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
@@ -529,6 +557,7 @@ static void on_backend_destroy(struct wl_listener *listener, void *data) {
 static void on_output_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct nested *wm = wl_container_of(listener, wm, output_destroy);
+	screenshot_problem(wm, "The display disconnected.", true);
 	wl_list_remove(&wm->frame.link);
 	wl_list_remove(&listener->link);
 	wm->output = NULL;
@@ -547,6 +576,7 @@ static bool is_flow(struct nested *);
 static struct xdg_view *find_view(struct nested *,uint64_t);
 static void strip_focus_view(struct nested *,struct xdg_view *);
 static void group_frame(struct nested *,struct timespec);
+static void flow_reorder_finish(struct nested *);
 static unsigned decorate_frames(struct nested *);
 static bool group_large(struct nested *wm) {
 	return is_flow(wm) && wm->parent_window.width>=FLOW_GROUP_MIN_WIDTH &&
@@ -646,10 +676,23 @@ static void notify_window_overflow(struct nested *wm) {
 		mothership_map_pointer_v1_send_window_overflow(wm->map_pointer,hidden);
 	}
 }
-enum { STRIP_PITCH=SHELL_PREVIEW_PITCH, STRIP_LIFT_RESERVE=30 };
+enum { STRIP_PITCH=SHELL_PREVIEW_PITCH, STRIP_LIFT_RESERVE=30, STRIP_HOVER_GROW=7, STRIP_HOVER_SPREAD=9 };
+
+// Hover zoom scales the fully lifted card. At 100% it reaches the lane
+// height; larger values rise above the rail from the same baseline.
+static double strip_hover_scale(struct nested *wm) {
+	return wm->strip_hover_scale>100?wm->strip_hover_scale*.01:1.;
+}
+// Center spacing added per unit of lift. Grow it by half the extra width
+// so the visible gap next to a zoomed card matches the 100% gap.
+static double strip_hover_spread(struct nested *wm) {
+	double rest=STRIP_PITCH-12,hover=rest+STRIP_HOVER_GROW;
+	return STRIP_HOVER_SPREAD+(hover*strip_hover_scale(wm)-hover)*.5;
+}
 
 static double strip_limit_for(struct nested *wm,double count) {
-	return fmax(0,count*STRIP_PITCH+(count>1?STRIP_LIFT_RESERVE:0)-wm->node_strip.width);
+	double reserve=STRIP_LIFT_RESERVE*strip_hover_spread(wm)/STRIP_HOVER_SPREAD;
+	return fmax(0,count*STRIP_PITCH+(count>1?reserve:0)-wm->node_strip.width);
 }
 
 static double stage_ease(double t) {
@@ -680,10 +723,13 @@ static double strip_group_slot(struct nested *wm,int slot,int *part,int *size) {
 }
 static struct xdg_view *strip_hit(struct nested *wm,double x,double y) {
 	if(!node_strip_active(wm))return NULL;
-	for(int i=0;i<wm->visible_count;i++) {
+	bool horizontal_only=isnan(y);
+	// Preview tiles paint in slot order, including where they cross in a swap.
+	for(int i=wm->visible_count-1;i>=0;i--) {
 		struct xdg_view *v=wm->slots[i];
 		if(wm->preview[i].id==v->id && x>=wm->preview[i].painted_left && x<wm->preview[i].painted_right &&
-			y>=wm->preview[i].painted_top && y<wm->preview[i].painted_top+wm->preview[i].painted_height)return v;
+			(horizontal_only || (y>=wm->preview[i].painted_top &&
+			 y<wm->preview[i].painted_top+wm->preview[i].painted_height)))return v;
 	}
 	return NULL;
 }
@@ -764,6 +810,7 @@ static bool scroll_node_strip(void *data,struct wlr_surface *surface,double x,do
 	const struct wlr_box *b=&wm->node_strip;
 	if(!node_strip_active(wm) || wm->stage_scale.tree || wm->picker_count || wm->picker_keyboard || wm->panel->wants_keyboard || surface!=wm->panel->layer->surface ||
 		x<b->x || x>=b->x+b->width || y<b->y || y>=b->y+b->height) return false;
+	flow_reorder_finish(wm);
 	double next=fmax(0,fmin(strip_limit(wm),wm->strip_offset+delta*(wheel?5.:1.)));
 	if(next!=wm->strip_offset) {
 		wm->strip_offset=next;
@@ -774,6 +821,7 @@ static bool scroll_node_strip(void *data,struct wlr_surface *surface,double x,do
 }
 
 static void strip_clear(struct nested *wm) {
+	flow_reorder_finish(wm);
 	wm->strip_hover=0;
 	for(int i=0;i<NODE_WINDOWS;i++) {
 		wm->preview[i].id=0;wm->preview[i].lift=0;
@@ -847,6 +895,10 @@ static bool strip_image(struct wlr_scene_buffer *image,struct xdg_view *view,
 	return true;
 }
 
+static int preview_mix(int from,int to,double progress) {
+	return from+(int)round((to-from)*progress);
+}
+
 static void strip_draw(struct nested *wm,struct timespec now) {
 	notify_window_count(wm);
 	if(!node_strip_active(wm)) {strip_clear(wm);notify_window_overflow(wm);return;}
@@ -861,6 +913,7 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 		for(int i=0;i<count;i++) if(wm->slots[i]!=skip && wm->slots[i]->id==wm->strip_hover) {hot=i;break;}
 	bool moving=false;
 	double spread[NODE_WINDOWS]={0};
+	const double zoom=strip_hover_scale(wm),lift_spread=strip_hover_spread(wm);
 	for(int i=0;i<count;i++){
 		__typeof__(wm->preview[0]) *p=&wm->preview[i];
 		uint64_t id=wm->slots[i]->id;
@@ -868,6 +921,7 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 			(wm->slots[i]->id==wm->picker_mark_id):(wm->slots[i]==wm->focused);
 		if(p->id!=id) {
 			p->id=id;
+			p->reorder_from=(struct wlr_box){0};
 			p->lift=p->lift_from=p->lift_to=0;
 			p->lift_start_ms=ms;
 			p->focus_ink=p->focus_from=p->focus_to=focus;
@@ -903,8 +957,30 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 		}
 		// Increase the center distances faster than the width grows,
 		// so the visible gap increases in proportion to both neighbors.
-		if(i>0)spread[i]=spread[i-1]+9*(wm->preview[i-1].lift+p->lift);
+		if(i>0)spread[i]=spread[i-1]+lift_spread*(wm->preview[i-1].lift+p->lift);
 	}
+	// Cards grow around their slot centers. When the first card zooms past
+	// its slot, move the row right by that overflow so the lane's left edge
+	// never clips it. At rest, and at 100% hover zoom, this stays 0.
+	int lead=0;
+	if(count>0 && wm->slots[0]!=skip) {
+		int part=0,members=1;
+		if(compact) strip_group_slot(wm,0,&part,&members);
+		if(members>=2) {
+			struct xdg_view *views[FLOW_GROUP_MAX];
+			double lift=0;
+			for(int k=0,num=group_members(wm,wm->slots[0],views,false);k<num;k++)
+				lift=fmax(lift,wm->preview[views[k]->slot].lift);
+			const int rest_gw=(int)round(GROUP_PITCH*pitch)-10;
+			lead=(int)round(((rest_gw+6)*zoom-rest_gw)*lift)/2-5;
+		} else {
+			const int rest_w=pitch-12;
+			int w=(int)fmax(1,round(rest_w+((rest_w+STRIP_HOVER_GROW)*zoom-rest_w)*wm->preview[0].lift));
+			lead=-((pitch-w)/2);
+		}
+		if(lead<0) lead=0;
+	}
+	start+=lead;
 	wlr_scene_node_set_enabled(&wm->node_strip_tree->node,true);
 	const float outline[4]={.28f,.41f,.48f,1};
 	for(int i=0;i<NODE_WINDOWS;i++) {
@@ -914,6 +990,7 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 		struct xdg_view *v=i<count?wm->slots[i]:NULL;
 		if(!v || v==skip) {
 			p->id=0;p->lift=0;p->painted_left=p->painted_right=0;
+			p->painted=(struct wlr_box){0};
 			wlr_scene_node_set_enabled(&p->ring->node.parent->node,false);
 			if(p->image->buffer) wlr_scene_buffer_set_buffer(p->image,NULL);
 			continue;
@@ -923,8 +1000,9 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 		// The outside card is stable regardless of app aspect ratio.
 		// Fit the live contents inside it; a maximized app must not
 		// shorten or lower the rim of its preview.
-		int w=(int)fmax(1,pitch-12+7*p->lift);
-		int h=(int)fmax(1,wm->node_strip.height-SHELL_PREVIEW_REST_INSET+SHELL_PREVIEW_REST_INSET*p->lift);
+		const int rest_w=pitch-12,rest_h=wm->node_strip.height-SHELL_PREVIEW_REST_INSET;
+		int w=(int)fmax(1,round(rest_w+((rest_w+STRIP_HOVER_GROW)*zoom-rest_w)*p->lift));
+		int h=(int)fmax(1,round(rest_h+(wm->node_strip.height*zoom-rest_h)*p->lift));
 		double ratio=buffer && s->current.width>0 && s->current.height>0?
 			(double)s->current.width/s->current.height:1.60;
 		int part=0,members=1;
@@ -939,22 +1017,35 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 			double lift=0;
 			for(int k=0,num=group_members(wm,v,views,false);k<num;k++)
 				lift=fmax(lift,wm->preview[views[k]->slot].lift);
-			int grow=(int)round(6*lift);
-			h=wm->node_strip.height-SHELL_PREVIEW_REST_INSET+(int)round(4*lift);
+			const int rest_gw=(int)round(GROUP_PITCH*pitch)-10,rest_gh=wm->node_strip.height-SHELL_PREVIEW_REST_INSET;
+			int grow=(int)round(((rest_gw+6)*zoom-rest_gw)*lift);
+			h=rest_gh+(int)round(((rest_gh+4)*zoom-rest_gh)*lift);
 			y=wm->node_strip.y+wm->node_strip.height-SHELL_PREVIEW_BOTTOM-h;
 			struct rect box={start+(int)round(position*pitch)+5-grow/2,y,
 				(int)round(GROUP_PITCH*pitch)-10+grow,h};
-			if(part==0) strip_rect(wm->group_tray_ring[i],lane,box.x-2,box.y-2,box.width+4,box.height+4);
+			if(part==0) {
+				int shift=wm->reorder.active?(int)round((wm->strip_offset-wm->reorder.strip_from)*wm->reorder.remaining):0;
+				strip_rect(wm->group_tray_ring[i],lane,box.x-2+shift,box.y-2,box.width+4,box.height+4);
+			}
 			struct rect slots[FLOW_GROUP_MAX];
 			flow_group_tiles(box,members,v->group_sx,v->group_sy,3,16,11,slots);
 			struct rect tile=slots[part];x=tile.x;y=tile.y;w=tile.width;h=tile.height;
 		}
+		if(wm->reorder.active && p->reorder_from.width>0) {
+			const struct wlr_box from=p->reorder_from;
+			double t=1-wm->reorder.remaining;
+			x=preview_mix(from.x,x,t);y=preview_mix(from.y,y,t);
+			w=preview_mix(from.width,w,t);h=preview_mix(from.height,h,t);
+		}
+		p->painted=(struct wlr_box){x,y,w,h};
 		p->painted_top=y;p->painted_height=h;
 		p->painted_left=x>lane->x?x:lane->x;
 		p->painted_right=x+w<lane->x+lane->width?x+w:lane->x+lane->width;
 		bool visible=x-1<lane->x+lane->width && x+w+1>lane->x;
 		wlr_scene_node_set_enabled(&p->ring->node.parent->node,visible);
 		if(!visible)continue;
+		// A zoomed card may overlap its neighbors; keep it in front.
+		if(i==hot && zoom>1) wlr_scene_node_raise_to_top(&p->ring->node.parent->node);
 		strip_rect(p->ring,lane,x-1,y-1,w+2,h+2);
 		wlr_scene_rect_set_color(p->ring,outline);
 		strip_focus_marks(p->focus_marks,lane,x,y,w,h,p->focus_ink);
@@ -1009,9 +1100,6 @@ static void picker_focus_clear(struct nested *wm) {
 	preview_projection_clear(&wm->picker_beam);
 	for(int i=0;i<FLOW_GROUP_MAX;i++) if(wm->picker_focus_image[i] && wm->picker_focus_image[i]->buffer)
 		wlr_scene_buffer_set_buffer(wm->picker_focus_image[i],NULL);
-}
-static int preview_mix(int from,int to,double progress) {
-	return from+(int)round((to-from)*progress);
 }
 static void picker_focus_draw(struct nested *wm,struct timespec now) {
 	if(!wm->picker_focus_tree || !wm->picker_keyboard || wm->picker_scale<=100 || !node_strip_active(wm)) {
@@ -1099,6 +1187,7 @@ static void picker_focus_draw(struct nested *wm,struct timespec now) {
 }
 
 static void flow_slide_frame(struct nested *,struct timespec);
+static void flow_reorder_frame(struct nested *,struct timespec);
 static void mode_slide_frame(struct nested *,struct timespec);
 static void mode_slide_finish(struct nested *);
 static void maximize_finish(struct nested *);
@@ -1106,6 +1195,8 @@ static void maximize_frame(struct nested *,struct timespec);
 static void stage_scale_frame(struct nested *,struct timespec);
 static void tray_flights_frame(struct nested *,struct timespec);
 static void display_commit(struct nested *,struct wl_resource *,int,int,int,int);
+static bool screenshot_frame(struct nested *, const struct wlr_scene_output_state_options *);
+static void screenshot_window_frame(struct nested *);
 
 static void on_frame(struct wl_listener *listener, void *data) {
 	(void)data;
@@ -1122,9 +1213,10 @@ static void on_frame(struct wl_listener *listener, void *data) {
 	struct timespec now;
 	bool timed=clock_gettime(CLOCK_MONOTONIC,&now)==0;
 	bool tracing=timed && render_debug_active(wm->render_debug);
-	if(tracing && (wm->revealing || wm->flow_sliding || wm->mode_slide_view ||
+	if(tracing && (wm->revealing || wm->flow_sliding || wm->reorder.active || wm->mode_slide_view ||
 			wm->stage_scale.tree || wm->maximize.view || wm->picker_rail_sliding))
 		render_debug_source(wm->render_debug,RENDER_MOTION);
+	if(timed) flow_reorder_frame(wm,now);
 	if (timed) {reveal_frame(wm,now);flow_slide_frame(wm,now);mode_slide_frame(wm,now);maximize_frame(wm,now);stage_scale_frame(wm,now);strip_draw(wm,now);picker_draw(wm);picker_focus_draw(wm,now);group_frame(wm,now);tray_flights_frame(wm,now);}
 	enum video_frost_result frost=FROST_OFF;
 	if (wm->video_frost_requested && wm->overview_active && wm->map_hud &&
@@ -1153,7 +1245,8 @@ static void on_frame(struct wl_listener *listener, void *data) {
 		options=render_debug_scene_begin(wm->render_debug,wm->scene_output);
 		clock_gettime(CLOCK_MONOTONIC,&submit);
 	}
-	if (!wlr_scene_output_commit(wm->scene_output, options)) {
+	bool submitted = wm->screenshot.pending && screenshot_frame(wm, options);
+	if (!submitted && !wlr_scene_output_commit(wm->scene_output, options)) {
 		stop(wm, "could not render the nested output");
 		return;
 	}
@@ -1167,6 +1260,7 @@ static void on_frame(struct wl_listener *listener, void *data) {
 		domain_send(wm,"applied",ack);
 	}
 	if (timed) wlr_scene_output_send_frame_done(wm->scene_output,&now);
+	if (wm->screenshot.window) screenshot_window_frame(wm);
 	if (wm->revealing) wlr_output_schedule_frame(wm->output);
 }
 
@@ -1254,6 +1348,7 @@ static int flow_center(struct nested *wm, struct xdg_view *view) {
 /* A floated window keeps its position in slots, but occupies no strip space.
  * Width/height are captured once from the native client's mapped geometry. */
 static void arrange_flow(struct nested *wm, struct xdg_view *center) {
+	flow_reorder_finish(wm);
 	wm->flow_sliding=false;
 	if (!is_flow(wm)) return;
 	int w=wm->parent_window.width,h=wm->parent_window.height;
@@ -1385,6 +1480,10 @@ static void place_view(struct xdg_view *view) {
 	int bar=framed?WINDOW_CONTENT_TOP:(!flow && floating)?FLOAT_BAR:0;
 	int edge=framed?WINDOW_CONTENT_EDGE:0;
 	if(wm->mode_slide_view==view){r.x+=wm->mode_slide_x;r.y+=wm->mode_slide_y;}
+	if(wm->reorder.active) {
+		r.x+=(int)round(view->reorder_x*wm->reorder.remaining);
+		r.y+=(int)round(view->reorder_y*wm->reorder.remaining);
+	}
 	view->placement=r;
 	view->content_top=bar;
 	view->content_edge=edge;
@@ -1537,6 +1636,7 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 static void group_drag_update(struct nested *,enum nested_move_phase,double,double);
 static void start_view_move(void *data, struct nested_hit hit, double x, double y) {
 	struct nested *wm = data;
+	flow_reorder_finish(wm);
 	wm->drag = hit.handle;
 	if(hit.defer_move_focus) {
 		struct xdg_view *v=hit.handle;
@@ -1588,6 +1688,254 @@ static void map_pointer_destroy(struct wl_client *client, struct wl_resource *re
 
 static void display_query(struct wl_client *,struct wl_resource *);
 static void display_apply(struct wl_client *,struct wl_resource *,int32_t,int32_t,int32_t,int32_t);
+
+static bool screenshot_allowed(struct nested *wm, struct wl_resource *resource) {
+	if (!resource || resource != wm->map_pointer || resource != wm->screenshot.resource ||
+			wm->screenshot.panel_pid <= 0) return false;
+	pid_t pid;
+	uid_t uid;
+	gid_t gid;
+	wl_client_get_credentials(wl_resource_get_client(resource), &pid, &uid, &gid);
+	return pid == wm->screenshot.panel_pid && uid == getuid();
+}
+
+static void screenshot_reset(struct nested *wm) {
+	wm->screenshot.opening = false;
+	wm->screenshot.pending = false;
+	wm->screenshot.window = 0;
+	wm->screenshot.target_count = 0;
+	if (wm->screenshot.active) {
+		wm->screenshot.active = false;
+		wlr_scene_node_place_below(&wm->shell_tree->node, &wm->node_strip_tree->node);
+		nested_seat_screenshot_modal(wm->seat, NULL);
+	}
+}
+
+static void screenshot_problem(struct nested *wm, const char *message, bool terminal) {
+	bool busy = wm->screenshot.opening || wm->screenshot.pending || wm->screenshot.active;
+	if (busy && screenshot_allowed(wm, wm->screenshot.resource))
+		mothership_map_pointer_v1_send_screenshot_problem(wm->screenshot.resource, message, terminal);
+	if (terminal) screenshot_reset(wm);
+}
+
+static void screenshot_abort(void *data) {
+	struct nested *wm = data;
+	screenshot_problem(wm, "The session lost keyboard focus.", true);
+}
+
+static bool screenshot_key(void *data) {
+	struct nested *wm = data;
+	if (!screenshot_allowed(wm, wm->screenshot.resource) || !wm->panel ||
+			!wm->panel->layer->surface->mapped || !wm->output || !wm->output->enabled)
+		return false;
+	if (!wm->screenshot.opening && !wm->screenshot.pending && !wm->screenshot.active) {
+		wm->screenshot.opening = true;
+		mothership_map_pointer_v1_send_screenshot_open(wm->screenshot.resource);
+	}
+	return true;
+}
+
+static void screenshot_auth_result(struct nested *wm) {
+	struct wl_resource *resource = wm->screenshot.resource;
+	if (resource)
+		mothership_map_pointer_v1_send_screenshot_available(resource, screenshot_allowed(wm, resource));
+}
+
+static void screenshot_pid_cleanup(struct nested *wm) {
+	if (wm->screenshot.pid_source) {
+		wl_event_source_remove(wm->screenshot.pid_source);
+		wm->screenshot.pid_source = NULL;
+	}
+	if (wm->screenshot.pid_fd >= 0) {
+		close(wm->screenshot.pid_fd);
+		wm->screenshot.pid_fd = -1;
+	}
+}
+
+static int screenshot_read_pid(int fd, uint32_t mask, void *data) {
+	(void)mask;
+	struct nested *wm = data;
+	char value[32];
+	ssize_t n;
+	do n = read(fd, value, sizeof(value) - 1); while (n < 0 && errno == EINTR);
+	if (n < 0 && errno == EAGAIN) return 0;
+	if (n > 0) {
+		value[n] = '\0';
+		char *end;
+		long pid = strtol(value, &end, 10);
+		if (pid > 0 && pid <= INT_MAX && end == value + n - 1 && *end == '\n')
+			wm->screenshot.panel_pid = pid;
+	}
+	screenshot_pid_cleanup(wm);
+	screenshot_auth_result(wm);
+	return 0;
+}
+
+static void screenshot_watch_pid(struct nested *wm, struct wl_event_loop *loop) {
+	const char *value = getenv("MOTHERSHIP_SCREENSHOT_PANEL_FD");
+	if (!value || !*value) return;
+	char *end;
+	long fd = strtol(value, &end, 10);
+	if (*end || fd < 3 || fd > INT_MAX) return;
+	wm->screenshot.pid_fd = fd;
+	int flags = fcntl(fd, F_GETFL);
+	if (flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) >= 0) {
+		wm->screenshot.pid_source = wl_event_loop_add_fd(loop, fd,
+			WL_EVENT_READABLE, screenshot_read_pid, wm);
+	}
+	if (!wm->screenshot.pid_source) screenshot_pid_cleanup(wm);
+}
+
+static void screenshot_auth(struct wl_client *client, struct wl_resource *resource) {
+	(void)client;
+	struct nested *wm = wl_resource_get_user_data(resource);
+	if (resource != wm->map_pointer) {
+		mothership_map_pointer_v1_send_screenshot_available(resource, 0);
+		return;
+	}
+	wm->screenshot.resource = resource;
+	if (!wm->screenshot.pid_source) screenshot_auth_result(wm);
+}
+
+static void screenshot_begin(struct wl_client *client, struct wl_resource *resource) {
+	(void)client;
+	struct nested *wm = wl_resource_get_user_data(resource);
+	if (!screenshot_allowed(wm, resource) || wm->screenshot.pending || wm->screenshot.active) return;
+	wm->screenshot.opening = false;
+	wm->screenshot.pending = true;
+	if (!wm->panel || !wm->panel->layer->surface->mapped || !wm->output || !wm->output->enabled ||
+			(wm->hw_session && !wm->hw_session->active)) {
+		screenshot_problem(wm, "The display is unavailable.", true);
+		return;
+	}
+	wlr_output_schedule_frame(wm->output);
+}
+
+static void screenshot_cancel(struct wl_client *client, struct wl_resource *resource) {
+	(void)client;
+	struct nested *wm = wl_resource_get_user_data(resource);
+	if (screenshot_allowed(wm, resource)) screenshot_reset(wm);
+}
+
+static bool screenshot_has_target(struct nested *wm, uint64_t id) {
+	if (!id) return false;
+	for (size_t i = 0; i < wm->screenshot.target_count; ++i)
+		if (wm->screenshot.targets[i] == id) return true;
+	return false;
+}
+
+static void screenshot_window(struct wl_client *client, struct wl_resource *resource, uint32_t hi, uint32_t lo) {
+	(void)client;
+	struct nested *wm = wl_resource_get_user_data(resource);
+	if (!screenshot_allowed(wm, resource) || !wm->screenshot.active || !wm->output || wm->screenshot.window) return;
+	uint64_t id = ((uint64_t)hi << 32) | lo;
+	if (!screenshot_has_target(wm, id)) {
+		screenshot_problem(wm, "The selected window is unavailable.", false);
+		return;
+	}
+	wm->screenshot.window = id;
+	wlr_output_schedule_frame(wm->output);
+}
+
+static void screenshot_send_targets(struct nested *wm) {
+	struct wlr_box output = {0, 0, wm->parent_window.width, wm->parent_window.height};
+	struct wlr_scene_node *node;
+	wl_list_for_each(node, &wm->app_tree->children, link) {
+		struct xdg_view *view = NULL;
+		for (int i = 0; i < NODE_WINDOWS; ++i) {
+			if (wm->slots[i] && node == &wm->slots[i]->frame->node) {
+				view = wm->slots[i];
+				break;
+			}
+		}
+		struct wlr_box box, visible;
+		if (!view || !view->mapped || view->minimized || !screenshot_window_bounds(node, &box) ||
+				!wlr_box_intersection(&visible, &box, &output)) continue;
+		wm->screenshot.targets[wm->screenshot.target_count++] = view->id;
+		const char *title = view->toplevel->title;
+		if (!title || !*title) title = view->toplevel->app_id;
+		mothership_map_pointer_v1_send_screenshot_target(wm->screenshot.resource, view->id >> 32, view->id,
+			visible.x, visible.y, visible.width, visible.height, title && *title ? title : "Window");
+	}
+}
+
+static void screenshot_remove_target(struct nested *wm, uint64_t id) {
+	if (wm->cleaning || !wm->screenshot.active || !screenshot_allowed(wm, wm->screenshot.resource)) return;
+	for (size_t i = 0; i < wm->screenshot.target_count; ++i) {
+		if (wm->screenshot.targets[i] != id) continue;
+		wm->screenshot.targets[i] = 0;
+		mothership_map_pointer_v1_send_screenshot_target(wm->screenshot.resource, id >> 32, id,
+			0, 0, 0, 0, "");
+		return;
+	}
+}
+
+static bool screenshot_frame(struct nested *wm, const struct wlr_scene_output_state_options *options) {
+	// Use the same composition, damage and sync path as ordinary frames.
+	if (!screenshot_allowed(wm, wm->screenshot.resource) || !wm->panel ||
+			!wm->panel->layer->surface->mapped || wm->output->transform != WL_OUTPUT_TRANSFORM_NORMAL ||
+			!screenshot_buffer_ready(&wm->scene->tree.node)) {
+		screenshot_problem(wm, "The display frame is unavailable. Try again.", true);
+		return false;
+	}
+	struct wlr_output *output = wm->output;
+	struct wlr_output_state state;
+	wlr_output_state_init(&state);
+	wlr_output_lock_attach_render(output, true);
+	wlr_damage_ring_add_whole(&wm->scene_output->damage_ring);
+	bool cursor_enabled = wm->cursor && wm->cursor->enabled;
+	// A hardware cursor is separate; suppress the software cursor from the
+	// sampled composition and repaint the cursor normally on the next frame.
+	if (wm->cursor) wm->cursor->enabled = false;
+	bool built = wlr_scene_output_build_state(wm->scene_output, &state, options);
+	if (wm->cursor) wm->cursor->enabled = cursor_enabled;
+	wlr_output_lock_attach_render(output, false);
+	bool committed = built && state.buffer && wlr_output_commit_state(output, &state);
+	struct screenshot_pixels pixels;
+	bool captured = committed && screenshot_read_buffer(output->renderer, state.buffer, &pixels);
+	wlr_output_state_finish(&state);
+	if (cursor_enabled || !committed) {
+		wlr_damage_ring_add_whole(&wm->scene_output->damage_ring);
+		wlr_output_schedule_frame(output);
+	}
+	if (!captured) {
+		screenshot_problem(wm, "The display frame could not be captured.", true);
+		return committed;
+	}
+
+	wm->screenshot.pending = false;
+	wm->screenshot.active = true;
+	screenshot_send_targets(wm);
+	mothership_map_pointer_v1_send_screenshot_frame(wm->screenshot.resource, pixels.fd,
+		pixels.width, pixels.height, pixels.stride, wm->parent_window.width, wm->parent_window.height);
+	close(pixels.fd);
+	wlr_scene_node_raise_to_top(&wm->shell_tree->node);
+	nested_seat_screenshot_modal(wm->seat, wm->panel->layer->surface);
+	return true;
+}
+
+static void screenshot_window_frame(struct nested *wm) {
+	uint64_t id = wm->screenshot.window;
+	wm->screenshot.window = 0;
+	if (!screenshot_allowed(wm, wm->screenshot.resource) || !wm->screenshot.active) return;
+	struct xdg_view *view = find_view(wm, id);
+	struct wlr_box box;
+	if (!screenshot_has_target(wm, id) || !view || !view->mapped || view->minimized || !view->frame ||
+			!screenshot_window_bounds(&view->frame->node, &box)) {
+		screenshot_remove_target(wm, id);
+		screenshot_problem(wm, "The selected window is unavailable.", false);
+		return;
+	}
+	struct screenshot_pixels pixels;
+	if (!screenshot_render_window(wm->output, &view->frame->node, &box,
+			wl_display_get_event_loop(wm->server), &pixels)) {
+		screenshot_problem(wm, "The selected window could not be captured. Try again.", false);
+		return;
+	}
+	mothership_map_pointer_v1_send_screenshot_image(wm->screenshot.resource, pixels.fd,
+		pixels.width, pixels.height, pixels.stride);
+	close(pixels.fd);
+}
 
 static void map_pointer_watch(struct wl_client *client, struct wl_resource *resource, struct wl_resource *surface) {
 	(void)client;
@@ -1706,7 +2054,10 @@ static void map_pointer_set_node_strip(struct wl_client *client,struct wl_resour
 	} else {
 		wm->node_strip=(struct wlr_box){x,y,w,h};
 	}
-	if(!wm->strip_motion)maximize_finish(wm);
+	if(!wm->strip_motion) {
+		maximize_finish(wm);
+		flow_reorder_finish(wm);
+	}
 	if(wm->output)wlr_output_schedule_frame(wm->output);
 }
 static void map_pointer_strip_hover(struct wl_client *client,struct wl_resource *resource,wl_fixed_t x) {
@@ -1714,7 +2065,8 @@ static void map_pointer_strip_hover(struct wl_client *client,struct wl_resource 
 	struct nested *wm=wl_resource_get_user_data(resource);
 	if(wm->map_pointer!=resource || wm->picker_count || wm->picker_keyboard) return;
 	double px=wl_fixed_to_double(x);
-	struct xdg_view *v=strip_has_group(wm)?strip_hit(wm,px,wm->strip_cursor_y):strip_at(wm,px);
+	struct xdg_view *v=strip_has_group(wm) || wm->reorder.active?
+		strip_hit(wm,px,wm->strip_cursor_y):strip_at(wm,px);
 	uint64_t id=v?v->id:0;
 	if(id==wm->strip_hover) return;
 	wm->strip_hover=id;
@@ -1725,17 +2077,11 @@ static void map_pointer_strip_focus(struct wl_client *client,struct wl_resource 
 	struct nested *wm=wl_resource_get_user_data(resource);
 	if(wm->map_pointer==resource) {
 		if(wm->picker_keyboard || !node_strip_active(wm)) return;
-		double px=wl_fixed_to_double(x);
-		for(int i=0;i<wm->visible_count;i++) {
-			struct xdg_view *v=wm->slots[i];
-			if(v && wm->preview[i].id==v->id && px>=wm->preview[i].painted_left &&
-				px<wm->preview[i].painted_right) {
-				// An active thumbnail is already selected. Keep a manually panned
-				// Flow in place and do not restart focus or reorder the tray.
-				if(v!=wm->focused) strip_focus_view(wm,v);
-				break;
-			}
-		}
+		// The panel reports the saved click X. A newer pointer Y can belong
+		// to a different surface by the time this request arrives.
+		struct xdg_view *v=strip_hit(wm,wl_fixed_to_double(x),NAN);
+		// Clicking an already selected thumbnail preserves a manual Flow pan.
+		if(v && v!=wm->focused) strip_focus_view(wm,v);
 	}
 }
 
@@ -1764,9 +2110,17 @@ static void map_pointer_window_preview(struct wl_client *client,struct wl_resour
 static void map_pointer_set_picker_scale(struct wl_client *client,struct wl_resource *resource,uint32_t percent) {
 	(void)client;
 	struct nested *wm=wl_resource_get_user_data(resource);
-	if(resource!=wm->map_pointer || percent<100 || percent>200 || wm->picker_scale==(int)percent) return;
+	if(resource!=wm->map_pointer || percent<100 || percent>300 || wm->picker_scale==(int)percent) return;
 	wm->picker_scale=percent;
 	if(wm->picker_keyboard) wlr_output_schedule_frame(wm->output);
+}
+
+static void map_pointer_set_strip_hover_scale(struct wl_client *client,struct wl_resource *resource,uint32_t percent) {
+	(void)client;
+	struct nested *wm=wl_resource_get_user_data(resource);
+	if(resource!=wm->map_pointer || percent<100 || percent>300 || wm->strip_hover_scale==(int)percent) return;
+	wm->strip_hover_scale=percent;
+	if(wm->output) wlr_output_schedule_frame(wm->output);
 }
 
 static void map_pointer_highlight_redraw(struct wl_client *client,struct wl_resource *resource,uint32_t enabled) {
@@ -1819,10 +2173,17 @@ static const struct mothership_map_pointer_v1_interface map_pointer_requests={
 	.set_cursor_size=map_pointer_cursor_size,
 	.set_scene_glass=map_pointer_scene_glass,
 	.group_query=map_pointer_group_query,.group_action=map_pointer_group_action,
+	.screenshot_auth=screenshot_auth,.screenshot_begin=screenshot_begin,
+	.screenshot_cancel=screenshot_cancel,.screenshot_window=screenshot_window,
+	.set_strip_hover_scale=map_pointer_set_strip_hover_scale,
 };
 
 static void map_pointer_gone(struct wl_resource *resource) {
 	struct nested *wm=wl_resource_get_user_data(resource);
+	if (wm->screenshot.resource == resource) {
+		wm->screenshot.resource = NULL;
+		screenshot_reset(wm);
+	}
 	if(wm->map_pointer==resource) {
 		wm->map_pointer=NULL;
 		bool glass_was_active=false;
@@ -1924,6 +2285,7 @@ static void present_stage(struct nested *wm);
 static void parent_geometry_changed(void *data) {
 	struct nested *wm = data;
 	if (wm->output == NULL || !wm->output->enabled || wm->stopping) return;
+	screenshot_problem(wm, "The display size or scale changed.", true);
 	bool resized = wm->background->width != wm->parent_window.width ||
 		wm->background->height != wm->parent_window.height;
 	struct wlr_output_state state;
@@ -2249,7 +2611,7 @@ static unsigned decorate_frames(struct nested *wm) {
 	const struct wlr_box output={0,0,wm->parent_window.width,wm->parent_window.height};
 	if(output.width<=0 || output.height<=0)return 0;
 	bool framed=view_has_frame(wm) && !wm->revealing;
-	bool moving=wm->drag || wm->flow_sliding || wm->mode_slide_view || wm->stage_scale.tree || wm->maximize.view;
+	bool moving=wm->drag || wm->flow_sliding || wm->reorder.active || wm->mode_slide_view || wm->stage_scale.tree || wm->maximize.view;
 	bool assigned[NODE_WINDOWS]={0};
 	unsigned trace=0;
 	int g=0;
@@ -2266,8 +2628,11 @@ static unsigned decorate_frames(struct nested *wm) {
 		}
 		if(!bottom)continue;
 		struct rect r=view->flow_unit;
-		if(flow_vertical(wm->layout,output.width,output.height))r.y+=wm->flow_offset;
-		else r.x+=wm->flow_offset;
+		int offset=wm->flow_offset;
+		if(wm->reorder.active)
+			offset+=(int)round((wm->reorder.flow_from-offset)*wm->reorder.remaining);
+		if(flow_vertical(wm->layout,output.width,output.height))r.y+=offset;
+		else r.x+=offset;
 		struct wlr_box box={r.x,r.y,r.width,r.height};
 		if(!wlr_box_intersection(&(struct wlr_box){0},&box,&output))continue;
 		__typeof__(wm->group_frame[0]) *slot=&wm->group_frame[g++];
@@ -2325,6 +2690,7 @@ static unsigned decorate_frames(struct nested *wm) {
 	return trace;
 }
 static void flow_focus(struct nested *wm,struct xdg_view *view) {
+	flow_reorder_finish(wm);
 	if(!is_flow(wm) || wm->revealing || view->flowed_out || view->maximized) {
 		wm->flow_sliding=false;
 		return;
@@ -2366,10 +2732,42 @@ static void flow_slide_frame(struct nested *wm,struct timespec now) {
 	else nested_seat_refresh(wm->seat);
 }
 
+static void flow_reorder_position(struct nested *wm,double remaining) {
+	for(int i=0;i<wm->visible_count;i++) {
+		struct xdg_view *v=wm->slots[i];
+		if(!v->reorder_x && !v->reorder_y) continue;
+		v->placement.x+=(int)round(v->reorder_x*remaining)-(int)round(v->reorder_x*wm->reorder.remaining);
+		v->placement.y+=(int)round(v->reorder_y*remaining)-(int)round(v->reorder_y*wm->reorder.remaining);
+		wlr_scene_node_set_position(&v->frame->node,v->placement.x,v->placement.y);
+	}
+	wm->reorder.remaining=remaining;
+}
+
+static void flow_reorder_finish(struct nested *wm) {
+	if(!wm->reorder.active) return;
+	flow_reorder_position(wm,0);
+	wm->reorder.active=false;
+	if(wm->output) wlr_output_schedule_frame(wm->output);
+}
+
+static void flow_reorder_frame(struct nested *wm,struct timespec now) {
+	if(!wm->reorder.active) return;
+	int64_t ms=monotonic_us(now)/1000;
+	if(wm->reorder.start<0) wm->reorder.start=ms;
+	double t=fmin(1,(ms-wm->reorder.start)/190.);
+	flow_reorder_position(wm,1-stage_ease(t));
+	wm->reorder.active=t<1;
+	if(wm->reorder.active) wlr_output_schedule_frame(wm->output);
+	else nested_seat_refresh(wm->seat);
+}
+
 static void strip_reveal_window(struct nested *wm,struct xdg_view *view) {
 	if(!view || view->slot<0 || wm->node_strip.width<=0) return;
-	wm->strip_offset=strip_goal(wm,view,wm->strip_offset);
-	wm->strip_hover=0;
+	double offset=strip_goal(wm,view,wm->strip_offset);
+	// Focus is not a press: keep the hovered card lifted unless the rail
+	// scrolls and moves a different card under the cursor.
+	if(offset!=wm->strip_offset) wm->strip_hover=0;
+	wm->strip_offset=offset;
 }
 
 static void remember_focus(void *data, struct wlr_surface *surface) {
@@ -2435,6 +2833,7 @@ static struct wlr_surface *view_target(struct nested *wm) {
 }
 
 static void clear_slots(struct nested *wm) {
+	wm->reorder.active=false;
 	maximize_finish(wm);
 	tray_flights_clear(wm);
 	wm->group_grab.source=wm->group_join.id=0;
@@ -2490,13 +2889,28 @@ static void present_node(struct nested *wm,bool recenter) {
 	}
 }
 
+static uint64_t *layout_order(struct xdg_view *view) {
+	return view->wm->default_node_active?&view->home_order:&view->node_order;
+}
+
+static void project_ordered_view(struct xdg_view *slots[NODE_WINDOWS],int *count,struct xdg_view *view) {
+	uint64_t *order=layout_order(view);
+	if(!*order) *order=++view->wm->next_layout_order;
+	int i=(*count)++;
+	while(i>0 && *layout_order(slots[i-1])>*order) {
+		slots[i]=slots[i-1];
+		i--;
+	}
+	slots[i]=view;
+}
+
 static void project_home(struct nested *wm,bool recenter) {
 	if(!wm->default_node_active) { clear_slots(wm); return; }
 	struct xdg_view *next[NODE_WINDOWS]={0},*view;
 	int count=0;
 	wl_list_for_each(view,&wm->views,link) {
 		if(view->mapped && !view->assigned && view->tree) {
-			next[count++]=view;
+			project_ordered_view(next,&count,view);
 			if(count==NODE_WINDOWS)break;
 		}
 	}
@@ -2625,13 +3039,15 @@ static void project_named(struct nested *wm, const struct domain_member members[
 		if (view->epoch != members[i].epoch) {
 			view->epoch = members[i].epoch;
 			view->focused_at = 0;
+			view->node_order = 0;
 			reset_node_geometry(view);
 		}
+		if(!view->node_order) view->node_order=++wm->next_layout_order;
 		if (view->mapped && view->tree != NULL) {
-			view->slot = wm->visible_count;
-			wm->slots[wm->visible_count++] = view;
+			project_ordered_view(wm->slots,&wm->visible_count,view);
 		}
 	}
+	for(int i=0;i<wm->visible_count;i++) wm->slots[i]->slot=i;
 	present_node(wm,recenter);
 }
 
@@ -2934,6 +3350,14 @@ static void map_pointer_window_picker(struct wl_client *client,struct wl_resourc
 	(void)client;
 	struct nested *wm=wl_resource_get_user_data(resource);
 	if(wm->map_pointer!=resource || wm->picker_keyboard || !picker_scope(wm)) return;
+	if(wm->reorder.active) {
+		// Snapshot overflow after the tray settles, so its membership cannot
+		// change under the newly opened picker.
+		flow_reorder_finish(wm);
+		struct timespec now;
+		if(clock_gettime(CLOCK_MONOTONIC,&now)==0) strip_draw(wm,now);
+		if(wl_resource_get_version(resource)>=12 && wm->last_window_overflow==0) return;
+	}
 	uint64_t ids[NODE_WINDOWS];
 	int n=picker_snapshot(wm,ids);
 	if(n>1) {
@@ -2961,6 +3385,7 @@ static bool scroll_flow(void *data,double x,double y,unsigned axis,double delta)
 	if(wm->maximize.view) return true;
 	if (axis==WL_POINTER_AXIS_HORIZONTAL_SCROLL &&
 		flow_vertical(wm->layout,wm->parent_window.width,wm->parent_window.height)) return false;
+	flow_reorder_finish(wm);
 	wm->flow_sliding=false;
 	int move=(int)fmax(-200,fmin(200,delta*3));
 	int next=clamp_int(wm->flow_offset-move,wm->flow_low,wm->flow_high);
@@ -3063,6 +3488,118 @@ static bool close_focused_window(void *data,struct wlr_surface *surface) {
 		}
 	}
 	return false;
+}
+
+static struct xdg_view *reorder_neighbor(struct nested *wm,struct xdg_view *view,
+		bool vertical,int direction) {
+	struct xdg_view *group[FLOW_GROUP_MAX];
+	int count=group_members(wm,view,group,true);
+	if(count>=2) {
+		struct rect tiles[FLOW_GROUP_MAX];
+		int focused=-1;
+		for(int i=0;i<count;i++) {
+			tiles[i]=group[i]->flow_base;
+			if(group[i]==view) focused=i;
+		}
+		int neighbor=flow_group_neighbor(tiles,count,focused,vertical,direction);
+		return neighbor>=0?group[neighbor]:NULL;
+	}
+	if(vertical!=flow_vertical(wm->layout,wm->parent_window.width,wm->parent_window.height)) return NULL;
+	struct flow_order_entry entries[NODE_WINDOWS];
+	for(int i=0;i<wm->visible_count;i++) {
+		struct xdg_view *v=wm->slots[i];
+		bool eligible=group_visible(v);
+		// Only the first member in slot order represents a tiled group stop.
+		if(eligible && v->group_id && group_large(wm))
+			for(int j=0;j<i;j++)
+				if(entries[j].eligible && entries[j].group==v->group_id) eligible=false;
+		entries[i]=(struct flow_order_entry){.eligible=eligible,.group=v->group_id};
+	}
+	int neighbor=flow_order_neighbor(entries,wm->visible_count,view->slot,direction);
+	return neighbor>=0?wm->slots[neighbor]:NULL;
+}
+
+static void reveal_reordered_view(struct nested *wm,struct xdg_view *view,bool vertical) {
+	struct rect unit=view->flow_unit;
+	int length=vertical?unit.height:unit.width;
+	int extent=vertical?shell_node_dock_top(wm->parent_window.height):wm->parent_window.width;
+	int start=(vertical?unit.y:unit.x)+wm->flow_offset;
+	if(length<=extent) {
+		if(start<0) wm->flow_offset-=start;
+		else if(start+length>extent) wm->flow_offset-=start+length-extent;
+	} else if(start>=extent || start+length<=0) {
+		wm->flow_offset=flow_center(wm,view);
+	}
+	wm->flow_offset=clamp_int(wm->flow_offset,wm->flow_low,wm->flow_high);
+}
+
+static void swap_flow_views(struct nested *wm,struct xdg_view *view,struct xdg_view *neighbor) {
+	struct rect from[NODE_WINDOWS];
+	for(int i=0;i<wm->visible_count;i++) from[i]=wm->slots[i]->placement;
+	double flow_from=wm->flow_offset, strip_from=wm->strip_offset;
+	if(wm->reorder.active) {
+		flow_from+=(wm->reorder.flow_from-flow_from)*wm->reorder.remaining;
+		strip_from+=(wm->reorder.strip_from-strip_from)*wm->reorder.remaining;
+	}
+	int a=view->slot,b=neighbor->slot;
+	uint64_t order=*layout_order(view);
+	*layout_order(view)=*layout_order(neighbor);
+	*layout_order(neighbor)=order;
+	if(view->group_id) {
+		order=view->group_order;
+		view->group_order=neighbor->group_order;
+		neighbor->group_order=order;
+	}
+	wm->slots[a]=neighbor;neighbor->slot=a;
+	wm->slots[b]=view;view->slot=b;
+	struct rect old=from[a];from[a]=from[b];from[b]=old;
+	// Keep each scene tile and its hover/focus state with its window.
+	__typeof__(wm->preview[0]) tile=wm->preview[a];
+	wm->preview[a]=wm->preview[b];wm->preview[b]=tile;
+	for(int i=0;i<NODE_WINDOWS;i++)
+		wlr_scene_node_raise_to_top(&wm->preview[i].ring->node.parent->node);
+
+	bool vertical=flow_vertical(wm->layout,wm->parent_window.width,wm->parent_window.height);
+	arrange_flow(wm,NULL);
+	reveal_reordered_view(wm,view,vertical);
+	wm->strip_offset=strip_goal(wm,view,wm->strip_offset);
+	if(wm->strip_motion && node_strip_active(wm)) {
+		wm->reorder=(__typeof__(wm->reorder)){
+			.active=true,.start=-1,.remaining=1,.flow_from=flow_from,.strip_from=strip_from,
+		};
+		for(int i=0;i<wm->visible_count;i++) {
+			struct xdg_view *v=wm->slots[i];
+			v->reorder_x=v->reorder_y=0;
+			if(group_visible(v)) {
+				struct rect to=v->flow_base;
+				if(vertical) to.y+=wm->flow_offset;
+				else to.x+=wm->flow_offset;
+				// A different-sized group tile uses its final size once and
+				// slides from the center of the previous tile.
+				v->reorder_x=from[i].x-to.x+(from[i].width-to.width)/2;
+				v->reorder_y=from[i].y-to.y+(from[i].height-to.height)/2;
+			}
+			wm->preview[i].reorder_from=wm->preview[i].id==v->id?wm->preview[i].painted:(struct wlr_box){0};
+		}
+	}
+	present_flow(wm);
+	nested_seat_refresh(wm->seat);
+	wlr_output_schedule_frame(wm->output);
+}
+
+static bool reorder_focused_window(void *data,struct wlr_surface *surface,uint32_t key) {
+	struct nested *wm=data;
+	struct xdg_view *view=wm->focused;
+	if(!picker_scope(wm) || !is_flow(wm) || !view || view->toplevel->base->surface!=surface ||
+		(wm->panel && wm->panel->wants_keyboard) || wm->picker_count || wm->picker_keyboard) return false;
+	if(!wm->output || !group_visible(view) || wm->drag || wm->group_grab.source ||
+		wm->group_join.id || wm->maximize.view || wm->mode_slide_view) return true;
+	for(int i=0;i<FLOW_GROUP_MAX;i++) if(wm->tray_flight[i].id) return true;
+	bool vertical=key==KEY_UP || key==KEY_DOWN;
+	int direction=key==KEY_UP || key==KEY_LEFT?-1:1;
+	struct xdg_view *neighbor=reorder_neighbor(wm,view,vertical,direction);
+	if(neighbor) swap_flow_views(wm,view,neighbor);
+	return true;
 }
 
 static void request_view_minimize(struct xdg_view *,bool);
@@ -3298,6 +3835,7 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		struct xdg_view *view = find_view(wm, id);
 		if (view != NULL) {
 			view->assigned = true;
+			view->home_order = 0;
 			if (wm->home_active) {
 				refresh_home(wm);
 			}
@@ -3538,6 +4076,7 @@ static void remove_view(struct xdg_view *view) {
 
 static void on_view_unmap(struct wl_listener *listener, void *data) {
 	struct xdg_view *view = wl_container_of(listener, view, unmap);
+	screenshot_remove_target(view->wm, view->id);
 	owned_preview_clear(&view->preview_copy);
 	view->minimized=false;
 	view->mapped = false;
@@ -3714,8 +4253,11 @@ static bool render_capture_key(void *data) {
 static bool create_input_seat(struct nested *wm,struct wl_display *parent) {
 	wm->seat=nested_seat_create(wm->server,parent,parent?wlr_wl_output_get_surface(wm->output):NULL,
 		hit_view,remember_focus,move_cursor,start_view_move,update_view_move,map_scroll,map_contact,
-		map_weapon,activate_chrome,scroll_flow,scroll_node_strip,cycle_window,home_key_tap,node_panel_key,node_number,close_focused_window,render_capture_key,wm);
-	return wm->seat!=NULL;
+		map_weapon,activate_chrome,scroll_flow,scroll_node_strip,cycle_window,home_key_tap,node_panel_key,node_number,
+		close_focused_window,reorder_focused_window,render_capture_key,wm);
+	if (!wm->seat) return false;
+	nested_seat_screenshot_bind(wm->seat, screenshot_key, screenshot_abort, wm);
+	return true;
 }
 
 extern void wmLoadDisplay(char *,int *,int *,int *,int *);
@@ -3840,6 +4382,7 @@ static void display_commit(struct nested *wm,struct wl_resource *resource,int w,
 			mothership_map_pointer_v1_send_display_result(resource,0,"The output rejected the settings. No changes applied.");
 			return;
 		}
+		screenshot_problem(wm, "The display size or scale changed.", true);
 
 		maximize_finish(wm);
 		native_logical_size(wm,w,h,scale120);
@@ -3868,7 +4411,8 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		return 0;
 	}
 	const char *headless=getenv("MOTHERSHIP_NATIVE_TEST_HEADLESS");
-	struct nested wm = { .domain_fd = domain_fd,.native_output=control->parent_fd<0 };
+	struct nested wm = { .domain_fd = domain_fd,.native_output=control->parent_fd<0,
+		.screenshot.pid_fd = -1 };
 	wm.headless_test=wm.native_output && headless && !strcmp(headless,"1");
 	wl_list_init(&wm.views);
 	struct wl_display *parent = NULL;
@@ -3881,6 +4425,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		goto done;
 	}
 	struct wl_event_loop *loop = wl_display_get_event_loop(wm.server);
+	screenshot_watch_pid(&wm, loop);
 	*reason = "could not watch the shutdown signal";
 	stop_source = wl_event_loop_add_fd(loop, stop_read_fd, WL_EVENT_READABLE, on_stop_fd, &wm);
 	if (stop_source == NULL) {
@@ -4030,6 +4575,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		if(!wm.picker_preview[i]) goto done;
 	}
 	wm.picker_scale=150;
+	wm.strip_hover_scale=100;
 	wm.picker_focus_tree=wlr_scene_tree_create(&wm.scene->tree);
 	if(!wm.picker_focus_tree) goto done;
 	wlr_scene_node_set_enabled(&wm.picker_focus_tree->node,false);
@@ -4145,6 +4691,8 @@ done:
 	}
 	wm.stopping = true;
 	wm.cleaning = true;
+	screenshot_reset(&wm);
+	screenshot_pid_cleanup(&wm);
 	nested_seat_set_render_debug(wm.seat,NULL);
 	render_debug_destroy(wm.render_debug);
 	wm.render_debug=NULL;

@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	startTimeout = 10 * time.Second
-	stopTimeout  = 3 * time.Second
+	startTimeout      = 10 * time.Second
+	stopTimeout       = 3 * time.Second
+	screenshotPanelFD = "MOTHERSHIP_SCREENSHOT_PANEL_FD"
 )
 
 type notice struct {
@@ -102,7 +103,7 @@ func runMode(ctx context.Context, bin string, original []string, out, stderr io.
 	for _, entry := range original {
 		k, _, _ := strings.Cut(entry, "=")
 		switch k {
-		case "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY", "MOTHERSHIP_NATIVE_SESSION", appbus.AddressEnv:
+		case "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY", "MOTHERSHIP_NATIVE_SESSION", screenshotPanelFD, appbus.AddressEnv:
 			continue
 		}
 		env = append(env, entry)
@@ -128,7 +129,7 @@ func runMode(ctx context.Context, bin string, original []string, out, stderr io.
 	s := &session{ctx: ctx, bin: bin, env: env, notices: make(chan notice, 32), err: stderr}
 	defer s.stop()
 
-	if err := s.start("desktopd", "mothership-desktopd", "serve"); err != nil {
+	if err := s.start("desktopd", "mothership-desktopd", nil, "serve"); err != nil {
 		return err
 	}
 	if _, err := s.wait("desktopd", "DESKTOPD_READY"); err != nil {
@@ -138,7 +139,15 @@ func runMode(ctx context.Context, bin string, original []string, out, stderr io.
 	if native {
 		args = []string{"--desktopd", "--native"}
 	}
-	if err := s.start("WM", "mothership-wm", args...); err != nil {
+	// The WM matches this PID with the Panel's Wayland connection before handing it capture pixels.
+	panelIdentity, tellWM, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("screenshot Panel identity: %w", err)
+	}
+	defer tellWM.Close()
+	err = s.start("WM", "mothership-wm", panelIdentity, args...)
+	panelIdentity.Close()
+	if err != nil {
 		return startupError(ctx, err)
 	}
 	line, err := s.wait("WM", "WAYLAND_DISPLAY=")
@@ -150,9 +159,13 @@ func runMode(ctx context.Context, bin string, original []string, out, stderr io.
 		return errors.New("WM startup: invalid child socket")
 	}
 
-	if err := s.start("Shell", "mothership-command-center", "--nested", socket); err != nil {
+	if err := s.start("Shell", "mothership-command-center", nil, "--nested", socket); err != nil {
 		return startupError(ctx, err)
 	}
+	if _, err := fmt.Fprintln(tellWM, s.children[len(s.children)-1].process.Pid); err != nil {
+		return startupError(ctx, fmt.Errorf("screenshot Panel identity: %w", err))
+	}
+	tellWM.Close()
 	if _, err := s.wait("Shell", "SHELL_READY"); err != nil {
 		return startupError(ctx, err)
 	}
@@ -186,9 +199,13 @@ func startupError(ctx context.Context, err error) error {
 	return err
 }
 
-func (s *session) start(part, binary string, args ...string) error {
+func (s *session) start(part, binary string, panelIdentity *os.File, args ...string) error {
 	cmd := exec.Command(filepath.Join(s.bin, binary), args...)
 	cmd.Env, cmd.Stderr = s.env, s.err
+	if panelIdentity != nil {
+		cmd.ExtraFiles = []*os.File{panelIdentity}
+		cmd.Env = append(cmd.Env, screenshotPanelFD+"=3")
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

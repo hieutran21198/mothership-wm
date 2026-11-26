@@ -11,7 +11,7 @@ void panel_quit(void);
 void panel_set_home_width(int);
 void panel_set_saved_cursor_size(int);
 void panel_set_home_guide(int);
-void panel_set_node_preferences(int,int,int);
+void panel_set_node_preferences(int,int,int,int);
 void panel_set_video_enabled(int);
 void panel_set_default_node_enabled(int);
 void app_grid_set_pins(const char *);

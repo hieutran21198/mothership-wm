@@ -10,7 +10,10 @@ import (
 const (
 	minPreviewZoom     = 100
 	defaultPreviewZoom = 150
-	maxPreviewZoom     = 200
+	maxPreviewZoom     = 300
+	minHoverZoom       = 100
+	defaultHoverZoom   = 100
+	maxHoverZoom       = 300
 )
 
 type panelConfigPaths struct {
@@ -31,6 +34,7 @@ type panelPreferences struct {
 	nodeGuide       bool
 	nodeTelemetry   bool
 	nodePreviewZoom int
+	nodeHoverZoom   int
 	toastMode       int
 	appPins         []string
 	defaultNode     bool
@@ -44,7 +48,7 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 	base := defaultMapSettings(theme.BorderColor)
 	p := panelPreferences{
 		theme: theme, settings: base, wallpaper: wall, iconSource: paths.theme,
-		wallpaperSource: paths.wallpaper, settingsBase: base, homeWidth: defaultHomeWidth, cursorSize: userconfig.CursorSizeDefault, homeGuide: true, nodeGuide: true, nodePreviewZoom: defaultPreviewZoom, defaultNode: true,
+		wallpaperSource: paths.wallpaper, settingsBase: base, homeWidth: defaultHomeWidth, cursorSize: userconfig.CursorSizeDefault, homeGuide: true, nodeGuide: true, nodePreviewZoom: defaultPreviewZoom, nodeHoverZoom: defaultHoverZoom, defaultNode: true,
 	}
 	doc, exists, err := userconfig.Read(paths.user)
 	if err != nil {
@@ -89,6 +93,14 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 				warn("node_panel.preview_zoom_percent must be an integer between %d and %d", minPreviewZoom, maxPreviewZoom)
 			} else {
 				p.nodePreviewZoom = zoom
+			}
+		}
+		if raw, ok := node["hover_zoom_percent"]; ok {
+			var zoom int
+			if err := json.Unmarshal(raw, &zoom); err != nil || zoom < minHoverZoom || zoom > maxHoverZoom {
+				warn("node_panel.hover_zoom_percent must be an integer between %d and %d", minHoverZoom, maxHoverZoom)
+			} else {
+				p.nodeHoverZoom = zoom
 			}
 		}
 	}
@@ -215,9 +227,12 @@ func (p *panelPreferences) saveMap(path string, wanted mapSettings) error {
 	return nil
 }
 
-func (p *panelPreferences) saveNodePanel(path string, show, telemetry bool, zoom int) error {
+func (p *panelPreferences) saveNodePanel(path string, show, telemetry bool, zoom, hover int) error {
 	if zoom < minPreviewZoom || zoom > maxPreviewZoom {
 		return fmt.Errorf("Preview zoom must be between %d%% and %d%%", minPreviewZoom, maxPreviewZoom)
+	}
+	if hover < minHoverZoom || hover > maxHoverZoom {
+		return fmt.Errorf("Hover zoom must be between %d%% and %d%%", minHoverZoom, maxHoverZoom)
 	}
 	doc, _, err := userconfig.Read(path)
 	if err != nil {
@@ -236,12 +251,15 @@ func (p *panelPreferences) saveNodePanel(path string, show, telemetry bool, zoom
 	if err := module.Set("preview_zoom_percent", zoom); err != nil {
 		return err
 	}
+	if err := module.Set("hover_zoom_percent", hover); err != nil {
+		return err
+	}
 	if err := doc.Set("node_panel", module); err != nil {
 		return err
 	}
 	if err := userconfig.Write(path, doc); err != nil {
 		return err
 	}
-	p.nodeGuide, p.nodeTelemetry, p.nodePreviewZoom = show, telemetry, zoom
+	p.nodeGuide, p.nodeTelemetry, p.nodePreviewZoom, p.nodeHoverZoom = show, telemetry, zoom, hover
 	return nil
 }

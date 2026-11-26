@@ -5,6 +5,7 @@
 #include "generated-map-pointer.h"
 #include "map-pointer.h"
 #include "display-settings.h"
+#include "screenshot.h"
 
 static GtkWindow *command;
 static struct wl_registry *registry;
@@ -15,7 +16,7 @@ static gboolean video_frost;
 static uint32_t pointer_name;
 static int node_x,node_y,node_w,node_h;
 static gboolean node_motion;
-static int picker_scale=150,cursor_size=24;
+static int picker_scale=150,strip_hover_scale=100,cursor_size=24;
 static struct glass_state {int x,y,w,h;unsigned alpha;} glass[SCENE_GLASS_COUNT];
 static unsigned glass_slots;
 
@@ -146,6 +147,48 @@ static void group_settings_anchor(void *d,struct mothership_map_pointer_v1 *p,in
 	panel_node_group_settings_anchor(x,y);
 }
 
+static gboolean screenshot_supported(void) {
+	return pointer && mothership_map_pointer_v1_get_version(pointer)>=MOTHERSHIP_MAP_POINTER_V1_SCREENSHOT_AUTH_SINCE_VERSION;
+}
+
+void map_pointer_screenshot_begin(void) {
+	if(screenshot_supported()) mothership_map_pointer_v1_screenshot_begin(pointer);
+}
+
+void map_pointer_screenshot_cancel(void) {
+	if(screenshot_supported()) mothership_map_pointer_v1_screenshot_cancel(pointer);
+}
+
+void map_pointer_screenshot_window(uint32_t hi,uint32_t lo) {
+	if(screenshot_supported()) mothership_map_pointer_v1_screenshot_window(pointer,hi,lo);
+}
+
+static void screenshot_available(void *d,struct mothership_map_pointer_v1 *p,uint32_t available) {
+	(void)d;(void)p;panel_screenshot_available(available!=0);
+}
+
+static void screenshot_open(void *d,struct mothership_map_pointer_v1 *p) {
+	(void)d;(void)p;panel_screenshot_open();
+}
+
+static void screenshot_frame(void *d,struct mothership_map_pointer_v1 *p,int32_t fd,int32_t w,int32_t h,
+		int32_t stride,int32_t logical_w,int32_t logical_h) {
+	(void)d;(void)p;panel_screenshot_frame(fd,w,h,stride,logical_w,logical_h);
+}
+
+static void screenshot_target(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo,
+		int32_t x,int32_t y,int32_t w,int32_t h,const char *title) {
+	(void)d;(void)p;panel_screenshot_target(hi,lo,x,y,w,h,title);
+}
+
+static void screenshot_image(void *d,struct mothership_map_pointer_v1 *p,int32_t fd,int32_t w,int32_t h,int32_t stride) {
+	(void)d;(void)p;panel_screenshot_image(fd,w,h,stride);
+}
+
+static void screenshot_problem(void *d,struct mothership_map_pointer_v1 *p,const char *message,uint32_t terminal) {
+	(void)d;(void)p;panel_screenshot_problem(message,terminal!=0);
+}
+
 static const struct mothership_map_pointer_v1_listener events={
 	.zoom=zoom,.click=click,.contact=contact,.aim=aim,.weapon_button=weapon_button,.home_tap=home_tap,.node_apps=node_apps,.node_settings=node_settings,
 	.window_count=window_count,.window_overflow=window_overflow,.picker_begin=picker_begin,.picker_row=picker_row,
@@ -155,6 +198,8 @@ static const struct mothership_map_pointer_v1_listener events={
 	.scene_glass_available=scene_glass_available,.node_slash=node_slash,
 	.group_state=group_state,.group_settings_anchor=group_settings_anchor,
 	.node_notifications=node_notifications,
+	.screenshot_available=screenshot_available,.screenshot_open=screenshot_open,.screenshot_frame=screenshot_frame,
+	.screenshot_target=screenshot_target,.screenshot_image=screenshot_image,.screenshot_problem=screenshot_problem,
 };
 
 static void apply_aim(void) {
@@ -186,8 +231,16 @@ static void apply_picker_scale(void) {
 		mothership_map_pointer_v1_set_picker_scale(pointer,picker_scale);
 }
 void panel_set_picker_scale(int percent) {
-	picker_scale=CLAMP(percent,100,200);
+	picker_scale=CLAMP(percent,100,300);
 	apply_picker_scale();
+}
+static void apply_strip_hover_scale(void) {
+	if(pointer && mothership_map_pointer_v1_get_version(pointer)>=MOTHERSHIP_MAP_POINTER_V1_SET_STRIP_HOVER_SCALE_SINCE_VERSION)
+		mothership_map_pointer_v1_set_strip_hover_scale(pointer,strip_hover_scale);
+}
+void panel_set_strip_hover_scale(int percent) {
+	strip_hover_scale=CLAMP(percent,100,300);
+	apply_strip_hover_scale();
 }
 static void apply_cursor_size(void) {
 	if(pointer && mothership_map_pointer_v1_get_version(pointer)>=MOTHERSHIP_MAP_POINTER_V1_SET_CURSOR_SIZE_SINCE_VERSION)
@@ -219,11 +272,13 @@ static void watch(void) {
 	struct wl_surface *wl=gdk_wayland_surface_get_wl_surface(surface);
 	if(!wl) return;
 	mothership_map_pointer_v1_watch(pointer,wl);
+	if(screenshot_supported()) mothership_map_pointer_v1_screenshot_auth(pointer);
 	mothership_map_pointer_v1_set_zoom(pointer,zoom_enabled,zoom_margin);
 	apply_aim();
 	apply_video_frost();
 	apply_node_strip();
 	apply_picker_scale();
+	apply_strip_hover_scale();
 	apply_cursor_size();
 }
 
@@ -251,6 +306,7 @@ static void removed(void *data,struct wl_registry *r,uint32_t name) {
 		mothership_map_pointer_v1_destroy(pointer);
 		pointer=NULL;
 		glass_slots=0;
+		panel_screenshot_available(FALSE);
 		display_settings_available(FALSE);
 		panel_picker_end(0);
 		panel_window_count(0);

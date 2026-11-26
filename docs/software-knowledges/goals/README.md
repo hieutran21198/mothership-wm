@@ -23,6 +23,7 @@ Each criterion names the Flow scenario that demonstrates it.
 - [Show a configurable Center Map HUD](show-center-map.md).
 
 - [Identify and revisit notifications](show-notifications.md).
+- [Capture a screenshot](capture-screenshots.md).
 
 ## Template
 

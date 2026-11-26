@@ -27,6 +27,7 @@ void panel_node_group_state(uint64_t id,unsigned count,gboolean hidden,int sx,in
 void panel_request_window_picker(void);
 void panel_pick_window(uint32_t serial,uint64_t id);
 void panel_set_picker_scale(int percent);
+void panel_set_strip_hover_scale(int percent);
 void map_pointer_set_cursor_size(int);
 void panel_place_window_preview(uint32_t serial,uint64_t id,int x,int y,int width,int height);
 void panel_node_number(uint32_t slot);
@@ -38,4 +39,7 @@ void panel_picker_highlight(uint32_t serial,uint64_t id);
 void panel_picker_end(uint32_t serial);
 void panel_display_query(void);
 gboolean panel_display_apply(int w,int h,int hz,int scale);
+void map_pointer_screenshot_begin(void);
+void map_pointer_screenshot_cancel(void);
+void map_pointer_screenshot_window(uint32_t hi,uint32_t lo);
 #endif

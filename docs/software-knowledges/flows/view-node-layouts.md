@@ -127,3 +127,52 @@ Flow. Switching Nodes or minimizing does not dissolve the group.
 Minimize Group hides the whole group and
 leaves its tray entry. Click a member or commit Alt+Tab to restore the full
 group without changing its split or gap.
+
+### F-VIEW-6
+
+Focus an app in a named Node or Default Node in Flow. For a standalone
+window, press **Meta + Shift + Left/Right** in horizontal Flow or
+**Meta + Shift + Up/Down** in vertical Flow. Each press swaps with the
+adjacent standalone Flow stop. A group boundary or the end of the strip
+stops the move. Minimized, floating and maximized windows are ineligible.
+Holding a key makes one move. A shell overlay that owns keyboard focus
+keeps control of its keys.
+
+Inside a tiled group, **Meta + Shift + Arrow** swaps with a neighbor in
+that screen direction within the same group. The group keeps its place
+and its tile geometry. Each window takes its destination tile's bounds.
+The preview tiles swap inside the shared tray outline. In compact Flow,
+where group members appear as individual windows, use the Flow axis and
+swap only adjacent windows with the same group membership.
+
+The WM commits one order for the desktop and preview tray without changing
+membership, app focus or Alt+Tab history. The Node keeps this order when
+reopened or switched to Stage and back. Temporarily unmapped windows keep
+their position. A closed or reassigned window leaves the order. New members
+join at the end. The [Node Panel](../system/home-panel.md#node-panel) defines
+the synchronized swap motion.
+
+Use three native Wayland windows of different sizes in a disposable nested
+session. Focus B and start with A, B, C. Move B toward C and verify A, C, B
+on both surfaces and that typing still goes to B. Reverse while moving,
+hold the arrow, try both ends and repeat in vertical Flow and Default Node.
+Open another Node and return, switch to Stage and back, and temporarily unmap
+and remap a member. Verify focus, order and membership in each case.
+
+Group B and C beside standalone A. Attempt to swap A into the group and
+try an arrow pointing outside the group from B or C. Verify that both
+surfaces keep their order. Swap B and C within the group. Verify that the
+group stays in place, the windows trade tiles on both surfaces, and focus
+follows the same window. Repeat with group members shown individually in
+compact Flow and verify that group boundaries still stop swaps.
+
+Record the desktop and tray in one capture at 100% and 150% scale, with
+matching detail crops before, during and after a standalone and a group
+swap. Repeat with a clipped preview, reduced motion and a window closing
+mid-swap. Check that clicks follow the visible frame or card during motion
+and that `+N` counts only hidden cards. Use a Wayland trace to verify that
+the handled arrow does not reach the app. A standalone swap sends no new
+client sizes. Within a group, send a final size only when the destination
+tile requires it. Animation frames send no size requests. Record native
+hardware frame pacing separately using the
+[render runbook](../../runbooks/render-performance.md).

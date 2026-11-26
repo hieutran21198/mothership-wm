@@ -79,7 +79,7 @@ func main() {
 	C.panel_set_home_width(C.int(preferences.homeWidth))
 	C.panel_set_saved_cursor_size(C.int(preferences.cursorSize))
 	C.panel_set_home_guide(cBool(preferences.homeGuide))
-	C.panel_set_node_preferences(cBool(preferences.nodeGuide), cBool(preferences.nodeTelemetry), C.int(preferences.nodePreviewZoom))
+	C.panel_set_node_preferences(cBool(preferences.nodeGuide), cBool(preferences.nodeTelemetry), C.int(preferences.nodePreviewZoom), C.int(preferences.nodeHoverZoom))
 	C.panel_set_toast_mode(C.int(preferences.toastMode))
 	panelNotices = openNotificationLog()
 	renderNotificationLog()
@@ -326,7 +326,7 @@ func panelReloadConfig() C.int {
 	C.panel_set_home_width(C.int(next.homeWidth))
 	C.panel_set_saved_cursor_size(C.int(next.cursorSize))
 	C.panel_set_home_guide(cBool(next.homeGuide))
-	C.panel_set_node_preferences(cBool(next.nodeGuide), cBool(next.nodeTelemetry), C.int(next.nodePreviewZoom))
+	C.panel_set_node_preferences(cBool(next.nodeGuide), cBool(next.nodeTelemetry), C.int(next.nodePreviewZoom), C.int(next.nodeHoverZoom))
 	C.panel_set_toast_mode(C.int(next.toastMode))
 	C.panel_set_video_enabled(cBool(next.wallpaper.allowsVideo()))
 	applyDefaultNodePreference(next.defaultNode)
@@ -353,8 +353,8 @@ func applyDefaultNodePreference(enabled bool) {
 }
 
 //export panelSaveNodePreferences
-func panelSaveNodePreferences(show, telemetry, zoom C.int) *C.char {
-	if err := preferences.saveNodePanel(preferencePaths.user, show != 0, telemetry != 0, int(zoom)); err != nil {
+func panelSaveNodePreferences(show, telemetry, zoom, hover C.int) *C.char {
+	if err := preferences.saveNodePanel(preferencePaths.user, show != 0, telemetry != 0, int(zoom), int(hover)); err != nil {
 		return C.CString("Could not save: " + err.Error())
 	}
 	return nil

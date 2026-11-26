@@ -6,11 +6,12 @@
 #include "home-panel.h"
 #include "map-fleet.h"
 #include "map-guide.h"
+#include "screenshot.h"
 
 enum slash_kind {
-	MODULE_APPS,MODULE_NODES,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,
+	MODULE_APPS,MODULE_NODES,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
 	COMMAND_OPEN_APP,COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,
-	COMMAND_OPEN_MAP,COMMAND_OPEN_NOTIFICATIONS,COMMAND_OPEN_SETTINGS,COMMAND_DISPLAY,COMMAND_SHORTCUTS,
+	COMMAND_OPEN_MAP,COMMAND_OPEN_NOTIFICATIONS,COMMAND_OPEN_SETTINGS,COMMAND_DISPLAY,COMMAND_SHORTCUTS,COMMAND_SCREENSHOT,
 	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE
 };
 static const struct {
@@ -26,7 +27,8 @@ static const struct {
 	{MODULE_NOTIFICATIONS,COMMAND_OPEN_NOTIFICATIONS,"open","notifications open"},
 	{MODULE_SETTINGS,COMMAND_OPEN_SETTINGS,"open","settings open"},
 	{MODULE_SETTINGS,COMMAND_DISPLAY,"display","settings display"},
-	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"}
+	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"},
+	{MODULE_SCREENSHOT,COMMAND_SCREENSHOT,"open","screenshot open"}
 };
 static const struct {
 	enum slash_kind kind;
@@ -36,7 +38,8 @@ static const struct {
 	{MODULE_NODES,"nodes","nodes "},
 	{MODULE_MAPS,"maps","maps "},
 	{MODULE_NOTIFICATIONS,"notifications","notifications "},
-	{MODULE_SETTINGS,"settings","settings "}
+	{MODULE_SETTINGS,"settings","settings "},
+	{MODULE_SCREENSHOT,"screenshot","screenshot "}
 };
 enum { ROW_COUNT=5, ROW_HEIGHT=48, WIDTH_CAP=480 };
 struct suggestion { enum slash_kind kind; char *name; GDesktopAppInfo *app; GtkWidget *item; };
@@ -86,6 +89,7 @@ static gboolean take_token(char **text,const char *token) {
 }
 
 static gboolean module_available(enum slash_kind module) {
+	if(module==MODULE_SCREENSHOT) return panel_screenshot_enabled();
 	return !node_scope || module==MODULE_APPS || module==MODULE_NOTIFICATIONS || module==MODULE_SETTINGS;
 }
 
@@ -127,6 +131,12 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 		cairo_move_to(cr,-7,4);cairo_curve_to(cr,-4,2,-5,-1,-4,-4);
 		cairo_curve_to(cr,-3,-8,3,-8,4,-4);cairo_curve_to(cr,5,-1,4,2,7,4);
 		cairo_close_path(cr);cairo_new_sub_path(cr);cairo_arc(cr,0,4,2,0,G_PI);
+	} else if(kind==MODULE_SCREENSHOT || kind==COMMAND_SCREENSHOT) {
+		for(int x=-1;x<=1;x+=2) for(int y=-1;y<=1;y+=2) {
+			cairo_move_to(cr,3*x,6*y);
+			cairo_line_to(cr,7*x,6*y);
+			cairo_line_to(cr,7*x,2*y);
+		}
 	} else if(kind==MODULE_SETTINGS || kind==COMMAND_OPEN_SETTINGS ||
 			kind==COMMAND_DISPLAY || kind==COMMAND_SHORTCUTS) {
 		for(int i=-5;i<=5;i+=5) {
@@ -210,6 +220,8 @@ static void activation(GtkEntry *input,gpointer data) {
 			s->kind==COMMAND_DISPLAY?SLASH_DISPLAY:s->kind==COMMAND_SHORTCUTS?SLASH_SHORTCUTS:SLASH_SETTINGS;
 		close_slash();show_view(view);break;
 	}
+	case COMMAND_SCREENSHOT:
+		close_slash();show_view(SLASH_SCREENSHOT);break;
 	case RESULT_APP:
 		if(app_catalog_launch(s->app)) close_slash();
 		break;
@@ -372,6 +384,9 @@ static void refresh(void) {
 	} else if(take_token(&query,"settings")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		add_commands(MODULE_SETTINGS,term);
+	} else if(module_available(MODULE_SCREENSHOT) && take_token(&query,"screenshot")) {
+		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
+		add_commands(MODULE_SCREENSHOT,term);
 	} else {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		for(guint i=0;i<G_N_ELEMENTS(modules);i++)

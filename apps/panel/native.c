@@ -22,6 +22,7 @@
 #include "analog-glass.h"
 #include "analog-button.h"
 #include "notification-ui.h"
+#include "screenshot.h"
 #include "system-tray.h"
 
 /* Stable GTK Layer Shell 1.3 runtime ABI; only the calls used by this
@@ -37,7 +38,7 @@ extern void gtk_layer_set_keyboard_mode(GtkWindow *, enum layer_keys);
 extern void panelAction(int, char *, char *);
 extern void panelDeleteNode(char *, int);
 extern void panelSlashEnterNode(char *,int,uint64_t);
-extern char *panelSaveNodePreferences(int,int,int);
+extern char *panelSaveNodePreferences(int,int,int,int);
 extern int panelReloadConfig(void);
 extern char *panelSaveHomeSettings(int,int,int,int,int);
 extern void panelShellNotification(char *);
@@ -71,9 +72,9 @@ static uint64_t picker_selected;
 static void dismiss_window_picker(uint64_t id);
 static gboolean picker_key(guint key);
 static gboolean saved_node_telemetry,node_log_keys,node_volume_keys;
-static GtkWidget *node_preview_zoom;
-enum { NODE_PREVIEW_ZOOM_MIN=100, NODE_PREVIEW_ZOOM_MAX=200 };
-static int saved_node_preview_zoom=150;
+static GtkWidget *node_preview_zoom,*node_hover_zoom;
+enum { NODE_PREVIEW_ZOOM_MIN=100, NODE_PREVIEW_ZOOM_MAX=300, NODE_HOVER_ZOOM_MIN=100, NODE_HOVER_ZOOM_MAX=300 };
+static int saved_node_preview_zoom=150,saved_node_hover_zoom=100;
 static GtkWidget *node_layout_row,*node_layout_flow,*node_layout_stage;
 static void node_stage_settings_sync(void);
 static int node_bell_center,node_tray_center;
@@ -269,7 +270,8 @@ static gboolean set_input_region(gpointer data) {
 		return G_SOURCE_REMOVE;
 	}
 	cairo_region_t *region=cairo_region_create();
-	if(slash_open || notice_log_visible() || node_volume_keys || tray_keys || app_grid_open || (window_picker && gtk_widget_get_visible(window_picker))) {
+	if(screenshot_visible() || slash_open || notice_log_visible() || node_volume_keys || tray_keys || app_grid_open || (window_picker && gtk_widget_get_visible(window_picker)) ||
+		(node_settings && gtk_widget_get_visible(node_settings))) {
 		// Receive the surrounding press/release pair while a popup is
 		// open so its dismiss click never reaches the underlying app.
 		cairo_rectangle_int_t outside={0,0,gdk_surface_get_width(surface),gdk_surface_get_height(surface)};
@@ -317,6 +319,7 @@ static gboolean popup_click_inside(GtkWidget *part,double x,double y) {
 }
 static void dismiss_popup_press(GtkGestureClick *click,int count,double x,double y,gpointer data) {
 	(void)count;(void)data;
+	if(screenshot_visible()) return;
 	if(slash_open) {
 		// The entry and dropdown are separate panes; their gap is outside.
 		for(GtkWidget *pane=gtk_widget_get_first_child(slash_box);pane;pane=gtk_widget_get_next_sibling(pane))
@@ -326,8 +329,10 @@ static void dismiss_popup_press(GtkGestureClick *click,int count,double x,double
 	}
 	GtkWidget *popup=app_grid_open?app_grid:notice_log_visible()?notice_log_widget():node_volume_keys?node_volume_widget():
 		tray_keys?system_tray_widget():
-		window_picker && gtk_widget_get_visible(window_picker)?window_picker:NULL;
+		window_picker && gtk_widget_get_visible(window_picker)?window_picker:
+		node_settings && gtk_widget_get_visible(node_settings)?node_settings:NULL;
 	if(!popup || popup_click_inside(popup,x,y) ||
+		(popup==node_settings && popup_click_inside(node_actions[2],x,y)) ||
 		(popup==notice_log_widget() && popup_click_inside(notice_close_target(),x,y)) ||
 		(popup==node_volume_widget() && popup_click_inside(node_speaker,x,y)) ||
 		(popup==system_tray_widget() && (popup_click_inside(system_tray_trigger(),x,y) ||
@@ -345,6 +350,7 @@ static void dismiss_popup_release(GtkGestureClick *click,int count,double x,doub
 	else if(app_grid_open) close_app_grid();
 	else if(window_picker && gtk_widget_get_visible(window_picker)) dismiss_window_picker(0);
 	else if(tray_keys)system_tray_close();
+	else if(node_settings && gtk_widget_get_visible(node_settings))node_settings_close();
 	else if(!node_volume_close())notice_log_close();
 }
 
@@ -733,6 +739,7 @@ static void exit_map_view(void) {
 
 static void lose_window_focus(GObject *window, GParamSpec *prop, gpointer data) {
 	(void)prop; (void)data;
+	if(screenshot_visible()) return;
 	if (gtk_window_is_active(GTK_WINDOW(window))) {
 		if(navigating && overview && map_visible) {
 			// Parent focus returned to the same Map. Restore its existing
@@ -785,7 +792,8 @@ static gboolean map_plain_view(void) {
 }
 
 static gboolean shell_key_repeat(GtkEventControllerKey *keys,guint key,guint code,GdkModifierType mods,gpointer data) {
-	(void)keys;(void)code;(void)mods;(void)data;
+	(void)keys;(void)code;(void)data;
+	if(screenshot_visible()) return screenshot_key(key,mods);
 	return (app_grid_key_held && gdk_keyval_to_lower(key)==GDK_KEY_a) ||
 		(settings_comma_held && key==GDK_KEY_comma);
 }
@@ -793,6 +801,7 @@ static gboolean shell_key_repeat(GtkEventControllerKey *keys,guint key,guint cod
 static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 		GdkModifierType mods, gpointer data) {
 	(void)keys; (void)code; (void)data;
+	if(screenshot_visible()) return FALSE;
 	const GdkModifierType commands=GDK_SHIFT_MASK|GDK_CONTROL_MASK|GDK_ALT_MASK|GDK_SUPER_MASK|GDK_META_MASK|GDK_HYPER_MASK;
 	guint lower=gdk_keyval_to_lower(key);
 	if(notice_log_visible() && (lower==GDK_KEY_w || lower==GDK_KEY_a)) return FALSE;
@@ -1714,11 +1723,13 @@ void panel_set_home_width(int w) {
 	update_dock();
 }
 
-void panel_set_node_preferences(int enabled,int telemetry,int zoom) {
+void panel_set_node_preferences(int enabled,int telemetry,int zoom,int hover) {
 	saved_node_guide=enabled!=0;
 	saved_node_telemetry=telemetry!=0;
 	saved_node_preview_zoom=CLAMP(zoom,NODE_PREVIEW_ZOOM_MIN,NODE_PREVIEW_ZOOM_MAX);
 	panel_set_picker_scale(saved_node_preview_zoom);
+	saved_node_hover_zoom=CLAMP(hover,NODE_HOVER_ZOOM_MIN,NODE_HOVER_ZOOM_MAX);
+	panel_set_strip_hover_scale(saved_node_hover_zoom);
 	node_panel_update();
 }
 
@@ -1825,6 +1836,7 @@ static void slash_delete(const char *name,int force) {panelDeleteNode((char *)na
 static void open_display_settings(GtkButton *,gpointer);
 static void open_shortcuts(GtkButton *,gpointer);
 static void slash_open_view(enum slash_view view) {
+	if(view==SLASH_SCREENSHOT) {screenshot_open_from_menu();return;}
 	if(node_dock && gtk_widget_get_visible(node_dock)) {
 		if(view==SLASH_NOTIFICATIONS) open_node_notice(NULL,NULL);
 		else if(view==SLASH_SETTINGS) panel_open_node_settings();
@@ -1972,6 +1984,15 @@ static void open_dock_settings(void) {
 	update_dock();
 }
 
+static void prepare_screenshot(gboolean invoking_menu) {
+	// The group popup has its own Wayland surface. On a hotkey capture it
+	// closes after the snapshot so it cannot cover the selection overlay.
+	if(group_popover) gtk_popover_popdown(GTK_POPOVER(group_popover));
+	if(!invoking_menu) return;
+	if(navigating) map_menu_set(FALSE);
+	else if(expanded) set_expanded(FALSE);
+}
+
 static void home_action(enum home_action action) {
 	if(!enabled || relay_target) return;
 	if(action==HOME_MAP || action==HOME_CENTER) close_app_grid();
@@ -2045,6 +2066,7 @@ void panel_open_node_settings(void) {
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(guide),TRUE);
 	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(saved_node_telemetry?node_telemetry_on:node_telemetry_off),TRUE);
 	gtk_spin_button_set_value(GTK_SPIN_BUTTON(node_preview_zoom),saved_node_preview_zoom);
+	gtk_spin_button_set_value(GTK_SPIN_BUTTON(node_hover_zoom),saved_node_hover_zoom);
 	gtk_widget_set_visible(node_guide_error,FALSE);
 	node_stage_settings_sync();
 	gtk_widget_set_visible(node_settings,TRUE);
@@ -2081,7 +2103,9 @@ static void node_save(GtkButton *unused,gpointer data) {
 	GtkSpinButton *spin=GTK_SPIN_BUTTON(node_preview_zoom);
 	gtk_spin_button_update(spin);
 	int zoom=gtk_spin_button_get_value_as_int(spin);
-	char *err=panelSaveNodePreferences(show,telemetry,zoom);
+	gtk_spin_button_update(GTK_SPIN_BUTTON(node_hover_zoom));
+	int hover=gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(node_hover_zoom));
+	char *err=panelSaveNodePreferences(show,telemetry,zoom,hover);
 	if(err){
 		gtk_label_set_text(GTK_LABEL(node_guide_error),err);
 		gtk_widget_set_visible(node_guide_error,TRUE);
@@ -2091,7 +2115,9 @@ static void node_save(GtkButton *unused,gpointer data) {
 	saved_node_guide=show;
 	saved_node_telemetry=telemetry;
 	saved_node_preview_zoom=zoom;
+	saved_node_hover_zoom=hover;
 	panel_set_picker_scale(zoom);
+	panel_set_strip_hover_scale(hover);
 	node_settings_close();
 }
 static void node_cancel(GtkButton *unused,gpointer data) {(void)unused;(void)data;node_settings_close();}
@@ -2809,6 +2835,7 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_widget_add_css_class(head,"shell-settings-title");
 	gtk_label_set_xalign(GTK_LABEL(head),0);
 	gtk_box_append(GTK_BOX(body),head);
+	gtk_box_append(GTK_BOX(body),gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
 	GtkWidget *row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
 	GtkWidget *label=gtk_label_new("Keyboard guide");
 	gtk_label_set_xalign(GTK_LABEL(label),0);gtk_widget_set_hexpand(label,TRUE);
@@ -2835,6 +2862,20 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_box_append(GTK_BOX(row),node_preview_zoom);
 	gtk_box_append(GTK_BOX(row),gtk_label_new("%"));
 	gtk_box_append(GTK_BOX(body),row);
+	row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+	label=gtk_label_new("Hover zoom");
+	gtk_label_set_xalign(GTK_LABEL(label),0);gtk_widget_set_hexpand(label,TRUE);
+	gtk_box_append(GTK_BOX(row),label);
+	node_hover_zoom=gtk_spin_button_new_with_range(NODE_HOVER_ZOOM_MIN,NODE_HOVER_ZOOM_MAX,5);
+	gtk_widget_add_css_class(node_hover_zoom,"home-mechanical-spin");
+	gtk_spin_button_set_numeric(GTK_SPIN_BUTTON(node_hover_zoom),TRUE);
+	gtk_editable_set_width_chars(GTK_EDITABLE(node_hover_zoom),3);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(node_hover_zoom),GTK_ACCESSIBLE_PROPERTY_LABEL,"Hover zoom",-1);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(node_hover_zoom),GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+		"Preview strip hover zoom, in percent",-1);
+	gtk_box_append(GTK_BOX(row),node_hover_zoom);
+	gtk_box_append(GTK_BOX(row),gtk_label_new("%"));
+	gtk_box_append(GTK_BOX(body),row);
 	node_layout_row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
 	label=gtk_label_new("Layout");
 	gtk_label_set_xalign(GTK_LABEL(label),0);gtk_widget_set_hexpand(label,TRUE);
@@ -2853,6 +2894,7 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_label_set_wrap(GTK_LABEL(node_guide_error),TRUE);
 	gtk_widget_set_visible(node_guide_error,FALSE);
 	gtk_box_append(GTK_BOX(body),node_guide_error);
+	gtk_box_append(GTK_BOX(body),gtk_separator_new(GTK_ORIENTATION_HORIZONTAL));
 	row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
 	gtk_widget_set_halign(row,GTK_ALIGN_END);
 	const char *buttons[]={"Cancel","Save"};
@@ -3272,6 +3314,8 @@ int panel_init(void) {
 	home = button("Home", 4, actions);
 	terminal = button("Terminal", 5, actions);
 	files = button("File Manager", 6, actions);
+	GtkWidget *screenshot_entry = gtk_button_new_with_label("Screenshot");
+	gtk_box_append(GTK_BOX(actions), screenshot_entry);
 	node_layouts = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
 	gtk_box_append(GTK_BOX(normal), node_layouts);
 	layout_buttons[0] = button("Stack", 8, node_layouts);
@@ -3295,6 +3339,8 @@ int panel_init(void) {
 	map_view_open=gtk_button_new_with_label("Map View");
 	g_signal_connect(map_view_open,"clicked",G_CALLBACK(open_map_view),NULL);
 	gtk_box_append(GTK_BOX(overview_bar),map_view_open);
+	GtkWidget *overview_screenshot = gtk_button_new_with_label("Screenshot");
+	gtk_box_append(GTK_BOX(overview_form), overview_screenshot);
 	GtkWidget *scroll = gtk_scrolled_window_new();
 	gtk_widget_set_size_request(scroll, -1, 145);
 	gtk_widget_set_vexpand(scroll, TRUE);
@@ -3312,6 +3358,8 @@ int panel_init(void) {
 	gtk_box_append(GTK_BOX(form), status);
 	init_map_settings();
 	init_home_controls(GTK_OVERLAY(overlay));
+	screenshot_init(window, GTK_OVERLAY(overlay), screenshot_entry, overview_screenshot,
+		prepare_screenshot, schedule_region, panel_home_notice);
 	GtkGesture *dismiss_popup=gtk_gesture_click_new();
 	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(dismiss_popup),GTK_PHASE_CAPTURE);
 	g_signal_connect(dismiss_popup,"pressed",G_CALLBACK(dismiss_popup_press),NULL);

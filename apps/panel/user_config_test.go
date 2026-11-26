@@ -189,14 +189,14 @@ func TestNodeKeyboardGuideDoesNotChangeHomeGuide(t *testing.T) {
 	paths := panelConfigPaths{user: path}
 	warn := func(f string, a ...any) { t.Fatalf(f, a...) }
 	p := loadPanelPreferences(paths, warn)
-	if p.homeGuide || !p.nodeGuide || p.nodeTelemetry || p.nodePreviewZoom != defaultPreviewZoom {
+	if p.homeGuide || !p.nodeGuide || p.nodeTelemetry || p.nodePreviewZoom != defaultPreviewZoom || p.nodeHoverZoom != defaultHoverZoom {
 		t.Fatal("wrong guide defaults")
 	}
-	if err := p.saveNodePanel(path, false, true, 178); err != nil {
+	if err := p.saveNodePanel(path, false, true, 178, 240); err != nil {
 		t.Fatal(err)
 	}
 	p = loadPanelPreferences(paths, warn)
-	if p.homeGuide || p.nodeGuide || !p.nodeTelemetry || p.nodePreviewZoom != 178 {
+	if p.homeGuide || p.nodeGuide || !p.nodeTelemetry || p.nodePreviewZoom != 178 || p.nodeHoverZoom != 240 {
 		t.Fatal("wrong saved settings")
 	}
 	data, err := os.ReadFile(path)
@@ -208,7 +208,7 @@ func TestNodeKeyboardGuideDoesNotChangeHomeGuide(t *testing.T) {
 func TestNodePreviewZoomBounds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	paths := panelConfigPaths{user: path}
-	for _, raw := range []string{"99", "201", "155.5", "null", `"150"`} {
+	for _, raw := range []string{"99", "301", "155.5", "null", `"150"`} {
 		putPreferenceFixture(t, path, `{"node_panel":{"preview_zoom_percent":`+raw+`}}`)
 		var warned bool
 		p := loadPanelPreferences(paths, func(string, ...any) { warned = true })
@@ -218,7 +218,7 @@ func TestNodePreviewZoomBounds(t *testing.T) {
 	}
 	p := panelPreferences{nodePreviewZoom: defaultPreviewZoom}
 	for _, zoom := range []int{minPreviewZoom, maxPreviewZoom} {
-		if err := p.saveNodePanel(path, true, false, zoom); err != nil {
+		if err := p.saveNodePanel(path, true, false, zoom, defaultHoverZoom); err != nil {
 			t.Fatal(err)
 		}
 		q := loadPanelPreferences(paths, func(f string, a ...any) { t.Fatalf(f, a...) })
@@ -226,11 +226,37 @@ func TestNodePreviewZoomBounds(t *testing.T) {
 			t.Fatalf("saved zoom %d loaded as %d", zoom, q.nodePreviewZoom)
 		}
 	}
-	if err := p.saveNodePanel(path, false, true, maxPreviewZoom+1); err == nil {
+	if err := p.saveNodePanel(path, false, true, maxPreviewZoom+1, defaultHoverZoom); err == nil {
 		t.Fatal("invalid zoom was saved")
 	}
 	q := loadPanelPreferences(paths, func(f string, a ...any) { t.Fatalf(f, a...) })
 	if !q.nodeGuide || q.nodeTelemetry || q.nodePreviewZoom != maxPreviewZoom {
 		t.Fatalf("failed save changed settings: guide=%v telemetry=%v zoom=%d", q.nodeGuide, q.nodeTelemetry, q.nodePreviewZoom)
+	}
+}
+
+func TestNodeHoverZoomBounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	paths := panelConfigPaths{user: path}
+	for _, raw := range []string{"99", "301", "120.5", "null", `"150"`} {
+		putPreferenceFixture(t, path, `{"node_panel":{"hover_zoom_percent":`+raw+`}}`)
+		var warned bool
+		p := loadPanelPreferences(paths, func(string, ...any) { warned = true })
+		if !warned || p.nodeHoverZoom != defaultHoverZoom {
+			t.Fatalf("invalid hover zoom %s loaded as %d, warned %v", raw, p.nodeHoverZoom, warned)
+		}
+	}
+	p := panelPreferences{}
+	for _, zoom := range []int{minHoverZoom, maxHoverZoom} {
+		if err := p.saveNodePanel(path, true, false, defaultPreviewZoom, zoom); err != nil {
+			t.Fatal(err)
+		}
+		q := loadPanelPreferences(paths, func(f string, a ...any) { t.Fatalf(f, a...) })
+		if q.nodeHoverZoom != zoom {
+			t.Fatalf("saved hover zoom %d loaded as %d", zoom, q.nodeHoverZoom)
+		}
+	}
+	if err := p.saveNodePanel(path, true, false, defaultPreviewZoom, maxHoverZoom+1); err == nil {
+		t.Fatal("invalid hover zoom was saved")
 	}
 }

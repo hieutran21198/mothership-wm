@@ -44,7 +44,8 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	nested_map_weapon weapon,
 	nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_strip_scroll strip_scroll,nested_flow_cycle cycle,void (*home_tap)(void *),
 	struct wlr_surface *(*node_panel_key)(void *,uint32_t),bool (*node_number)(void *,uint32_t),
-	bool (*close_window)(void *,struct wlr_surface *),bool (*render_capture)(void *),void *data);
+	bool (*close_window)(void *,struct wlr_surface *),
+	bool (*reorder_window)(void *,struct wlr_surface *,uint32_t),bool (*render_capture)(void *),void *data);
 struct wlr_backend;
 struct wlr_session;
 bool nested_seat_attach_local(struct nested_seat *,struct wlr_backend *,struct wlr_session *,void (*logout)(void *));
@@ -54,6 +55,8 @@ void nested_seat_local_active(struct nested_seat *,bool active);
 void nested_seat_set_render_debug(struct nested_seat *,struct render_debug *);
 bool nested_seat_set_shortcuts(struct nested_seat *,uint64_t,uint64_t,uint64_t,uint64_t);
 void nested_seat_shortcut_panel(struct nested_seat *,struct wlr_surface *);
+void nested_seat_screenshot_bind(struct nested_seat *,bool (*open)(void *),void (*abort)(void *),void *);
+void nested_seat_screenshot_modal(struct nested_seat *,struct wlr_surface *);
 void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 	struct wlr_surface *fallback);
 void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bool keep_panel);

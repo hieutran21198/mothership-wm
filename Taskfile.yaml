@@ -35,6 +35,16 @@ tasks:
         cc -std=c11 -Wall -Wextra -Werror apps/wm/tests/flow-group.c -o "$out"
         "$out"
 
+  wm:test-flow-order:
+    desc: Test Flow reorder neighbors and group boundaries
+    cmds:
+      - |
+        set -eu
+        out="$(mktemp)"
+        trap 'rm -f "$out"' EXIT
+        cc -std=c11 -Wall -Wextra -Werror apps/wm/tests/flow-order.c -o "$out"
+        "$out"
+
   wm:test-frost:
     desc: Test Frosted Map sample bounds in the wm-native devenv profile
     cmds:
@@ -98,7 +108,7 @@ tasks:
         candidate="$(mktemp -d "$PWD/bin/candidates/build-XXXXXXXX")"
         trap 'rm -rf -- "$candidate"' EXIT
         export MOTHERSHIP_BUILD_DIR="$candidate"
-        devenv shell --offline --profile wm-native -- task wm:test wm:test-frost wm:test-flow-group desktopd:test wm:build desktopd:build
+        devenv shell --offline --profile wm-native -- task wm:test wm:test-frost wm:test-flow-group wm:test-flow-order desktopd:test wm:build desktopd:build
         devenv shell --offline --profile panel-native -- task panel:test panel:build
         go test ./cmd/mothership
         go build -o "$candidate/mothership" ./cmd/mothership

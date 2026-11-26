@@ -23,6 +23,7 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Show and hide the Center Map](show-center-map.md).
 
 - [Read notifications by Node](show-notifications.md).
+- [Select and export a screenshot](capture-screenshot.md).
 
 ## Template
 

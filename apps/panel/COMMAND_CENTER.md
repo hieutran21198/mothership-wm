@@ -32,8 +32,13 @@ or Escape during text entry releases input back to the current view. Use **Overv
 position on the grid. The **Home** action returns to the blank shell. In a Node,
 choose **Stack**, **Float** or **Flow**. Use **Next window** in Stack; drag
 a Float window's top bar to move it or its bottom-right grip to resize it.
+See [Reorder windows in Flow](../../docs/software-knowledges/flows/view-node-layouts.md#f-view-6)
+for the keyboard shortcuts that move a focused window in its current Node.
 Closing the
 managed WM also closes its nested Command Center.
+
+Use **Screenshot** to open the [snipping overlay](../../docs/software-knowledges/flows/capture-screenshot.md).
+In a Node, **Win + /** opens Slash. Enter `screenshot open` there.
 
 **Terminal** starts an installed Ghostty with single-instance mode off.
 **File Manager** starts installed COSMIC Files without daemonizing.
