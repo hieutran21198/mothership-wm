@@ -78,3 +78,20 @@ func TestFailedShellCleansOwnedSessionOnly(t *testing.T) {
 		t.Fatalf("touched parent socket: %v", err)
 	}
 }
+
+func TestNativeDoesNotTakeAnExistingGraphicalSession(t *testing.T) {
+	runtime := t.TempDir()
+	if err := os.Chmod(runtime, 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := runMode(context.Background(), t.TempDir(), []string{
+		"XDG_RUNTIME_DIR=" + runtime, "WAYLAND_DISPLAY=cosmic",
+	}, io.Discard, io.Discard, true)
+	if err == nil || !strings.Contains(err.Error(), "not an existing graphical terminal") {
+		t.Fatalf("expected native launch guard, got %v", err)
+	}
+	entries, fsErr := os.ReadDir(runtime)
+	if fsErr != nil || len(entries) != 0 {
+		t.Fatalf("runtime must be unchanged: %v, %v", entries, fsErr)
+	}
+}

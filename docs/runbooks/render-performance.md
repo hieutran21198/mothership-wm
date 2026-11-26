@@ -4,6 +4,88 @@ Measure, make the smallest fix, and remeasure in one assignment. Do the
 checks yourself. Bound the work to what changed without changing the
 intended timing, visuals or input behavior.
 
+## Capture a live Mothership session
+
+Press **Win + Shift + F12** in the affected app to start recording. Repeat
+the problem, then press the same chord to stop and save. There is no
+redraw tint, screen recording, focus change or terminal step. The WM
+writes `render-debug-*.csv` under `$XDG_STATE_HOME/mothership-wm/render-debug`
+(default `~/.local/state`). A safety limit stops recording after 60 seconds;
+the header reports samples dropped if the bounded buffer fills.
+
+For a timed capture with optional NVIDIA device metrics instead:
+Run `task mothership:render-debug` from the repository in a terminal inside
+the target session. Reproduce the problem during the next 10 seconds.
+There is no HUD or extra redraw. A private local endpoint starts capture;
+repeated requests during a capture do not reset it. The command saves the
+CSV under `$XDG_STATE_HOME/mothership-wm/render-debug` (default `~/.local/state`).
+On an NVIDIA system it also samples GPU load, memory and decoder load
+separately when `nvidia-smi` is available. The graphics statistics are
+device-wide, not timing for individual commands.
+
+For a separate GPU-timing check on the pinned GLES2 renderer, use the exact
+current session's private Render Debug FIFO. With its path in `fifo`:
+
+```sh
+timeout 2 sh -c 'printf "capture gpu\n" > "$1"' _ "$fifo"
+```
+
+This starts a 10-second capture and logs where the CSV was saved in the
+session's runtime directory. Run a normal capture for the same action
+first. The optional scene query adds work; do not use it as the baseline
+for presentation pacing.
+
+- `present` / `discard` are output-backend results. Join with `commit` using
+  the commit sequence. Compare consecutive presentation timestamps using
+  the same output and backend. Only DRM results with the hardware flags
+  are evidence of hardware presentation. Nested and headless are controls.
+- `commit` records the submitted buffer size and the changed region in
+  buffer pixels: actual region area, rectangle count and bounding box.
+  Damage area `-1` means unavailable. This is not a GPU fill-rate measure.
+- `surface` records root client/layer damage: declared logical and buffer
+  pixels separately, effective logical damage in `damage_px`, and only a
+  session-scoped window ID if applicable. No names or pixels are recorded.
+  Compare surface rows in the same interval with the output commit. The
+  root-only probe does not cover every subsurface. For surface and commit
+  rows, `damage_regions` stores up to eight rectangles as
+  `x1:y1:x2:y2` separated by `|`. `rects` remains the full count.
+- `precommit` marks the output backend boundary. In the same commit
+  sequence, subtract it from `commit` to isolate CPU time spent on that
+  phase. This is not GPU execution time.
+- The source mask identifies activity since the previous frame callback:
+  app (1), panel (2), wallpaper (4), Map HUD (8), WM motion (16), frost
+  rebuild (32). A source in the same interval is a lead, not proof of
+  causation. A zero mask can include cursor activity or untracked changes.
+- `frame` records CPU wall time before and during the scene submit,
+  not GPU execution time. Frost states are off (0), cache hit (1),
+  rebuild (2), or fallback (3). A rebuild runs the frost passes; it is
+  not a measurement of a texture upload. This capture does not read
+  pixels, app contents or titles.
+- `key_events`, `focus_changes`, and `configures` count forwarded key
+  events with a focused surface, Wayland keyboard-focus changes, and app
+  xdg configure emissions since the preceding frame row. No key identity,
+  text, direction, or per-key timestamp is recorded.
+- On `surface` and `commit` rows, `buffer_origin` is none (0),
+  shared memory (1), DMA-BUF (2), or unknown (3). It reads buffer metadata
+  without mapping storage. This classification does not identify an app's
+  renderer or establish its actual copy or fence cost.
+- Optional `gpu` rows join with `commit` on `seq`. The capture samples
+  every fourth drawable frame when no query is pending. After 50 ms it
+  checks result availability; at most three polls, never a fence wait.
+  `scene_pre_render_ns` is wlroots setup before its render pass.
+  `render_pass_ns` is the renderer's GPU-inclusive time span, not pure GPU
+  execution or fence wait. `gpu_probe_ns` is CPU wall time spent polling.
+  `gpu_status`: ready (1), unavailable (2), disjoint/not ready (3),
+  incompatible clock (4), or probe exceeded its CPU budget (5).
+  An invalid clock, a slow probe, or repeated unavailable results stops
+  further GPU queries in this capture. Missing durations are `-1`.
+  Compare surface commit to frame start for
+  queueing before WM rendering; timing alone does not prove pixel correctness.
+- Run matched captures with PNG vs MP4, Clear vs Frosted, on idle and
+  after the same interaction. Compare the presence of repeated damage and
+  the longest gap while motion should be active. Long gaps while idle
+  can be healthy.
+
 ## 1. Measure the baseline
 
 - Pick one reproducible action and a pass condition. Match the viewport,

@@ -1,6 +1,7 @@
 #ifndef MOTHERSHIP_RETAINED_PAINT_H
 #define MOTHERSHIP_RETAINED_PAINT_H
 #include <gtk/gtk.h>
+GdkTexture *wallpaper_image_texture(cairo_surface_t *);
 GtkWidget *retained_wallpaper_new(cairo_surface_t *,gboolean contain,GtkWidget *fallback);
 void retained_wallpaper_source(GtkWidget *,cairo_surface_t *,gboolean contain);
 void retained_wallpaper_update(GtkWidget *,gboolean frost,int margin);

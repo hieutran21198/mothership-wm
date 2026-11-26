@@ -127,3 +127,17 @@ func TestRelayRejectionKeepsConfirmedMapAndIdentifiesRequest(t *testing.T) {
 		t.Fatalf("a stale action changed confirmed Map state or lacked its error token: %+v", v)
 	}
 }
+
+func TestDeleteEventClearsCatalogAndProfile(t *testing.T) {
+	s := domainipc.Snapshot{
+		Domains:      []string{"A", "B"},
+		NodeProfiles: []domainipc.NodeProfile{{Domain: "A", Shortcut: 1}, {Domain: "B", Shortcut: 2}},
+		Windows:      []domainipc.Window{{ID: 7}},
+	}
+	err := reduce(&s, domainipc.Event{Revision: 1, Event: domainipc.DomainDeletedEvent, Body: []byte(`{"domain":"A"}`)})
+	if err != nil || s.Revision != 1 || len(s.Domains) != 1 || s.Domains[0] != "B" ||
+		len(s.NodeProfiles) != 1 || s.NodeProfiles[0].Domain != "B" || s.NodeProfiles[0].Shortcut != 2 ||
+		len(s.Windows) != 1 || s.Windows[0].ID != 7 {
+		t.Fatalf("state after deletion: %+v, error: %v", s, err)
+	}
+}

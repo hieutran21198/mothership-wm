@@ -8,9 +8,18 @@
 #include "retained-paint.h"
 #include "map-camera.h"
 #include "map_hud.h"
+#include "wallpaper-video.h"
+#include "map-pointer.h"
+#include "analog-glass.h"
 
 static cairo_surface_t *wallpaper;
-static GtkWidget *wallpaper_canvas, *wallpaper_accelerated;
+static GtkWidget *wallpaper_canvas, *wallpaper_accelerated, *video_picture, *wallpaper_overlay;
+static GtkWidget *pending_guide;
+static struct wallpaper_video *video;
+static gboolean video_contain;
+static GdkTexture *glass_texture;
+static GdkPaintable *glass_video_source;
+static gulong glass_video_tick;
 static bool contain_image;
 static gboolean frost_enabled;
 static int frost_margin;
@@ -19,7 +28,8 @@ void wallpaper_update_frost(gboolean enabled, int outer_margin) {
 	bool changed = frost_enabled != enabled || (enabled && frost_margin != outer_margin);
 	frost_enabled = enabled;
 	frost_margin = outer_margin;
-	if (changed) retained_wallpaper_update(wallpaper_accelerated, frost_enabled, frost_margin);
+	map_pointer_video_frost(video && frost_enabled,frost_margin);
+	if (changed && !video) retained_wallpaper_update(wallpaper_accelerated, frost_enabled, frost_margin);
 }
 
 GtkWidget *wallpaper_clock(void) { return wallpaper_canvas; }
@@ -47,9 +57,67 @@ void *wallpaper_prepare(const unsigned char *data,size_t size) {
 	return image;
 }
 
+static void video_glass_frame(GdkPaintable *source,gpointer data) {
+	(void)source;(void)data;analog_glass_wallpaper_changed();
+}
+static void unwatch_glass_video(void) {
+	if(glass_video_source) {
+		g_signal_handler_disconnect(glass_video_source,glass_video_tick);
+		g_clear_object(&glass_video_source);
+	}
+}
+static void stop_video(void) {
+	if (!video) return;
+	unwatch_glass_video();
+	if (video_picture) {
+		gtk_widget_set_visible(video_picture,FALSE);
+		gtk_picture_set_paintable(GTK_PICTURE(video_picture),NULL);
+		gtk_widget_set_visible(wallpaper_accelerated,TRUE);
+		retained_wallpaper_update(wallpaper_accelerated,frost_enabled,frost_margin);
+	}
+	g_clear_pointer(&video,wallpaper_video_free);
+	map_pointer_video_frost(FALSE,frost_margin);
+	if (wallpaper_canvas) gtk_widget_queue_draw(wallpaper_canvas);
+}
+
+static void show_video(void) {
+	gtk_picture_set_content_fit(GTK_PICTURE(video_picture),
+		video_contain?GTK_CONTENT_FIT_CONTAIN:GTK_CONTENT_FIT_COVER);
+	gtk_widget_set_visible(wallpaper_accelerated,FALSE);
+	gtk_widget_set_visible(video_picture,TRUE);
+	wallpaper_video_attach(video,GTK_PICTURE(video_picture),stop_video);
+	GdkPaintable *source=gtk_picture_get_paintable(GTK_PICTURE(video_picture));
+	if(source) {
+		glass_video_source=g_object_ref(source);
+		glass_video_tick=g_signal_connect(source,"invalidate-contents",G_CALLBACK(video_glass_frame),NULL);
+	}
+	analog_glass_wallpaper_changed();
+	gtk_widget_queue_draw(wallpaper_canvas);
+}
+
+void *wallpaper_prepare_mp4(const char *path) {
+	return wallpaper_video_prepare(path);
+}
+
+void wallpaper_discard_prepared(void *prepared,int mp4) {
+	if (mp4) wallpaper_video_free(prepared);
+	else if (prepared) cairo_surface_destroy(prepared);
+}
+
+void wallpaper_replace_mp4(void *prepared,int contain) {
+	stop_video();
+	video=prepared;
+	map_pointer_video_frost(video && frost_enabled,frost_margin);
+	video_contain=contain!=0;
+	if (video_picture) show_video();
+}
+
 void wallpaper_replace(void *prepared,int contain) {
+	stop_video();
 	g_clear_pointer(&wallpaper,cairo_surface_destroy);
 	wallpaper=prepared;
+	g_clear_object(&glass_texture);
+	analog_glass_wallpaper_changed();
 	contain_image=contain!=0;
 	retained_wallpaper_source(wallpaper_accelerated,wallpaper,contain_image);
 	if (wallpaper_canvas) gtk_widget_queue_draw(wallpaper_canvas);
@@ -63,6 +131,7 @@ int wallpaper_set(const unsigned char *data,size_t size,int contain) {
 }
 
 static void wallpaper_render(cairo_t *cr, int w, int h) {
+	if (video) {cairo_set_source_rgb(cr,0,0,0);cairo_paint(cr);return;}
 	if (wallpaper != NULL) {
 		int iw = cairo_image_surface_get_width(wallpaper);
 		int ih = cairo_image_surface_get_height(wallpaper);
@@ -125,11 +194,20 @@ static void viewport_resized(GtkDrawingArea *unused,int width,int height,gpointe
 	map_hud_camera_viewport(width,height);
 }
 
+void wallpaper_add_guide(GtkWidget *guide) {
+	// This layer is below app surfaces and has an empty input region.
+	if(wallpaper_overlay) {
+		gtk_overlay_add_overlay(GTK_OVERLAY(wallpaper_overlay),guide);
+	} else {
+		g_set_object(&pending_guide,guide);
+	}
+}
+
 void wallpaper_show(void) {
 	GtkWindow *window=paint_only_layer("mothership-wallpaper",
 		"Mothership Wallpaper", draw_wallpaper, &wallpaper_canvas);
 	g_signal_connect(wallpaper_canvas,"resize",G_CALLBACK(viewport_resized),NULL);
-	GtkWidget *overlay=gtk_overlay_new();
+	GtkWidget *overlay=wallpaper_overlay=gtk_overlay_new();
 	g_object_ref(wallpaper_canvas);
 	gtk_window_set_child(window, overlay);
 	gtk_overlay_set_child(GTK_OVERLAY(overlay),wallpaper_canvas);
@@ -137,5 +215,35 @@ void wallpaper_show(void) {
 	wallpaper_accelerated=retained_wallpaper_new(wallpaper,contain_image,wallpaper_canvas);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),wallpaper_accelerated);
 	retained_wallpaper_update(wallpaper_accelerated, frost_enabled, frost_margin);
+	video_picture=gtk_picture_new();
+	gtk_picture_set_can_shrink(GTK_PICTURE(video_picture),TRUE);
+	gtk_widget_set_can_target(video_picture,FALSE);
+	gtk_widget_set_visible(video_picture,FALSE);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),video_picture);
+	if(pending_guide) {
+		wallpaper_add_guide(pending_guide);
+		g_clear_object(&pending_guide);
+	}
 	gtk_widget_set_visible(GTK_WIDGET(window), TRUE);
+	if (video) show_video();
+}
+
+void wallpaper_analog_backdrop(GtkSnapshot *s,int sw,int sh,double x,double y,int w,int h,GskPath *cut) {
+	if(sw<=0||sh<=0) return;
+	if(!video && wallpaper && !glass_texture) glass_texture=wallpaper_image_texture(wallpaper);
+	GdkPaintable *image=video?glass_video_source:GDK_PAINTABLE(glass_texture);
+	if(!image) return;
+	int iw=gdk_paintable_get_intrinsic_width(image),ih=gdk_paintable_get_intrinsic_height(image);
+	if(iw<1||ih<1) return;
+	struct map_wallpaper_fit fit=map_screen_wallpaper(sw,sh,iw,ih,video?video_contain:contain_image);
+	gtk_snapshot_push_fill(s,cut,GSK_FILL_RULE_WINDING);
+	gtk_snapshot_push_blur(s,10);
+	gtk_snapshot_push_clip(s,&GRAPHENE_RECT_INIT(-24,-24,w+48,h+48));
+	gtk_snapshot_save(s);
+	gtk_snapshot_translate(s,&GRAPHENE_POINT_INIT(fit.x-x,fit.y-y));
+	gdk_paintable_snapshot(image,GDK_SNAPSHOT(s),fit.width,fit.height);
+	gtk_snapshot_restore(s);
+	gtk_snapshot_pop(s);
+	gtk_snapshot_pop(s);
+	gtk_snapshot_pop(s);
 }

@@ -35,6 +35,12 @@ static inline struct map_camera map_tabletop_clamp(struct map_camera c,double w,
 	};
 }
 
+static inline struct map_camera map_camera_center_point(double world_x,double world_y,
+		double screen_x,double screen_y,double view_w,double view_h,double zoom) {
+	return map_tabletop_clamp((struct map_camera){world_x-screen_x/zoom,world_y-screen_y/zoom},
+		view_w/zoom,view_h/zoom);
+}
+
 static inline double map_wheel_target(double from,double delta) {
 	return map_camera_clamp(from*pow(1.10,-map_camera_clamp(delta,-60,60)/10.),
 		MAP_ZOOM_MIN,MAP_ZOOM_MAX);

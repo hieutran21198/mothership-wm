@@ -23,11 +23,12 @@ func main() {
 	os.Exit(code)
 }
 
-// run only accepts a nested Wayland parent. There is no generic backend selector.
+// Native mode is explicit; nested mode continues to require a Wayland parent.
 func run(ctx context.Context, args []string, getenv func(string) string, launch nestedLauncher, stderr io.Writer) int {
 	flags := flag.NewFlagSet("mothership-wm", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	parent := flags.String("parent", getenv("WAYLAND_DISPLAY"), "parent Wayland socket name or absolute path")
+	native := flags.Bool("native", false, "use the local DRM and input seat")
 	domain := flags.Bool("desktopd", false, "connect to the private desktopd in XDG_RUNTIME_DIR")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -39,10 +40,30 @@ func run(ctx context.Context, args []string, getenv func(string) string, launch 
 		fmt.Fprintln(stderr, "mothership-wm: unexpected positional arguments")
 		return 2
 	}
-	path, err := parentSocket(getenv("XDG_RUNTIME_DIR"), *parent)
-	if err != nil {
-		fmt.Fprintf(stderr, "mothership-wm: %v\n", err)
-		return 1
+	var path string
+	var err error
+	if *native {
+		explicitParent := false
+		flags.Visit(func(f *flag.Flag) { explicitParent = explicitParent || f.Name == "parent" })
+		if explicitParent {
+			fmt.Fprintln(stderr, "mothership-wm: --native cannot be combined with --parent")
+			return 2
+		}
+		if getenv("MOTHERSHIP_NATIVE_TEST_HEADLESS") != "1" &&
+			(getenv("WAYLAND_DISPLAY") != "" || getenv("WAYLAND_SOCKET") != "" || getenv("DISPLAY") != "") {
+			fmt.Fprintln(stderr, "mothership-wm: native mode requires a local login or TTY")
+			return 1
+		}
+		if !filepath.IsAbs(getenv("XDG_RUNTIME_DIR")) {
+			fmt.Fprintln(stderr, "mothership-wm: XDG_RUNTIME_DIR must be absolute")
+			return 1
+		}
+	} else {
+		path, err = parentSocket(getenv("XDG_RUNTIME_DIR"), *parent)
+		if err != nil {
+			fmt.Fprintf(stderr, "mothership-wm: %v\n", err)
+			return 1
+		}
 	}
 	var domainPath string
 	if *domain {

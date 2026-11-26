@@ -19,8 +19,9 @@ Commands ask for work. Events describe completed state changes. A reconnect
 takes a snapshot before consuming updates. Window IDs are scoped to a WM
 session; neither PID nor title is a durable key. Frame timing and pixel buffers stay on the drawing path; desktopd does not
 receive pointer motion. See [Center Map rendering and input](center-map-rendering.md)
-for the scoped Wayland wheel route. A panel or desktopd failure must
-not stop basic window management.
+for the scoped Wayland wheel route and [Scene glass](shell-scene-glass.md)
+for analog popup backdrops. A panel or desktopd failure must not stop
+basic window management.
 
 ## First milestones
 

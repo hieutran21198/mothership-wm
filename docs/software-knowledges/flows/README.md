@@ -17,9 +17,12 @@ Artifact for its operation, payload and errors rather than duplicating them.
 
 - [Launch and close a nested Shell](launch-native-shell.md).
 - [Open native apps inside the nested session](open-native-apps.md).
+- [Browse and launch from App Grid](use-app-grid.md).
 - [Navigate Overview and lay out a Node](view-node-layouts.md).
 
 - [Show and hide the Center Map](show-center-map.md).
+
+- [Read notifications by Node](show-notifications.md).
 
 ## Template
 

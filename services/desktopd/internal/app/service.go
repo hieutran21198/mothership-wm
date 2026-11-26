@@ -28,7 +28,10 @@ type Service struct {
 	ready             bool
 	selection         Selection
 	mapVisible        bool
+	deleting          string
+	managers          map[string]string
 	layouts           map[string]string
+	flowLayouts       map[string]string
 	revision          uint64
 	subscribers       map[chan Update]struct{}
 }
@@ -56,6 +59,7 @@ func (s *Service) Connect(id string) *domain.Session {
 	}
 	s.active = domain.NewSession(id)
 	s.layouts = make(map[string]string)
+	s.flowLayouts = make(map[string]string)
 	return s.active
 }
 
@@ -90,9 +94,13 @@ func (s *Service) Ready(conn *domain.Session, home bool) bool {
 }
 
 func (s *Service) WindowAdded(conn *domain.Session, id uint64) bool {
+	return s.WindowAddedWithPID(conn, id, 0)
+}
+
+func (s *Service) WindowAddedWithPID(conn *domain.Session, id uint64, pid int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.ready || s.active != conn || !conn.Add(id) {
+	if !s.ready || s.active != conn || !conn.AddProcess(id, pid) {
 		return false
 	}
 	s.publish(Update{Kind: WindowUpdated, Window: conn.Get(id)})
@@ -234,13 +242,20 @@ func (s *Service) NodeMode(name string) string {
 	return s.layouts[name]
 }
 
+func (s *Service) LastFlowMode(name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flowLayouts[name]
+}
+
 func (s *Service) ActiveNode(name string) (Selection, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.ready {
 		return Selection{}, ErrUnavailable
 	}
-	if s.selection.Kind != SelectionAcknowledged || s.selection.Domain != name {
+	if s.selection.Kind != SelectionAcknowledged || s.selection.Domain != name ||
+		(name == "" && !s.selection.DefaultNode) {
 		return Selection{}, ErrUnselectedNode
 	}
 	return s.selection, nil

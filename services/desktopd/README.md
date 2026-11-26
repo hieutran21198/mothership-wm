@@ -11,10 +11,15 @@ Set a disposable absolute `XDG_STATE_HOME` when testing.
 - `internal/app`: Domain commands and WM session lifecycle.
 - `internal/domain`: assignment rules and state.
 - `internal/adapter/unixapi`: private Unix socket and CLI transport.
+- `internal/adapter/tray`: event-driven StatusNotifier host and DBusMenu
+  routing on the [private session app bus](../../docs/software-knowledges/flows/use-system-tray.md).
 
 ## Run
 
-From the repository root, build the two binaries:
+From the repository root, build the two binaries. The `wm-native` profile
+includes GIO for the tray adapter (`-tags tray`); plain Go tests do not
+require it. The supervised `mothership` launch starts the app bus; running
+these two binaries alone does not enable the tray.
 
 ```sh
 devenv shell --profile wm-native -- task wm:build desktopd:build

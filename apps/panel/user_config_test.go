@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"mothership-wm/internal/userconfig"
@@ -159,5 +160,77 @@ func TestUserConfigInvalidIsNotOverwritten(t *testing.T) {
 	raw, _ := os.ReadFile(target)
 	if len(raw) != 2 || json.Unmarshal(raw, &after) != nil {
 		t.Fatalf("managed config modified: %q", raw)
+	}
+}
+
+func TestDefaultNodePreference(t *testing.T) {
+	path := userconfig.Path(t.TempDir())
+	paths := panelConfigPaths{user: path}
+	if p := loadPanelPreferences(paths, strictPreferenceWarnings(t)); !p.defaultNode {
+		t.Fatal("Default Node must be enabled without a user override")
+	}
+	putPreferenceFixture(t, path, `{"home":{"default_node":false}}`)
+	if p := loadPanelPreferences(paths, strictPreferenceWarnings(t)); p.defaultNode {
+		t.Fatal("explicit false must disable Default Node")
+	}
+	putPreferenceFixture(t, path, `{"home":{"default_node":null}}`)
+	var warned bool
+	p := loadPanelPreferences(paths, func(string, ...any) { warned = true })
+	if !warned || !p.defaultNode {
+		t.Fatal("invalid override must warn and retain the code default")
+	}
+}
+
+func TestNodeKeyboardGuideDoesNotChangeHomeGuide(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"home_panel":{"show_keyboard_guide":false},"node_panel":{"keep":3}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	paths := panelConfigPaths{user: path}
+	warn := func(f string, a ...any) { t.Fatalf(f, a...) }
+	p := loadPanelPreferences(paths, warn)
+	if p.homeGuide || !p.nodeGuide || p.nodeTelemetry || p.nodePreviewZoom != defaultPreviewZoom {
+		t.Fatal("wrong guide defaults")
+	}
+	if err := p.saveNodePanel(path, false, true, 178); err != nil {
+		t.Fatal(err)
+	}
+	p = loadPanelPreferences(paths, warn)
+	if p.homeGuide || p.nodeGuide || !p.nodeTelemetry || p.nodePreviewZoom != 178 {
+		t.Fatal("wrong saved settings")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), `"keep": 3`) {
+		t.Fatalf("lost sibling settings: %s %v", data, err)
+	}
+}
+
+func TestNodePreviewZoomBounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	paths := panelConfigPaths{user: path}
+	for _, raw := range []string{"99", "201", "155.5", "null", `"150"`} {
+		putPreferenceFixture(t, path, `{"node_panel":{"preview_zoom_percent":`+raw+`}}`)
+		var warned bool
+		p := loadPanelPreferences(paths, func(string, ...any) { warned = true })
+		if !warned || p.nodePreviewZoom != defaultPreviewZoom {
+			t.Fatalf("invalid preview zoom %s loaded as %d, warned %v", raw, p.nodePreviewZoom, warned)
+		}
+	}
+	p := panelPreferences{nodePreviewZoom: defaultPreviewZoom}
+	for _, zoom := range []int{minPreviewZoom, maxPreviewZoom} {
+		if err := p.saveNodePanel(path, true, false, zoom); err != nil {
+			t.Fatal(err)
+		}
+		q := loadPanelPreferences(paths, func(f string, a ...any) { t.Fatalf(f, a...) })
+		if q.nodePreviewZoom != zoom {
+			t.Fatalf("saved zoom %d loaded as %d", zoom, q.nodePreviewZoom)
+		}
+	}
+	if err := p.saveNodePanel(path, false, true, maxPreviewZoom+1); err == nil {
+		t.Fatal("invalid zoom was saved")
+	}
+	q := loadPanelPreferences(paths, func(f string, a ...any) { t.Fatalf(f, a...) })
+	if !q.nodeGuide || q.nodeTelemetry || q.nodePreviewZoom != maxPreviewZoom {
+		t.Fatalf("failed save changed settings: guide=%v telemetry=%v zoom=%d", q.nodeGuide, q.nodeTelemetry, q.nodePreviewZoom)
 	}
 }

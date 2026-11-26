@@ -13,12 +13,8 @@
 #include <wlr/util/box.h>
 
 enum { TOP, BOTTOM, LEFT, RIGHT, STRIPS };
-enum { RAIL_Y=24, PANEL_RISE=13, CUT=12, BUTTON_GAP=4, BUTTON_EDGE=25,
-	BUTTON_MIN=13, BUTTON_MAX=23, POCKET_PAD=7, DOCK_INSET=12, BUTTON_Y_NUDGE=3 };
-#define INNER_FRAME_INSET 3.8
-#define INNER_FRAME_STROKE .9
-#define BUTTON_FACE_INSET 1.
-#define BUTTON_STROKE .8
+enum { CUT=9, CORNER_ARM=17, BUTTON_GAP=5, BUTTON_EDGE=14,
+	BUTTON_MIN=14, BUTTON_MAX=25, CONTROL_CENTER_Y=22 };
 struct point { double x,y; };
 
 struct chrome_pixels {
@@ -35,9 +31,9 @@ struct chrome_strip {
 struct window_chrome {
 	struct wlr_scene_tree *tree;
 	struct chrome_strip strips[STRIPS];
-	int w,h,title_width;
+	int w,h;
 	double scale;
-	bool focused,floating,maximized,clipped;
+	bool focused,float_action,floating,maximized,clipped,small_actions,minimize;
 	char *title;
 	struct wlr_box aperture;
 };
@@ -63,80 +59,58 @@ static const struct wlr_buffer_impl pixel_impl={
 	.destroy=free_pixels,.begin_data_ptr_access=access_pixels,.end_data_ptr_access=end_pixels,
 };
 
+static bool group_member(const struct window_chrome *c) {
+	return c->small_actions && !c->minimize;
+}
+
+static int first_control(const struct window_chrome *c) {
+	return c->small_actions?(c->minimize?2:3):c->float_action?0:1;
+}
+
 static struct wlr_box control(const struct window_chrome *c,int index) {
-	// Reserve a level bridge between the dock's downward shoulder and
-	// the frame's outer chamfer. Give back only extra inset on tight widths.
-	const int room=c->w-2*CUT-2*BUTTON_EDGE-2*BUTTON_GAP;
-	if (room<3*BUTTON_MIN) return (struct wlr_box){0};
-	const int spare=room-3*BUTTON_MIN;
-	const int inset=spare<DOCK_INSET?spare:DOCK_INSET;
-	const int cap=(room-inset)/3;
-	const int size=cap<BUTTON_MAX?cap:BUTTON_MAX;
-	return (struct wlr_box){c->w-CUT-BUTTON_EDGE-inset-3*size-2*BUTTON_GAP+index*(size+BUTTON_GAP),
-		RAIL_Y+1+BUTTON_Y_NUDGE-size/2,size,size};
+	const int first=first_control(c),count=4-first,gap=(count-1)*BUTTON_GAP;
+	if(index<first) return (struct wlr_box){0};
+	const int room=c->w-2*BUTTON_EDGE-gap;
+	if(room<count*BUTTON_MIN) return (struct wlr_box){0};
+	const int cap=room/count,size=cap<BUTTON_MAX?cap:BUTTON_MAX;
+	const int base=c->w-BUTTON_EDGE-count*size-gap;
+	return (struct wlr_box){base+(index-first)*(size+BUTTON_GAP),
+		CONTROL_CENTER_Y-size/2,size,size};
 }
 
-static size_t contour(const struct window_chrome *c,struct point p[12]) {
-	const double w=c->w,h=c->h;
-	const struct wlr_box first=control(c,0),last=control(c,2);
-	const double x0=first.x-POCKET_PAD,x1=last.x+last.width+POCKET_PAD;
-	size_t n=0;
-	p[n++]=(struct point){.75,RAIL_Y+CUT};
-	p[n++]=(struct point){CUT+.75,RAIL_Y};
-	// Collapse only the raised pocket, not its controls, at truly narrow sizes.
-	if (first.width && x0-PANEL_RISE>CUT+3 && x1+PANEL_RISE<w-CUT-3) {
-		p[n++]=(struct point){x0-PANEL_RISE,RAIL_Y};
-		p[n++]=(struct point){x0,RAIL_Y-PANEL_RISE};
-		p[n++]=(struct point){x1,RAIL_Y-PANEL_RISE};
-		p[n++]=(struct point){x1+PANEL_RISE,RAIL_Y};
-	}
-	p[n++]=(struct point){w-CUT-.75,RAIL_Y};
-	p[n++]=(struct point){w-.75,RAIL_Y+CUT};
-	p[n++]=(struct point){w-.75,h-CUT-.75};
-	p[n++]=(struct point){w-CUT-.75,h-.75};
-	p[n++]=(struct point){CUT+.75,h-.75};
-	p[n++]=(struct point){.75,h-CUT-.75};
-	return n;
+static void contour(const struct window_chrome *c,struct point p[8]) {
+	const double w=c->w,h=c->h,k=group_member(c)?6:CUT;
+	const struct point points[]={
+		{.75,k+.75},{k+.75,.75},{w-k-.75,.75},{w-.75,k+.75},
+		{w-.75,h-k-.75},{w-k-.75,h-.75},{k+.75,h-.75},{.75,h-k-.75},
+	};
+	memcpy(p,points,sizeof(points));
 }
 
-static struct point normal(struct point a,struct point b) {
-	double x=b.x-a.x,y=b.y-a.y,length=hypot(x,y);
-	return (struct point){-y/length,x/length};
-}
-
-// Intersect offset edge lines. The normal distance is shared by the
-// straight runs and every 45-degree side of the outline, even at the pocket.
-static void path(cairo_t *cr,const struct point *p,size_t n,double inset) {
+static void path(cairo_t *cr,const struct point *p,size_t n) {
 	cairo_new_path(cr);
-	for (size_t i=0;i<n;i++) {
-		struct point a=normal(p[(i+n-1)%n],p[i]),b=normal(p[i],p[(i+1)%n]);
-		double m=inset/(1+a.x*b.x+a.y*b.y);
-		double x=p[i].x+(a.x+b.x)*m,y=p[i].y+(a.y+b.y)*m;
-		if (!i) cairo_move_to(cr,x,y);
-		else cairo_line_to(cr,x,y);
-	}
+	cairo_move_to(cr,p[0].x,p[0].y);
+	for (size_t i=1;i<n;i++) cairo_line_to(cr,p[i].x,p[i].y);
 	cairo_close_path(cr);
 }
 
 static void button(cairo_t *cr,struct wlr_box b,int which,bool focused,bool active) {
 	if (!b.width) return;
-	// The smaller painted face is carried inside the unchanged hit size.
-	// Keep visible clearance to the inner roof even in the focused/active ink.
-	const double x=b.x+.5+BUTTON_FACE_INSET,y=b.y+.5+BUTTON_FACE_INSET;
-	const double w=b.width-1-2*BUTTON_FACE_INSET,h=b.height-1-2*BUTTON_FACE_INSET,k=3;
-	struct point p[]={{x+k,y},{x+w-k,y},{x+w,y+k},{x+w,y+h-k},
-		{x+w-k,y+h},{x+k,y+h},{x,y+h-k},{x,y+k}};
-	path(cr,p,sizeof(p)/sizeof(p[0]),0);
-	cairo_set_source_rgb(cr,active?.135:.085,active?.24:.13,active?.29:.17);
-	cairo_fill_preserve(cr);
-	cairo_set_source_rgba(cr,.39,.58,.66,focused?.62:.36);
-	cairo_set_line_width(cr,BUTTON_STROKE);
-	cairo_stroke(cr);
+	// Idle reads as a flat glyph on the header. A selected placement
+	// receives a restrained tint, never a raised button face.
+	if(active) {
+		const double x=b.x+2,y=b.y+2,w=b.width-4,h=b.height-4,k=3;
+		const struct point p[]={{x+k,y},{x+w-k,y},{x+w,y+k},{x+w,y+h-k},
+			{x+w-k,y+h},{x+k,y+h},{x,y+h-k},{x,y+k}};
+		path(cr,p,sizeof(p)/sizeof(p[0]));
+		cairo_set_source_rgba(cr,.19,.56,.68,focused?.24:.15);
+		cairo_fill(cr);
+	}
 
 	cairo_save(cr);
 	cairo_translate(cr,b.x+b.width*.5,b.y+b.height*.5);
 	cairo_scale(cr,(b.width-1)/22.,(b.height-1)/22.);
-	cairo_set_source_rgb(cr,which==2?.87:.62,which==2?.63:.79,which==2?.65:.84);
+	cairo_set_source_rgba(cr,active?.72:.76,active?.98:.88,.94,focused?.95:.70);
 	cairo_set_line_width(cr,1.25);
 	cairo_set_line_cap(cr,CAIRO_LINE_CAP_SQUARE);
 	cairo_set_line_join(cr,CAIRO_LINE_JOIN_MITER);
@@ -156,6 +130,8 @@ static void button(cairo_t *cr,struct wlr_box b,int which,bool focused,bool acti
 		cairo_line_to(cr,6,3);cairo_line_to(cr,3,3);
 	} else if (which==1) {
 		cairo_rectangle(cr,-5,-5,10,10);
+	} else if(which==2) {
+		cairo_move_to(cr,-5,2);cairo_line_to(cr,5,2);
 	} else {
 		cairo_move_to(cr,-4,-4);cairo_line_to(cr,4,4);
 		cairo_move_to(cr,-4,4);cairo_line_to(cr,4,-4);
@@ -165,14 +141,13 @@ static void button(cairo_t *cr,struct wlr_box b,int which,bool focused,bool acti
 }
 
 static int title_end(const struct window_chrome *c) {
-	const struct wlr_box first=control(c,0);
-	return first.width?first.x-24:c->w-CUT-6;
+	const struct wlr_box first=control(c,first_control(c));
+	return first.width?first.x-12:c->w-CUT-6;
 }
 
-static void title(cairo_t *cr,struct window_chrome *c) {
+static void title(cairo_t *cr,const struct window_chrome *c) {
 	const int x=CUT+8;
 	const int space=title_end(c)-x;
-	c->title_width=0;
 	if (space<12 || !c->title || !*c->title) return;
 	gchar *valid=g_utf8_make_valid(c->title,-1),*line=g_strdup(valid);
 	g_free(valid);
@@ -188,41 +163,65 @@ static void title(cairo_t *cr,struct window_chrome *c) {
 	pango_layout_set_ellipsize(layout,PANGO_ELLIPSIZE_END);
 	pango_layout_set_text(layout,line,-1);
 	int height;
-	pango_layout_get_pixel_size(layout,&c->title_width,&height);
+	pango_layout_get_pixel_size(layout,NULL,&height);
 	cairo_set_source_rgba(cr,.84,.93,.98,c->focused?1:.74);
-	cairo_move_to(cr,x,RAIL_Y-height-3);
+	cairo_move_to(cr,x,CONTROL_CENTER_Y-height*.5);
 	pango_cairo_show_layout(cr,layout);
 	g_free(line);
 	pango_font_description_free(font);
 	g_object_unref(layout);
 }
 
-static void render(cairo_t *cr,struct window_chrome *c,int strip) {
-	struct point p[12];
-	size_t n=contour(c,p);
-	path(cr,p,n,0);
-	cairo_set_source_rgb(cr,.058,.101,.139);
-	cairo_fill_preserve(cr);
-	cairo_set_source_rgba(cr,.48,.72,.80,c->focused?.90:.46);
+static void draw_corners(cairo_t *cr,const struct window_chrome *c) {
+	const bool member=group_member(c);
+	const double cut=member?6:CUT;
+	const double arm=member?12:CORNER_ARM;
+	const double dt=1.1;
+	for(int y=0;y<2;y++) for(int x=0;x<2;x++) {
+		cairo_save(cr);
+		cairo_translate(cr,x?c->w-dt:dt,y?c->h-dt:dt);
+		cairo_scale(cr,x?-1:1,y?-1:1);
+		cairo_move_to(cr,0,arm);
+		cairo_line_to(cr,0,cut);
+		cairo_line_to(cr,cut,0);
+		cairo_line_to(cr,arm,0);
+		cairo_restore(cr);
+	}
 	cairo_set_line_join(cr,CAIRO_LINE_JOIN_MITER);
-	cairo_set_line_width(cr,1.15);
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_BUTT);
+	cairo_set_line_width(cr,1.05);
+	const double alpha=c->focused?(member?.61:.96):(member?.30:.48);
+	cairo_set_source_rgba(cr,c->focused?.32:.35,c->focused?.90:.70,.92,alpha);
 	cairo_stroke(cr);
-	path(cr,p,n,INNER_FRAME_INSET);
-	cairo_set_source_rgba(cr,.29,.48,.57,c->focused?.86:.52);
-	cairo_set_line_width(cr,INNER_FRAME_STROKE);
-	cairo_stroke(cr);
-	if (strip==TOP) {
-		for (int i=0;i<3;i++) button(cr,control(c,i),i,c->focused,
-			(i==0&&c->floating)||(i==1&&c->maximized));
-		title(cr,c);
-		// Close the lower rail with a continuous seam in compositor-owned
-		// pixels, leaving the app's first row and its input region intact.
-		cairo_set_source_rgba(cr,.29,.48,.57,c->focused?.58:.40);
+}
+
+static void render(cairo_t *cr,struct window_chrome *c,int strip) {
+	const bool member=group_member(c);
+	struct point p[8];
+	contour(c,p);
+	path(cr,p,8);
+	cairo_save(cr);
+	cairo_clip(cr);
+	// The retained strips never cover the app rectangle. Translucent ink
+	// lets the compositor supply a backdrop without a separate window surface.
+	cairo_set_source_rgba(cr,.023,.069,.104,member?.49:.57);
+	cairo_paint(cr);
+	if(strip==TOP) {
+		cairo_rectangle(cr,0,0,c->w,WINDOW_CHROME_TOP);
+		cairo_set_source_rgba(cr,.038,.097,.128,member?.35:.42);
+		cairo_fill(cr);
+		cairo_set_source_rgba(cr,.31,.59,.68,member?.14:.25);
 		cairo_set_line_width(cr,.75);
 		cairo_move_to(cr,WINDOW_CHROME_EDGE,WINDOW_CHROME_TOP-.5);
 		cairo_line_to(cr,c->w-WINDOW_CHROME_EDGE,WINDOW_CHROME_TOP-.5);
 		cairo_stroke(cr);
 	}
+	cairo_restore(cr);
+	draw_corners(cr,c);
+	if(strip!=TOP) return;
+	for(int i=0;i<4;i++) button(cr,control(c,i),i,c->focused,
+		(i==0&&c->floating)||(i==1&&c->maximized));
+	title(cr,c);
 }
 
 static struct chrome_pixels *draw_strip(struct window_chrome *c,struct wlr_box box,int slot) {
@@ -254,10 +253,10 @@ static bool inside(struct wlr_box b,double x,double y) {
 }
 
 static bool painted(const struct window_chrome *c,double x,double y) {
-	if (x>=CUT+7 && x<CUT+9+c->title_width && y>=3 && y<RAIL_Y && c->title && *c->title) return true;
-	for (int i=0;i<3;i++) if (inside(control(c,i),x,y)) return true;
-	struct point p[12];
-	size_t n=contour(c,p);
+	for (int i=0;i<4;i++) if (inside(control(c,i),x,y)) return true;
+	struct point p[8];
+	contour(c,p);
+	const size_t n=8;
 	bool yes=false;
 	for (size_t i=0,j=n-1;i<n;j=i++)
 		if ((p[i].y>y)!=(p[j].y>y) && x<(p[j].x-p[i].x)*(y-p[i].y)/(p[j].y-p[i].y)+p[i].x) yes=!yes;
@@ -320,22 +319,24 @@ void window_chrome_clip(struct window_chrome *c,const struct wlr_box *clip) {
 }
 
 void window_chrome_update(struct window_chrome *c,int w,int h,double scale,
-		const char *name,bool focused,bool floating,bool maximized) {
-	if (!c || w<2*CUT+26 || h<WINDOW_CHROME_TOP+WINDOW_CHROME_EDGE+1 || w>16384 || h>16384) return;
+		const char *name,bool focused,bool float_action,bool floating,bool maximized,bool small_actions,bool minimize) {
+	if (!c || w<2*CUT+26 || h<WINDOW_CONTENT_TOP+WINDOW_CONTENT_EDGE+1 || w>16384 || h>16384) return;
 	scale=isfinite(scale)?fmax(1,fmin(4,scale)):1;
 	if (!name) name="";
 	if (c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
-			c->floating==floating&&c->maximized==maximized&&c->title&&strncmp(c->title,name,4096)==0) return;
+			c->float_action==float_action&&c->floating==floating&&c->maximized==maximized&&
+			c->small_actions==small_actions&&c->minimize==minimize&&c->title&&strncmp(c->title,name,4096)==0) return;
 	struct window_chrome next=*c;
 	next.w=w;next.h=h;next.scale=scale;next.title=strndup(name,4096);
-	next.focused=focused;next.floating=floating;next.maximized=maximized;
+	next.focused=focused;next.float_action=float_action;next.floating=floating;next.maximized=maximized;
+	next.small_actions=small_actions;next.minimize=minimize;
 	if (!next.title) return;
-	const int top=WINDOW_CHROME_TOP,edge=WINDOW_CHROME_EDGE;
+	const int top=WINDOW_CONTENT_TOP,edge=WINDOW_CONTENT_EDGE;
 	struct wlr_box boxes[STRIPS]={{0,0,w,top},{0,h-edge,w,edge},
 		{0,top,edge,h-top-edge},{w-edge,top,edge,h-top-edge}};
-	// Title and control icon changes affect only the top strip. Dimensions,
-	// backing scale or focus palette changes affect the entire contour.
-	int dirty=c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused?1:STRIPS;
+	// Focus changes all four marks; title and control state only affect the header.
+	int dirty=c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
+		group_member(c)==group_member(&next)?1:STRIPS;
 	struct chrome_pixels *pixels[STRIPS]={0};
 	for (int i=0;i<dirty;i++) {
 		pixels[i]=draw_strip(&next,boxes[i],i);
@@ -364,7 +365,7 @@ bool window_chrome_owns_node(const struct window_chrome *c,const struct wlr_scen
 enum window_chrome_hit window_chrome_hit_at(const struct window_chrome *c,double x,double y) {
 	if (!c||!c->tree->node.enabled||x<0||y<0||x>=c->w||y>=c->h||
 			(c->clipped&&!inside(c->aperture,x,y))) return WINDOW_CHROME_NONE;
-	for (int i=0;i<3;i++)
+	for (int i=0;i<4;i++)
 		if (inside(control(c,i),x,y)) return (enum window_chrome_hit)(WINDOW_CHROME_FLOAT+i);
 	if (c->floating&&!c->maximized&&x>=c->w-2*WINDOW_CHROME_EDGE&&y>=c->h-2*WINDOW_CHROME_EDGE) return WINDOW_CHROME_RESIZE;
 	if (y<WINDOW_CHROME_TOP && painted(c,x,y)) return WINDOW_CHROME_TITLE;

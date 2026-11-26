@@ -66,3 +66,14 @@ func TestNodeBoundIncludesUnmappedMembers(t *testing.T) {
 		}
 	}
 }
+
+func TestNamedNodeNumberKeyLeavesOneForDefault(t *testing.T) {
+	for _, tc := range []struct{ saved, key int }{
+		{0, 0}, {1, 2}, {2, 3}, {7, 8}, {8, 9}, {9, 0}, {-1, 0}, {10, 0},
+	} {
+		n := Node{Shortcut: tc.saved}
+		if got := n.NumberKey(); got != tc.key || n.Shortcut != tc.saved {
+			t.Errorf("saved slot %d: got key %d, want %d", tc.saved, got, tc.key)
+		}
+	}
+}

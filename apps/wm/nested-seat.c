@@ -1,6 +1,7 @@
 //go:build linux && cgo && wlroots
 
 #include "nested-seat.h"
+#include "render-debug.h"
 #include "generated-map-pointer.h"
 
 #include <stdint.h>
@@ -11,14 +12,25 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <wlr/backend.h>
+#include <wlr/backend/session.h>
 #include <wlr/interfaces/wlr_keyboard.h>
+#include <wlr/types/wlr_pointer.h>
 #include <wlr/types/wlr_seat.h>
 #include <xkbcommon/xkbcommon.h>
+
+struct local_input {
+	struct nested_seat *seat;
+	struct wl_list link;
+	struct wl_listener destroy,key,motion,absolute,button,axis,frame;
+};
 
 struct pending_axis { bool pending; uint32_t time; double delta; int32_t discrete; };
 
 struct nested_seat {
 	struct wlr_seat *child;
+	struct render_debug *render_debug;
+	struct wl_listener render_focus_change;
 	struct wlr_keyboard keyboard;
 	struct wl_registry *registry;
 	struct wl_seat *parent;
@@ -32,12 +44,23 @@ struct nested_seat {
 	nested_move_start start_move;
 	nested_move_update update_move;
 	nested_map_scroll map_scroll;
+	nested_strip_scroll strip_scroll;
 	nested_map_contact map_contact;
+	nested_map_weapon map_weapon;
+	uint32_t arcade_buttons;
 	nested_chrome_action chrome;
 	nested_flow_scroll flow_scroll;
 	nested_flow_cycle cycle;
+	void (*home_tap)(void *);
+	struct wlr_surface *(*node_panel_key)(void *,uint32_t);
+	bool (*node_number)(void *,uint32_t);
+	bool (*close_window)(void *,struct wlr_surface *);
+	bool (*render_capture)(void *);
+	uint32_t home_tap_key;
+	uint32_t close_key,apps_key,settings_key,node_first_key;
+	bool map_home;
 	int cycle_steps;
-	bool cycle_tab;
+	bool cycle_tab,cycle_active,cycle_visible,cycle_escape;
 	bool map_pressed, map_release_pending;
 	double map_pressed_x,map_pressed_y;
 	struct pending_axis axes[2];
@@ -51,6 +74,14 @@ struct nested_seat {
 	double x, y;
 	uint32_t parent_name;
 	bool pointer_inside, keyboard_inside, has_keymap;
+	bool local_attached;
+	int local_width,local_height,local_pointers,local_keyboards;
+	struct wlr_session *local_session;
+	struct wl_listener local_device;
+	struct wl_list local_inputs;
+	struct xkb_state *local_xkb;
+	void (*local_logout)(void *);
+
 };
 
 static const struct wlr_keyboard_impl keyboard_impl = { .name = "nested-wayland" };
@@ -63,6 +94,18 @@ static struct wlr_surface *keyboard_target(struct nested_seat *seat) {
 static struct wlr_surface *map_panel(struct nested_seat *seat) {
 	if (!seat->keyboard_inside) return NULL;
 	return seat->panel_focus ? seat->panel_focus : (seat->selected ? NULL : seat->blank_shell);
+}
+
+struct wlr_surface *nested_seat_map_position(struct nested_seat *seat,double *x,double *y) {
+	if(!seat || !seat->pointer_inside) return NULL;
+	*x=seat->x;*y=seat->y;
+	return map_panel(seat);
+}
+
+void nested_seat_map_home(struct nested_seat *seat,bool enabled) {
+	if (!seat || seat->map_home==enabled) return;
+	seat->map_home=enabled;
+	seat->home_tap_key=0;
 }
 
 void nested_seat_cancel_map_pointer(struct nested_seat *seat) {
@@ -103,9 +146,16 @@ void nested_seat_refresh(struct nested_seat *seat) {
 	}
 }
 
-static void isolate_keys(struct nested_seat *seat) {
+static void cancel_cycle(struct nested_seat *seat) {
+	if(seat->cycle_active) seat->cycle(seat->data,CYCLE_CANCEL,0);
+	seat->cycle_active=seat->cycle_visible=false;
 	seat->cycle_steps=0;
-	seat->cycle_tab=false;
+}
+
+static void isolate_keys(struct nested_seat *seat) {
+	seat->home_tap_key=0;
+	cancel_cycle(seat);
+	seat->cycle_tab=seat->cycle_escape=false;
 	memcpy(seat->keys_blocked, seat->keys_held, sizeof(seat->keys_held));
 	seat->blocked_count = 0;
 	for (size_t i = 0; i <= KEY_MAX; ++i) {
@@ -127,6 +177,14 @@ void nested_seat_blank_shell(struct nested_seat *seat,struct wlr_surface *panel)
 		isolate_keys(seat);
 		keyboard_focus(seat);
 	}
+}
+
+void nested_seat_shortcut_panel(struct nested_seat *seat,struct wlr_surface *panel) {
+	if(!seat || !panel || !seat->keyboard_inside) return;
+	nested_seat_cancel_map_pointer(seat);
+	seat->panel_focus=panel;
+	isolate_keys(seat);
+	keyboard_focus(seat);
 }
 
 void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool acquire) {
@@ -158,7 +216,7 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bo
 	}
 	seat->domain_mode = true;
 	if (seat->moving) {
-		seat->update_move(seat->data, false, seat->x, seat->y);
+		seat->update_move(seat->data, MOVE_CANCEL, seat->x, seat->y);
 		seat->moving = false;
 	}
 	// The explicit Map View action can carry the already-focused shell
@@ -211,7 +269,7 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
 		seat->pointer_inside = false;
 		nested_seat_cancel_map_pointer(seat);
 		if (seat->moving) {
-			seat->update_move(seat->data, false, seat->x, seat->y);
+			seat->update_move(seat->data, MOVE_CANCEL, seat->x, seat->y);
 			seat->moving = false;
 			seat->buttons_blocked[BTN_LEFT] = seat->buttons_held[BTN_LEFT];
 		}
@@ -230,7 +288,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 	seat->y = wl_fixed_to_double(y);
 	seat->move_cursor(seat->data, true, seat->x, seat->y);
 	if (seat->moving) {
-		seat->update_move(seat->data, true, seat->x, seat->y);
+		seat->update_move(seat->data, MOVE_UPDATE, seat->x, seat->y);
 		return;
 	}
 	struct nested_hit hit = pointer_focus(seat);
@@ -255,6 +313,20 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	}
 	bool was_held = seat->buttons_held[button];
 	seat->buttons_held[button] = state == WL_POINTER_BUTTON_STATE_PRESSED;
+	uint32_t weapon=button==BTN_LEFT?MOTHERSHIP_MAP_POINTER_V1_WEAPON_NORMAL:
+		button==BTN_RIGHT?MOTHERSHIP_MAP_POINTER_V1_WEAPON_PLASMA:0;
+	if(weapon && (seat->arcade_buttons&weapon)) {
+		seat->arcade_buttons&=~weapon;
+		seat->buttons_blocked[button]=false;
+		if(!seat->buttons_held[button]) {
+			// Consume the paired release even if the pointer left the Map,
+			// the mode changed, or an app is now underneath.
+			seat->map_weapon(seat->data,weapon,false);
+			return;
+		}
+		// A fresh press means the old release happened off our surface.
+		was_held=false;
+	}
 	if (button == BTN_LEFT && seat->map_release_pending) {
 		seat->map_release_pending = false;
 		seat->buttons_blocked[button] = false;
@@ -275,14 +347,19 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 			seat->buttons_blocked[button] = seat->buttons_held[button];
 		}
 		if (button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_RELEASED) {
-			seat->update_move(seat->data, false, seat->x, seat->y);
 			seat->moving = false;
+			seat->update_move(seat->data, MOVE_DROP, seat->x, seat->y);
 			pointer_focus(seat);
 		}
 		return;
 	}
 	struct nested_hit hit = pointer_focus(seat);
 	struct wlr_surface *map=map_panel(seat);
+	if(weapon && !was_held && seat->buttons_held[button] && !hit.surface &&
+	   seat->map_weapon(seat->data,weapon,true)) {
+		seat->arcade_buttons|=weapon;
+		return;
+	}
 	if (hit.handle != NULL && button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
 		if (seat->panel_focus != NULL) {
 			isolate_keys(seat);
@@ -290,9 +367,11 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		}
 		wlr_seat_pointer_end_grab(seat->child);
 		wlr_seat_pointer_clear_focus(seat->child);
-		seat->selected = hit.toplevel;
-		seat->select_window(seat->data, hit.toplevel);
-		keyboard_focus(seat);
+		if(!hit.defer_move_focus) {
+			seat->selected = hit.toplevel;
+			seat->select_window(seat->data, hit.toplevel);
+			keyboard_focus(seat);
+		}
 		seat->start_move(seat->data, hit, seat->x, seat->y);
 		seat->moving = true;
 		return;
@@ -349,6 +428,9 @@ static void flush_axis(struct nested_seat *seat,unsigned orientation) {
 	if (orientation==WL_POINTER_AXIS_VERTICAL_SCROLL && map &&
 			seat->map_scroll(seat->data,map,seat->x,seat->y,e.delta)) return;
 	struct nested_hit hit=pointer_focus(seat);
+	if(hit.surface && seat->strip_scroll(seat->data,hit.surface,seat->x,seat->y,e.delta,
+			seat->axis_source==WL_POINTER_AXIS_SOURCE_WHEEL ||
+			seat->axis_source==WL_POINTER_AXIS_SOURCE_WHEEL_TILT)) return;
 	if (!hit.surface && seat->flow_scroll(seat->data,seat->x,seat->y,orientation,e.delta)) return;
 	if (hit.surface)
 		wlr_seat_pointer_notify_axis(seat->child,e.time,orientation,e.delta,e.discrete,
@@ -410,6 +492,7 @@ static void capabilities(struct nested_seat *seat) {
 static void keyboard_keymap(void *data, struct wl_keyboard *keys, uint32_t format,
 		int fd, uint32_t size) {
 	struct nested_seat *seat = data;
+	seat->home_tap_key=0;
 	if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 || size < 2) {
 		close(fd);
 		return;
@@ -444,6 +527,7 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keys, uint32_t forma
 static void keyboard_enter(void *data, struct wl_keyboard *keys, uint32_t serial,
 		struct wl_surface *surface, struct wl_array *held) {
 	struct nested_seat *seat = data;
+	seat->home_tap_key=0;
 	seat->keyboard_inside = surface == seat->output;
 	seat->keyboard.num_keycodes = 0;
 	memset(seat->keys_held, 0, sizeof(seat->keys_held));
@@ -475,12 +559,24 @@ static void keyboard_leave(void *data, struct wl_keyboard *keys, uint32_t serial
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->keyboard_inside = false;
-		seat->cycle_steps=0;
-		seat->cycle_tab=false;
+		seat->home_tap_key=0;
+		cancel_cycle(seat);
+		seat->cycle_tab=seat->cycle_escape=false;
 		nested_seat_cancel_map_pointer(seat);
 		seat->keyboard.num_keycodes = 0;
 		keyboard_focus(seat);
 	}
+}
+
+static bool valid_shortcut_key(uint64_t key) {
+	return (key>=KEY_Q && key<=KEY_P) || (key>=KEY_A && key<=KEY_L) ||
+		(key>=KEY_Z && key<=KEY_M) || key==KEY_COMMA;
+}
+bool nested_seat_set_shortcuts(struct nested_seat *seat,uint64_t close,uint64_t apps,uint64_t settings,uint64_t node) {
+	if(!seat || !valid_shortcut_key(close) || !valid_shortcut_key(apps) || !valid_shortcut_key(settings) ||
+		close==apps || close==settings || apps==settings || (node!=KEY_1 && node!=KEY_F1))return false;
+	seat->close_key=close;seat->apps_key=apps;seat->settings_key=settings;seat->node_first_key=node;
+	return true;
 }
 
 static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
@@ -491,6 +587,23 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	}
 	bool was_held = seat->keys_held[key];
 	seat->keys_held[key] = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+	bool home_tap=false,meta=key==KEY_LEFTMETA || key==KEY_RIGHTMETA;
+	bool node_scope=seat->node_panel_key && seat->node_panel_key(seat->data,0)!=NULL;
+	bool home_allowed=!seat->panel_focus || seat->map_home || node_scope;
+	if (seat->keys_held[key]) {
+		if (seat->home_tap_key && key!=seat->home_tap_key) seat->home_tap_key=0;
+		if (meta && !was_held && home_allowed && !seat->blocked_count &&
+				!seat->keyboard.modifiers.latched) {
+			xkb_mod_index_t logo=xkb_keymap_mod_get_index(seat->keyboard.keymap,XKB_MOD_NAME_LOGO);
+			uint32_t meta_mask=logo<32?1u<<logo:0;
+			bool alone=true;
+			for(uint32_t k=0;k<=KEY_MAX;k++) if(k!=key && seat->keys_held[k]) {alone=false;break;}
+			if(alone && !(seat->keyboard.modifiers.depressed & ~meta_mask)) seat->home_tap_key=key;
+		}
+	} else if (seat->home_tap_key==key) {
+		home_tap=was_held && home_allowed;
+		seat->home_tap_key=0;
+	}
 	if (seat->keys_blocked[key]) {
 		if (!seat->keys_held[key]) {
 			seat->keys_blocked[key] = false;
@@ -501,30 +614,103 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	if (seat->domain_mode && !was_held && !seat->keys_held[key]) {
 		return;
 	}
-	// The parent may reserve Alt+Tab; this runs only when the nested
-	// toplevel receives the actual chord. A held sequence commits once.
+	// A diagnostic chord must not switch views, change focus or leak F12 to the app.
+	if(key==KEY_F12 && seat->keys_held[key] && !was_held && seat->render_capture &&
+			(seat->keys_held[KEY_LEFTMETA]!=seat->keys_held[KEY_RIGHTMETA]) &&
+			(seat->keys_held[KEY_LEFTSHIFT]!=seat->keys_held[KEY_RIGHTSHIFT]) &&
+			!seat->keyboard.modifiers.latched) {
+		bool exact=true;
+		for(uint32_t k=0;k<=KEY_MAX;k++)
+			if(k!=key && k!=KEY_LEFTMETA && k!=KEY_RIGHTMETA &&
+					k!=KEY_LEFTSHIFT && k!=KEY_RIGHTSHIFT && seat->keys_held[k]) {exact=false;break;}
+		if(exact && seat->render_capture(seat->data)) {
+			seat->keys_blocked[key]=true;
+			seat->blocked_count++;
+			return;
+		}
+	}
+	// A Node jump is shell-wide. Close only an app that has keyboard
+	// focus; a panel overlay must not close the remembered app beneath it.
+	bool node_number=key>=seat->node_first_key && key<=seat->node_first_key+8;
+	bool node_notifications=node_scope && key==KEY_N;
+	bool node_panel_key=node_notifications || key==seat->apps_key || key==seat->settings_key || key==KEY_SLASH;
+	if((key==seat->close_key || node_number || node_panel_key) && seat->keys_held[key] && !was_held &&
+			(seat->keys_held[KEY_LEFTMETA]!=seat->keys_held[KEY_RIGHTMETA])) {
+		bool alone=true;
+		for(uint32_t k=0;k<=KEY_MAX;k++)
+			if(k!=key && k!=KEY_LEFTMETA && k!=KEY_RIGHTMETA && seat->keys_held[k]) {alone=false;break;}
+		if(alone && !seat->keyboard.modifiers.latched) {
+			bool handled=false;
+			if(key==seat->close_key && !node_notifications) handled=!seat->blocked_count && !seat->panel_focus && seat->selected &&
+				seat->close_window && seat->close_window(seat->data,seat->selected);
+			else if(node_number)handled=seat->node_number && seat->node_number(seat->data,key-seat->node_first_key+1);
+			else if(node_scope && !seat->blocked_count) {
+				// Use the existing action identifiers regardless of the bound key.
+				struct wlr_surface *panel=seat->node_panel_key(seat->data,
+					node_notifications?KEY_N:key==KEY_SLASH?KEY_SLASH:key==seat->apps_key?KEY_A:KEY_COMMA);
+				if(panel && panel==keyboard_target(seat)) {
+					// In an empty Default Node the panel already has focus.
+					// Do not send leave/enter on the same surface: a GTK
+					// popup dismisses itself as soon as it sees the leave.
+					seat->panel_focus=panel;
+					handled=true;
+				} else if(panel) {
+					nested_seat_shortcut_panel(seat,panel);
+					return;
+				}
+			}
+			if(handled) {
+				seat->keys_blocked[key]=true;
+				seat->blocked_count++;
+				return;
+			}
+		}
+	}
+	// The parent may reserve Alt+Tab; only handle the delivered chord.
 	bool alt=seat->keys_held[KEY_LEFTALT];
 	bool reserved=seat->keys_held[KEY_LEFTCTRL] || seat->keys_held[KEY_RIGHTCTRL] ||
 		seat->keys_held[KEY_LEFTMETA] || seat->keys_held[KEY_RIGHTMETA];
+	if(reserved || seat->panel_focus) cancel_cycle(seat);
+	if(key==KEY_ESC && (seat->cycle_active || seat->cycle_escape)) {
+		if(seat->keys_held[key]) {
+			cancel_cycle(seat);
+			seat->cycle_escape=true;
+		} else seat->cycle_escape=false;
+		return;
+	}
 	if (key==KEY_TAB) {
 		if (seat->cycle_tab && !seat->keys_held[key]) {
 			seat->cycle_tab=false;
 			return;
 		}
-		if (seat->keys_held[key] && alt && !reserved && !seat->panel_focus && seat->cycle(seat->data,0)) {
-			bool reverse=seat->keys_held[KEY_LEFTSHIFT] || seat->keys_held[KEY_RIGHTSHIFT];
-			if (!was_held && labs(seat->cycle_steps)<1024) seat->cycle_steps+=reverse?-1:1;
-			seat->cycle_tab=true;
-			return;
+		if (seat->keys_held[key] && alt && !reserved && !seat->panel_focus) {
+			bool started=seat->cycle_active;
+			if(!started && !was_held)
+				seat->cycle_active=seat->cycle(seat->data,CYCLE_BEGIN,0);
+			if(seat->cycle_active) {
+				if(!was_held) {
+					bool reverse=seat->keys_held[KEY_LEFTSHIFT] || seat->keys_held[KEY_RIGHTSHIFT];
+					if(labs(seat->cycle_steps)<1024) seat->cycle_steps+=reverse?-1:1;
+					seat->cycle_visible|=started;
+					if(seat->cycle_visible) seat->cycle(seat->data,CYCLE_PREVIEW,seat->cycle_steps);
+				}
+				seat->cycle_tab=true;
+				return;
+			}
 		}
 	}
+
 	struct wlr_keyboard_key_event e = { .time_msec = time, .keycode = key, .state = state };
 	wlr_keyboard_notify_key(&seat->keyboard, &e);
 	wlr_seat_keyboard_notify_key(seat->child, time, key, state);
-	if (key==KEY_LEFTALT && !alt && seat->cycle_steps) {
+	if (seat->child->keyboard_state.focused_surface)
+		render_debug_activity(seat->render_debug,RENDER_KEY);
+	if(home_tap && seat->home_tap) seat->home_tap(seat->data);
+	if (key==KEY_LEFTALT && !alt && seat->cycle_active) {
 		int steps=seat->cycle_steps;
+		seat->cycle_active=seat->cycle_visible=false;
 		seat->cycle_steps=0;
-		if (!seat->panel_focus && !reserved) seat->cycle(seat->data,steps);
+		seat->cycle(seat->data,CYCLE_COMMIT,steps);
 	}
 }
 
@@ -571,8 +757,8 @@ static void drop_pointer(struct nested_seat *seat) {
 
 static void drop_keyboard(struct nested_seat *seat) {
 	nested_seat_cancel_map_pointer(seat);
-	seat->cycle_steps=0;
-	seat->cycle_tab=false;
+	cancel_cycle(seat);
+	seat->cycle_tab=seat->cycle_escape=false;
 	if (seat->keys != NULL) {
 		if (wl_keyboard_get_version(seat->keys) >= WL_KEYBOARD_RELEASE_SINCE_VERSION) {
 			wl_keyboard_release(seat->keys);
@@ -582,6 +768,7 @@ static void drop_keyboard(struct nested_seat *seat) {
 		seat->keys = NULL;
 	}
 	seat->keyboard_inside = false;
+	seat->home_tap_key=0;
 	seat->has_keymap = false;
 	seat->keyboard.num_keycodes = 0;
 	memset(seat->keys_held, 0, sizeof(seat->keys_held));
@@ -650,11 +837,227 @@ static const struct wl_registry_listener registry_listener = {
 	.global = parent_global, .global_remove = parent_removed,
 };
 
+static void local_capabilities(struct nested_seat *seat) {
+	uint32_t caps=0;
+	if(seat->local_pointers) caps|=WL_SEAT_CAPABILITY_POINTER;
+	if(seat->local_keyboards) caps|=WL_SEAT_CAPABILITY_KEYBOARD;
+	wlr_seat_set_capabilities(seat->child,caps);
+}
+
+static void local_modifiers(struct nested_seat *seat) {
+	struct xkb_state *xs=seat->local_xkb;
+	keyboard_modifiers(seat,NULL,0,xkb_state_serialize_mods(xs,XKB_STATE_MODS_DEPRESSED),
+		xkb_state_serialize_mods(xs,XKB_STATE_MODS_LATCHED),
+		xkb_state_serialize_mods(xs,XKB_STATE_MODS_LOCKED),
+		xkb_state_serialize_layout(xs,XKB_STATE_LAYOUT_EFFECTIVE));
+}
+
+static void local_key(struct wl_listener *listener,void *data) {
+	struct local_input *dev=wl_container_of(listener,dev,key);
+	struct nested_seat *seat=dev->seat;
+	struct wlr_keyboard_key_event *event=data;
+	uint32_t key=event->keycode;
+	if(!seat->keyboard_inside || key>KEY_MAX) return;
+	bool pressed=event->state==WL_KEYBOARD_KEY_STATE_PRESSED;
+	if(pressed && (seat->keys_held[KEY_LEFTCTRL] || seat->keys_held[KEY_RIGHTCTRL]) &&
+			seat->keys_held[KEY_LEFTALT]) {
+		unsigned vt=key>=KEY_F1 && key<=KEY_F10?key-KEY_F1+1:key==KEY_F11?11:key==KEY_F12?12:0;
+		if(key==KEY_ESC || (vt && seat->local_session)) {
+			seat->keys_held[key]=true;
+			if(!seat->keys_blocked[key]) {seat->keys_blocked[key]=true;seat->blocked_count++;}
+			if(key==KEY_ESC) seat->local_logout(seat->data);
+			else wlr_session_change_vt(seat->local_session,vt);
+			return;
+		}
+	}
+	if(seat->keys_held[key]!=pressed)
+		xkb_state_update_key(seat->local_xkb,key+8,pressed?XKB_KEY_DOWN:XKB_KEY_UP);
+	keyboard_key(seat,NULL,0,event->time_msec,key,event->state);
+	local_modifiers(seat);
+}
+
+static void local_motion_at(struct nested_seat *seat,uint32_t ms,double x,double y) {
+	x=fmax(0,fmin(x,seat->local_width-1));
+	y=fmax(0,fmin(y,seat->local_height-1));
+	pointer_motion(seat,NULL,ms,wl_fixed_from_double(x),wl_fixed_from_double(y));
+}
+
+static void local_motion(struct wl_listener *listener,void *data) {
+	struct local_input *dev=wl_container_of(listener,dev,motion);
+	struct nested_seat *seat=dev->seat;
+	struct wlr_pointer_motion_event *e=data;
+	local_motion_at(seat,e->time_msec,seat->x+e->delta_x,seat->y+e->delta_y);
+}
+
+static void local_absolute(struct wl_listener *listener,void *data) {
+	struct local_input *dev=wl_container_of(listener,dev,absolute);
+	struct nested_seat *seat=dev->seat;
+	struct wlr_pointer_motion_absolute_event *e=data;
+	local_motion_at(seat,e->time_msec,isfinite(e->x)?e->x*seat->local_width:seat->x,
+		isfinite(e->y)?e->y*seat->local_height:seat->y);
+}
+
+static void local_button(struct wl_listener *listener,void *data) {
+	struct local_input *dev=wl_container_of(listener,dev,button);
+	struct wlr_pointer_button_event *e=data;
+	pointer_button(dev->seat,NULL,0,e->time_msec,e->button,e->state);
+}
+
+static void local_axis(struct wl_listener *listener,void *data) {
+	struct local_input *dev=wl_container_of(listener,dev,axis);
+	struct wlr_pointer_axis_event *e=data;
+	struct nested_seat *seat=dev->seat;
+	if(!seat->pointer_inside || e->orientation>=2) return;
+	seat->axis_source=e->source;
+	seat->axes[e->orientation]=(struct pending_axis){true,e->time_msec,e->delta,e->delta_discrete};
+	flush_axis(seat,e->orientation);
+}
+
+static void local_frame(struct wl_listener *listener,void *data) {
+	(void)data;
+	struct local_input *dev=wl_container_of(listener,dev,frame);
+	if(dev->seat->pointer_inside) pointer_frame(dev->seat,NULL);
+}
+
+static void local_input_destroy(struct wl_listener *listener,void *data) {
+	(void)data;
+	struct local_input *dev=wl_container_of(listener,dev,destroy);
+	struct nested_seat *seat=dev->seat;
+	if(dev->key.notify) {
+		wl_list_remove(&dev->key.link);
+		seat->local_keyboards--;
+		if(seat->local_attached) {
+			bool active=seat->keyboard_inside;
+			nested_seat_local_active(seat,false);
+			nested_seat_local_active(seat,active);
+		}
+	} else {
+		wl_list_remove(&dev->motion.link);
+		wl_list_remove(&dev->absolute.link);
+		wl_list_remove(&dev->button.link);
+		wl_list_remove(&dev->axis.link);
+		wl_list_remove(&dev->frame.link);
+		if(--seat->local_pointers==0) pointer_leave(seat,NULL,0,NULL);
+	}
+	wl_list_remove(&dev->destroy.link);
+	wl_list_remove(&dev->link);
+	local_capabilities(seat);
+	free(dev);
+}
+
+static void local_input_added(struct wl_listener *listener,void *data) {
+	struct nested_seat *seat=wl_container_of(listener,seat,local_device);
+	struct wlr_input_device *input=data;
+	if(input->type!=WLR_INPUT_DEVICE_KEYBOARD && input->type!=WLR_INPUT_DEVICE_POINTER) return;
+	struct local_input *dev=calloc(1,sizeof(*dev));
+	if(!dev) return;
+	dev->seat=seat;
+	if(input->type==WLR_INPUT_DEVICE_KEYBOARD) {
+		struct wlr_keyboard *kb=wlr_keyboard_from_input_device(input);
+		dev->key.notify=local_key;
+		wl_signal_add(&kb->events.key,&dev->key);
+		seat->local_keyboards++;
+	} else {
+		struct wlr_pointer *p=wlr_pointer_from_input_device(input);
+		dev->motion.notify=local_motion;
+		dev->absolute.notify=local_absolute;
+		dev->button.notify=local_button;
+		dev->axis.notify=local_axis;
+		dev->frame.notify=local_frame;
+		wl_signal_add(&p->events.motion,&dev->motion);
+		wl_signal_add(&p->events.motion_absolute,&dev->absolute);
+		wl_signal_add(&p->events.button,&dev->button);
+		wl_signal_add(&p->events.axis,&dev->axis);
+		wl_signal_add(&p->events.frame,&dev->frame);
+		seat->local_pointers++;
+		seat->pointer_inside=seat->keyboard_inside;
+	}
+	dev->destroy.notify=local_input_destroy;
+	wl_signal_add(&input->events.destroy,&dev->destroy);
+	wl_list_insert(&seat->local_inputs,&dev->link);
+	local_capabilities(seat);
+	keyboard_focus(seat);
+}
+
+bool nested_seat_attach_local(struct nested_seat *seat,struct wlr_backend *backend,
+		struct wlr_session *session,void (*logout)(void *)) {
+	if(!seat || seat->registry) return false;
+	struct xkb_context *context=xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+	if(!context) return false;
+	struct xkb_keymap *map=xkb_keymap_new_from_names(context,NULL,XKB_KEYMAP_COMPILE_NO_FLAGS);
+	xkb_context_unref(context);
+	if(!map) return false;
+	bool ok=wlr_keyboard_set_keymap(&seat->keyboard,map);
+	if(ok) seat->local_xkb=xkb_state_new(map);
+	xkb_keymap_unref(map);
+	if(!seat->local_xkb) return false;
+	seat->has_keymap=true;
+	seat->local_width=seat->local_height=1;
+	seat->local_session=session;
+	seat->local_logout=logout;
+	seat->local_attached=true;
+	wl_list_init(&seat->local_inputs);
+	seat->local_device.notify=local_input_added;
+	wl_signal_add(&backend->events.new_input,&seat->local_device);
+	wlr_keyboard_set_repeat_info(&seat->keyboard,25,400);
+	wlr_seat_set_keyboard(seat->child,&seat->keyboard);
+	nested_seat_local_active(seat,!session || session->active);
+	return true;
+}
+
+void nested_seat_local_extent(struct nested_seat *seat,int width,int height) {
+	if(!seat || !seat->local_attached || width<=0 || height<=0) return;
+	seat->local_width=width;
+	seat->local_height=height;
+	seat->x=width/2.;
+	seat->y=height/2.;
+	if(seat->pointer_inside) seat->move_cursor(seat->data,true,seat->x,seat->y);
+}
+
+void nested_seat_local_active(struct nested_seat *seat,bool active) {
+	if(!seat || !seat->local_attached) return;
+	if(!active) {
+		keyboard_leave(seat,NULL,0,NULL);
+		pointer_leave(seat,NULL,0,NULL);
+		struct xkb_state *next=xkb_state_new(seat->keyboard.keymap);
+		if(next) {
+			xkb_state_unref(seat->local_xkb);
+			seat->local_xkb=next;
+		}
+		memset(seat->buttons_held,0,sizeof(seat->buttons_held));
+		memset(seat->buttons_blocked,0,sizeof(seat->buttons_blocked));
+		seat->map_release_pending=false;
+		wlr_seat_pointer_end_grab(seat->child);
+		seat->child->pointer_state.button_count=0;
+		seat->child->pointer_state.grab_serial=0;
+		return;
+	}
+	struct wl_array held;
+	wl_array_init(&held);
+	keyboard_enter(seat,NULL,0,NULL,&held);
+	local_modifiers(seat);
+	if(seat->local_pointers)
+		pointer_enter(seat,NULL,0,NULL,wl_fixed_from_double(seat->x),wl_fixed_from_double(seat->y));
+}
+
+static void render_focus_change(struct wl_listener *listener,void *data) {
+	(void)data;
+	struct nested_seat *seat=wl_container_of(listener,seat,render_focus_change);
+	render_debug_activity(seat->render_debug,RENDER_FOCUS);
+}
+
+void nested_seat_set_render_debug(struct nested_seat *seat,struct render_debug *debug) {
+	if (seat) seat->render_debug=debug;
+}
+
 struct nested_seat *nested_seat_create(struct wl_display *server,
 		struct wl_display *parent, struct wl_surface *output,
 		nested_hit_test hit_test, nested_selected selected, nested_cursor_move move_cursor,
 		nested_move_start start_move, nested_move_update update_move,nested_map_scroll scroll,nested_map_contact contact,
-		nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_flow_cycle cycle,void *data) {
+		nested_map_weapon weapon,
+		nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_strip_scroll strip_scroll,nested_flow_cycle cycle,void (*home_tap)(void *),
+		struct wlr_surface *(*node_panel_key)(void *,uint32_t),bool (*node_number)(void *,uint32_t),
+	bool (*close_window)(void *,struct wlr_surface *),bool (*render_capture)(void *),void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
 	if (seat == NULL) {
 		return NULL;
@@ -664,6 +1067,8 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 		free(seat);
 		return NULL;
 	}
+	seat->render_focus_change.notify=render_focus_change;
+	wl_signal_add(&seat->child->keyboard_state.events.focus_change,&seat->render_focus_change);
 	wlr_keyboard_init(&seat->keyboard, &keyboard_impl, "nested-wayland");
 	seat->output = output;
 	seat->hit_test = hit_test;
@@ -672,11 +1077,20 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->start_move = start_move;
 	seat->update_move = update_move;
 	seat->map_scroll=scroll;
+	seat->strip_scroll=strip_scroll;
 	seat->map_contact=contact;
+	seat->map_weapon=weapon;
 	seat->chrome=chrome;
 	seat->flow_scroll=flow_scroll;
 	seat->cycle=cycle;
+	seat->home_tap=home_tap;
+	seat->node_panel_key=node_panel_key;
+	seat->node_number=node_number;
+	seat->close_window=close_window;
+	seat->render_capture=render_capture;
+	nested_seat_set_shortcuts(seat,KEY_Q,KEY_A,KEY_COMMA,KEY_1);
 	seat->data = data;
+	if(!parent) return seat;
 	seat->registry = wl_display_get_registry(parent);
 	if (seat->registry == NULL) {
 		nested_seat_destroy(seat);
@@ -686,15 +1100,28 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	return seat;
 }
 
+void nested_seat_detach_local(struct nested_seat *seat) {
+	if(!seat || !seat->local_attached) return;
+	seat->local_attached=false;
+	wl_list_remove(&seat->local_device.link);
+	struct local_input *entry,*tmp;
+	wl_list_for_each_safe(entry,tmp,&seat->local_inputs,link)
+		local_input_destroy(&entry->destroy,NULL);
+	xkb_state_unref(seat->local_xkb);
+	seat->local_xkb=NULL;
+}
+
 void nested_seat_destroy(struct nested_seat *seat) {
 	if (seat == NULL) {
 		return;
 	}
+	nested_seat_detach_local(seat);
 	drop_parent(seat);
 	if (seat->registry != NULL) {
 		wl_registry_destroy(seat->registry);
 	}
 	wlr_keyboard_finish(&seat->keyboard);
+	wl_list_remove(&seat->render_focus_change.link);
 	wlr_seat_destroy(seat->child);
 	free(seat);
 }

@@ -37,10 +37,23 @@ the name `Home`. Inbox is derived from the current session: a window must
 be mapped, live, and without Domain membership. Explicit assignment removes
 it from Inbox. Unmap or destruction also makes a window ineligible.
 
-The catalog includes every live window, even if only two Inbox entries
-fit the fixed Home slots. When Home is shown, eligible windows fill those
-slots by ascending Window ID. WM owns the projection and Home focus history
-separately from named views; an empty named Domain does not fall back to Home.
+The Default Node is the reserved foreground projection of Inbox, not stored
+in the named Domain catalog and not included in map slots or mini-map.
+Blank Home and the active Default Node are distinct views; the latter has
+the normal stack capacity (eight projected members). Overflow remains live
+and assignable. WM owns its private position and focus history; it never
+falls back to Inbox while a named Domain is active.
+
+## Delete a named Node
+
+| Rule | Invariant or allowed change |
+| --- | --- |
+| DOM-4 | Delete only a user-created named Node after leaving its active view. The Mothership marker and Default Node are not deletable. Normal Delete requires no live Window members, including unmapped members. |
+| DOM-5 | An agent still attached as a manager blocks both Delete and Force Delete, even when the Node has no windows. End or detach that manager explicitly. Deleting a Node never stops or transfers an agent. |
+| DOM-6 | Force Delete can move live Window members to Default Node by clearing their named membership into the Inbox. Preserve the existing Window IDs and clients; do not open Default Node or close apps. Inbox overflow and unmapped members remain live under the existing projection rules. Delete the Node only after the move succeeds. |
+| DOM-7 | Successful deletion removes the durable Node record, frees its optional shortcut slot without renumbering other Nodes, and preserves existing notification history. |
+
+See [Delete a Node](../flows/use-command-center.md#delete-a-node).
 
 ## Local client contract
 

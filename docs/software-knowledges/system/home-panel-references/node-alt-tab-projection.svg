@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="535" viewBox="0 0 1120 535">
+<defs>
+ <radialGradient id="ambient" cx=".48" cy=".58" r=".65"><stop stop-color="#132431"/><stop offset="1" stop-color="#080f16"/></radialGradient>
+ <linearGradient id="metal" x2="0" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#1d2c37"/><stop offset="1" stop-color="#15232e"/></linearGradient>
+ <linearGradient id="projection" x1="0" y1="151" x2="0" y2="445" gradientUnits="userSpaceOnUse"><stop stop-color="#73c9d5" stop-opacity=".02"/><stop offset=".56" stop-color="#65d3df" stop-opacity=".062"/><stop offset="1" stop-color="#73edf0" stop-opacity=".15"/></linearGradient>
+ <linearGradient id="trace" x1="0" y1="151" x2="0" y2="445" gradientUnits="userSpaceOnUse"><stop stop-color="#7bd8e1" stop-opacity=".05"/><stop offset=".6" stop-color="#74ced9" stop-opacity=".22"/><stop offset="1" stop-color="#a0f3f5" stop-opacity=".81"/></linearGradient>
+ <linearGradient id="screen" x2="0" y2="1" gradientUnits="objectBoundingBox"><stop stop-color="#1a3c3b"/><stop offset="1" stop-color="#102828"/></linearGradient>
+ <filter id="blur" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="2.5"/></filter>
+ <symbol id="window" viewBox="0 0 260 156">
+  <rect width="260" height="156" fill="url(#screen)"/>
+  <path d="M0 23H260 M18 24V156" stroke="#5c9a99" stroke-opacity=".46" stroke-width="1"/>
+  <path d="M11 11l4 3-4 3m7 0h6" fill="none" stroke="#9adbd4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="35" y="15" font-size="9" fill="#b1dedb" font-family="monospace">Terminal · node dev</text>
+  <g font-family="monospace" font-size="10">
+   <text x="29" y="47" fill="#a3dfc2">$ task panel:test</text>
+   <text x="29" y="66" fill="#afc9c9">ok   mothership-wm/apps/panel</text>
+   <text x="29" y="85" fill="#a3dfc2">$ git status --short</text>
+   <text x="29" y="104" fill="#afc9c9"> M   apps/panel/native.c</text>
+   <text x="29" y="125" fill="#a3dfc2">$</text>
+   <path d="M42 117v9" stroke="#8bd7b1" stroke-width="2"/>
+  </g>
+ </symbol>
+</defs>
+<path d="M0 0H1120V535H0Z" fill="url(#ambient)"/>
+<!-- Simplified native dock with a single analog recess -->
+<path d="M131 407H286L298 395H825L837 407H987L1003 423V459L987 475H131L117 461V421Z" fill="url(#metal)" stroke="#527984" stroke-width="1.3"/>
+<path d="M135 412H288L300 400H823L835 412H985L998 425V457L985 470H134L122 459V423Z" fill="none" stroke="#345562" stroke-width="1"/>
+<path d="M307 403H816L828 415V456L818 466H305L295 456V415Z" fill="#0a1720"/>
+<g fill="none" stroke="#73929e" stroke-width="1.2">
+ <path d="M142 421h29l5 5v25l-5 5h-29l-5-5v-25z M193 421h29l5 5v25l-5 5h-29l-5-5v-25z M244 421h29l5 5v25l-5 5h-29l-5-5v-25z"/>
+ <path d="M150 433h5v5h-5z M159 433h5v5h-5z M150 442h5v5h-5z M159 442h5v5h-5z M208 431l8 16-8-4-8 4z M248 434h18m-18 6h18m-18 6h18m-13-14v4m8 2v4m-4 2v4"/>
+ <path d="M960 446h15l-2-4v-5a5.5 5.5 0 0 0-11 0v5z M966 450h3"/>
+</g>
+<text x="856" y="443" fill="#93aab6" font-family="sans-serif" font-size="12">Dev</text>
+<path d="M440 411v43" stroke="#40616a" stroke-width="1"/>
+<circle cx="326" cy="435" r="11" fill="#142b34" stroke="#6d9b9f" stroke-width="1"/><circle cx="326" cy="435" r="3.5" fill="#60bd9a"/>
+<path d="M350 430h55m-55 10h30m8 0h17" stroke="#68a1a8" stroke-width="2" stroke-opacity=".62"/>
+<g stroke="#456c77" stroke-width="1">
+ <rect x="459" y="418" width="72" height="38" fill="#342636"/><path d="M459 424h72" stroke="#9c748f"/>
+ <rect x="652" y="418" width="72" height="38" fill="#203643"/><path d="M652 424h72" stroke="#75a7cf"/>
+</g>
+<text x="779" y="442" font-family="monospace" font-size="14" fill="#bacdd5">+5</text>
+<!-- Four matching corners on two level rectangles. -->
+<g fill="url(#projection)" stroke="none">
+ <path d="M552 415 L628 415 L726 145 L454 145 Z"/>
+ <path d="M628 415 L628 453 L726 310 L726 145 Z"/>
+ <path d="M628 453 L552 453 L454 310 L726 310 Z"/>
+ <path d="M552 453 L552 415 L454 145 L454 310 Z"/>
+</g>
+<g stroke="url(#trace)" fill="none" stroke-linecap="round">
+ <path d="M552 415 L454 145 M628 415 L726 145" stroke-width="1" opacity=".40"/>
+ <path d="M552 453 L454 310 M628 453 L726 310" stroke-width="6" opacity=".35" filter="url(#blur)"/>
+ <path d="M552 453 L454 310 M628 453 L726 310" stroke-width="1.2" opacity=".56"/>
+</g>
+<use href="#window" width="260" height="156" transform="matrix(.2923077 0 0 .2435897 552 415)" />
+<rect x="552" y="415" width="76" height="38" fill="none" stroke="#83d5df" stroke-width="1"/>
+<g fill="#a3edf1"><circle cx="552" cy="415" r="1.4"/><circle cx="628" cy="415" r="1.4"/><circle cx="628" cy="453" r="1.6"/><circle cx="552" cy="453" r="1.6"/></g>
+<use href="#window" width="260" height="156" transform="matrix(1.0461538 0 0 1.0576923 454 145)" opacity=".96"/>
+<rect x="454" y="145" width="272" height="165" fill="none" stroke="#79b6ba" stroke-width="1" stroke-opacity=".36"/>
+<path d="M454 157V145H468 M712 145H726V157 M454 298V310H468 M712 310H726V298" fill="none" stroke="#99e2ea" stroke-width="1.5" stroke-opacity=".84"/>
+</svg>

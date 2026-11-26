@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+root="${XDG_RUNTIME_DIR:?Run this from the Mothership session or its parent}"
+if [[ $# -eq 1 ]]; then
+  fifo="$1"
+else
+  [[ $# -eq 0 ]] || { echo 'Usage: mothership-render-debug [capture-fifo]' >&2; exit 2; }
+  mapfile -d '' -t paths < <(find "$root" -maxdepth 2 -type p -user "$(id -u)" -name 'mothership-render-debug-*.fifo' -print0)
+  if [[ ${#paths[@]} -ne 1 ]]; then
+    echo 'Expected one Render Debug endpoint. Use a terminal in the target session, or pass its FIFO path.' >&2
+    printf '%s\n' "${paths[@]}" >&2
+    exit 1
+  fi
+  fifo="${paths[0]}"
+fi
+[[ -p "$fifo" && -O "$fifo" && ! -L "$fifo" ]] || { echo 'Render Debug endpoint is unavailable.' >&2; exit 1; }
+runtime="$(dirname -- "$fifo")"
+lock="$fifo.lock"
+mkdir -- "$lock" || { echo 'A capture is already running.' >&2; exit 1; }
+trap 'rmdir -- "$lock" 2>/dev/null || true' EXIT
+state="${XDG_STATE_HOME:-$HOME/.local/state}/mothership-wm/render-debug"
+mkdir -p -- "$state"
+report="$(mktemp -d "$state/capture-XXXXXXXX")"
+touch "$report/start"
+timeout 2 bash -c 'printf "capture\n" > "$1"' _ "$fifo" || { echo 'The WM did not accept a capture.' >&2; exit 1; }
+echo 'Capturing 10 seconds. Reproduce the stutter now.'
+if command -v nvidia-smi >/dev/null; then
+  timeout 10 nvidia-smi \
+    --query-gpu=timestamp,name,utilization.gpu,utilization.memory,utilization.decoder,memory.used \
+    --format=csv -l 1 >"$report/gpu.csv" 2>"$report/gpu.log" &
+fi
+for ((i=0;i<75;i++)); do
+  capture="$(find "$runtime" -maxdepth 1 -type f -user "$(id -u)" -name 'render-debug-*.csv' -newer "$report/start" -print -quit)"
+  if [[ -n "$capture" ]]; then
+    mv -- "$capture" "$report/frames.csv"
+    rm -- "$report/start"
+    echo "Render Debug: $report"
+    exit 0
+  fi
+  [[ -p "$fifo" ]] || break
+  sleep .2
+done
+echo 'No capture received. Check that the Mothership WM is still running.' >&2
+exit 1

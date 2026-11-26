@@ -1,6 +1,9 @@
 package app
 
-import "mothership-wm/services/desktopd/internal/domain"
+import (
+	"mothership-wm/internal/domainipc"
+	"mothership-wm/services/desktopd/internal/domain"
+)
 
 const (
 	SelectionNotSelected  = "not_selected"
@@ -9,6 +12,7 @@ const (
 
 	WMChanged            = "wm.changed"
 	DomainCreated        = "domain.created"
+	DomainDeleted        = domainipc.DomainDeletedEvent
 	WindowUpdated        = "window.updated"
 	WindowClosed         = "window.closed"
 	SelectionChanged     = "selection.changed"
@@ -19,10 +23,10 @@ const (
 )
 
 type Selection struct {
-	Home, Overview bool
-	Kind           string
-	Domain         string
-	Mode           string
+	Home, Overview, DefaultNode bool
+	Kind                        string
+	Domain                      string
+	Mode                        string
 }
 
 type Snapshot struct {
@@ -152,8 +156,11 @@ func (s *Service) setSelection(conn *domain.Session, selection Selection, entry 
 			}
 		}
 		s.selection = selection
-		if selection.Kind == SelectionAcknowledged && selection.Domain != "" && selection.Mode != "" {
+		if selection.Kind == SelectionAcknowledged && (selection.Domain != "" || selection.DefaultNode) && selection.Mode != "" {
 			s.layouts[selection.Domain] = selection.Mode
+			if domainipc.IsFlow(selection.Mode) {
+				s.flowLayouts[selection.Domain] = selection.Mode
+			}
 		}
 		s.publish(Update{Kind: SelectionChanged, Selection: selection, Node: n})
 	}

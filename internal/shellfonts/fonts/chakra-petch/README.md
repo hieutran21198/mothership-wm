@@ -9,7 +9,7 @@ any distributed copy of the font or shell bundle.
 Use Medium for small shell controls and descriptive text, SemiBold for
 Map labels, Detail titles and emphasized values. The Center Map's explicit
 font family/size override applies only to its on-map labels. These fonts
-are embedded and loaded into the panel's private Pango font map; no user
+are embedded and loaded into private Pango font maps in Panel and WM; no user
 or system font configuration is installed or modified. If loading fails,
 use a readable sans-serif fallback. External app fonts are not part of the
 shell. Keep Settings' Save/Cancel footer visible if the settings body

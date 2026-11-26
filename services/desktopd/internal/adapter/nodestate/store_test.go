@@ -69,3 +69,22 @@ func TestShortcutMigrationKeepsAssignmentsAndAnEmptySlot(t *testing.T) {
 		t.Fatalf("gap shifted a saved shortcut: %v %v", nodes, err)
 	}
 }
+
+func TestDeleteStaysDeletedAfterOpen(t *testing.T) {
+	state := t.TempDir()
+	s, _, err := Open(state, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := domain.Node{Name: "Dev", CreatedAt: 12, Shortcut: 1}
+	if err := s.Save(n); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(n); err != nil {
+		t.Fatal(err)
+	}
+	_, nodes, err := Open(state, "")
+	if err != nil || len(nodes) != 0 {
+		t.Fatalf("deleted Node returned: %v, %v", nodes, err)
+	}
+}

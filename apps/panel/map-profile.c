@@ -1,6 +1,7 @@
 //go:build linux && cgo && panel
 
 #include "map-profile.h"
+#include "analog-button.h"
 #include "shell-type.h"
 #include <gio/gdesktopappinfo.h>
 #include <math.h>
@@ -53,8 +54,8 @@ static void rim(cairo_t *cr,struct profile_rect inner) {
 
 static void label(cairo_t *cr,const char *value,double x,double y,double w,double size,gboolean strong) {
 	PangoLayout *layout=pango_cairo_create_layout(cr);
-	PangoFontDescription *font=shell_font_description(NULL,size,
-		strong?PANGO_WEIGHT_SEMIBOLD:PANGO_WEIGHT_MEDIUM);
+	PangoFontDescription *font=shell_font_description(strong?SHELL_DISPLAY_FALLBACK:NULL,size,
+		strong?PANGO_WEIGHT_NORMAL:PANGO_WEIGHT_MEDIUM);
 	pango_layout_set_font_description(layout,font);
 	pango_layout_set_text(layout,value,-1);
 	pango_layout_set_single_paragraph_mode(layout,TRUE);
@@ -224,7 +225,7 @@ void profile_draw_chrome(cairo_t *cr,struct profile_rect r,gboolean flat) {
 	rim(cr,r);
 }
 
-static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d) {
+static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d,GtkStateFlags button_state) {
 	struct profile_rect r=layout.card,b=layout.fly;
 	double extent=PROFILE_RIM_GAP+2;
 	graphene_rect_t bounds=GRAPHENE_RECT_INIT(r.x-extent,r.y-extent,r.w+2*extent,r.h+2*extent);
@@ -257,16 +258,14 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 		cairo_set_source_rgb(cr,.085,.163,.217);cairo_fill_preserve(cr);
 		cairo_set_source_rgb(cr,.25,.40,.49);cairo_stroke(cr);
 	}
-	cutout(cr,b,PROFILE_FLY_CORNER);
-	cairo_set_source_rgb(cr,.31,.81,.81);cairo_fill_preserve(cr);
-	cairo_set_source_rgb(cr,.61,.97,.95);cairo_set_line_width(cr,1.3);cairo_stroke(cr);
+	analog_button_paint(cr,b.x,b.y,b.w,b.h,button_state);
 	cairo_save(cr);cairo_translate(cr,b.x+b.w*.5,b.y+b.h*.5);cairo_rotate(cr,.60);
-	cairo_set_source_rgb(cr,.05,.15,.20);
+	cairo_set_source_rgb(cr,.69,.90,.94);
 	cairo_move_to(cr,0,-13);cairo_curve_to(cr,7,-8,6,-1,4,4);
 	cairo_line_to(cr,7,8);cairo_line_to(cr,7,12);cairo_line_to(cr,2,10);
 	cairo_line_to(cr,-2,10);cairo_line_to(cr,-7,12);cairo_line_to(cr,-7,8);cairo_line_to(cr,-4,4);
 	cairo_curve_to(cr,-6,-1,-7,-8,0,-13);cairo_close_path(cr);cairo_fill(cr);
-	cairo_arc(cr,0,-4,2.3,0,2*G_PI);cairo_set_source_rgb(cr,.68,.98,.97);cairo_fill(cr);
+	cairo_arc(cr,0,-4,2.3,0,2*G_PI);cairo_set_source_rgb(cr,.09,.21,.28);cairo_fill(cr);
 	cairo_restore(cr);
 	cairo_destroy(cr);
 	for(int i=0;i<shown;i++) {
@@ -278,8 +277,8 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 }
 
 
-void profile_snapshot(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d) {
-	if(!d) { draw_profile(snap,widget,layout,name,NULL); return; }
+void profile_snapshot(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d,GtkStateFlags button_state) {
+	if(!d) { draw_profile(snap,widget,layout,name,NULL,button_state); return; }
 	gint64 now=g_get_real_time()/G_USEC_PER_SEC;
 	gint64 age=d->created_at>0?MAX((gint64)0,now-d->created_at)/60:-1;
 	gint64 active=d->last_active>0?MAX((gint64)0,now-d->last_active)/60:-1;
@@ -287,12 +286,13 @@ void profile_snapshot(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout 
 	if(d->paint_scale!=scale) g_clear_pointer(&d->icons,g_ptr_array_unref);
 	struct profile_rect r=layout.card;
 	if(!d->paint || d->paint_width!=r.w || d->paint_height!=r.h ||
-			d->paint_scale!=scale || d->age_min!=age || d->activity_min!=active) {
+			d->paint_scale!=scale || d->button_state!=button_state || d->age_min!=age || d->activity_min!=active) {
 		g_clear_pointer(&d->paint,gsk_render_node_unref);
 		layout.card.x=layout.card.y=0;
 		layout.fly.x-=r.x;layout.fly.y-=r.y;
 		GtkSnapshot *cache=gtk_snapshot_new();
-		draw_profile(cache,widget,layout,name,d);
+		draw_profile(cache,widget,layout,name,d,button_state);
+		d->button_state=button_state;
 		d->paint=gtk_snapshot_free_to_node(cache);
 		d->paint_width=r.w;d->paint_height=r.h;d->paint_scale=scale;
 		d->age_min=age;d->activity_min=active;

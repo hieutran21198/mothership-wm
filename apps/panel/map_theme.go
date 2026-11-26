@@ -15,6 +15,7 @@ import (
 )
 
 const defaultShellFamily = "Chakra Petch"
+const defaultMapLabelFamily = "Black Ops One"
 
 const maxMapTheme = 64 << 10
 const maxMapSVG = 256 << 10
@@ -34,7 +35,7 @@ type mapTheme struct {
 }
 
 func defaultMapTheme() mapTheme {
-	return mapTheme{Background: "#172C42", Opacity: 0, Grid: "#324C62", Text: "#EDF5FB", Stroke: "#759BB0", BorderColor: "#7895A5", FontFamily: defaultShellFamily, FontSize: 13, PanSpeed: defaultMapPanSpeed}
+	return mapTheme{Background: "#172C42", Opacity: 0, Grid: "#324C62", Text: "#EDF5FB", Stroke: "#759BB0", BorderColor: "#7895A5", FontFamily: defaultMapLabelFamily, FontSize: 13, PanSpeed: defaultMapPanSpeed}
 }
 
 var mapColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)

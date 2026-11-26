@@ -8,8 +8,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"mothership-wm/internal/appbus"
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/internal/userconfig"
 	"mothership-wm/services/desktopd/internal/adapter/nodestate"
+	"mothership-wm/services/desktopd/internal/adapter/tray"
 	"mothership-wm/services/desktopd/internal/adapter/unixapi"
 	"mothership-wm/services/desktopd/internal/app"
 )
@@ -46,10 +49,18 @@ func run(ctx context.Context, args []string) error {
 			return fmt.Errorf("load Nodes: %w", err)
 		}
 		service := app.New(nodes, store.Save, func(err error) { fmt.Fprintln(os.Stderr, "mothership-desktopd: save Last active:", err) })
+		if address := os.Getenv(appbus.AddressEnv); address != "" {
+			stopTray, err := tray.Start(address)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "desktopd: system tray unavailable:", err)
+			} else {
+				defer stopTray()
+			}
+		}
 		fmt.Println("DESKTOPD_READY")
 		// Map visibility is independent of the acknowledged app projection.
 		service.SetMapVisible(true)
-		return unixapi.Serve(ctx, l, service)
+		return unixapi.ServeWithConfig(ctx, l, service, store.Delete, userconfig.Path(os.Getenv("HOME")))
 	}
 	reply, err := unixapi.Request(ctx, path, args)
 	if err != nil {

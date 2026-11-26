@@ -1,5 +1,5 @@
-// Command mothership starts one private nested session under an existing
-// Wayland compositor. It does not create a desktop login session.
+// Command mothership supervises the shell, window manager and desktopd
+// in a nested instance or a login session that already owns its seat.
 package main
 
 import (
@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"mothership-wm/internal/appbus"
 	"mothership-wm/internal/domainipc"
 )
 
@@ -46,14 +47,15 @@ type session struct {
 }
 
 func main() {
-	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: mothership (run from the existing Wayland session)")
+	native := len(os.Args) == 2 && os.Args[1] == "--native"
+	if len(os.Args) != 1 && !native {
+		fmt.Fprintln(os.Stderr, "usage: mothership [--native]")
 		os.Exit(2)
 	}
 	binary, err := os.Executable()
 	if err == nil {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err = run(ctx, filepath.Dir(binary), os.Environ(), os.Stdout, os.Stderr)
+		err = runMode(ctx, filepath.Dir(binary), os.Environ(), os.Stdout, os.Stderr, native)
 		cancel()
 	}
 	if err != nil {
@@ -63,6 +65,10 @@ func main() {
 }
 
 func run(ctx context.Context, bin string, original []string, out, stderr io.Writer) error {
+	return runMode(ctx, bin, original, out, stderr, false)
+}
+
+func runMode(ctx context.Context, bin string, original []string, out, stderr io.Writer, native bool) error {
 	initial := make(map[string]string)
 	for _, entry := range original {
 		k, v, found := strings.Cut(entry, "=")
@@ -74,9 +80,17 @@ func run(ctx context.Context, bin string, original []string, out, stderr io.Writ
 	if _, err := domainipc.Path(runtime); err != nil {
 		return fmt.Errorf("parent Wayland: %w", err)
 	}
-	parent, err := parentPath(runtime, initial["WAYLAND_DISPLAY"])
-	if err != nil {
-		return err
+	if native && initial["MOTHERSHIP_NATIVE_TEST_HEADLESS"] != "1" &&
+		(initial["WAYLAND_DISPLAY"] != "" || initial["WAYLAND_SOCKET"] != "" || initial["DISPLAY"] != "") {
+		return errors.New("native mode must start from a local login or TTY, not an existing graphical terminal")
+	}
+	var parent string
+	if !native {
+		var err error
+		parent, err = parentPath(runtime, initial["WAYLAND_DISPLAY"])
+		if err != nil {
+			return err
+		}
 	}
 	owned, err := os.MkdirTemp(runtime, "mothership-")
 	if err != nil {
@@ -88,12 +102,29 @@ func run(ctx context.Context, bin string, original []string, out, stderr io.Writ
 	for _, entry := range original {
 		k, _, _ := strings.Cut(entry, "=")
 		switch k {
-		case "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY":
+		case "XDG_RUNTIME_DIR", "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY", "MOTHERSHIP_NATIVE_SESSION", appbus.AddressEnv:
 			continue
 		}
 		env = append(env, entry)
 	}
-	env = append(env, "XDG_RUNTIME_DIR="+owned, "WAYLAND_DISPLAY="+parent)
+	env = append(env, "XDG_RUNTIME_DIR="+owned)
+	if native {
+		env = append(env, "MOTHERSHIP_NATIVE_SESSION=1")
+		if initial["PIPEWIRE_RUNTIME_DIR"] == "" {
+			env = append(env, "PIPEWIRE_RUNTIME_DIR="+runtime)
+		}
+		if initial["PULSE_SERVER"] == "" && initial["PULSE_RUNTIME_PATH"] == "" {
+			env = append(env, "PULSE_RUNTIME_PATH="+filepath.Join(runtime, "pulse"))
+		}
+	} else {
+		env = append(env, "WAYLAND_DISPLAY="+parent)
+	}
+	if address, stopBus, err := appbus.Start(ctx, owned); err != nil {
+		fmt.Fprintln(stderr, "mothership:", err)
+	} else {
+		defer stopBus()
+		env = append(env, appbus.AddressEnv+"="+address)
+	}
 	s := &session{ctx: ctx, bin: bin, env: env, notices: make(chan notice, 32), err: stderr}
 	defer s.stop()
 
@@ -103,7 +134,11 @@ func run(ctx context.Context, bin string, original []string, out, stderr io.Writ
 	if _, err := s.wait("desktopd", "DESKTOPD_READY"); err != nil {
 		return startupError(ctx, err)
 	}
-	if err := s.start("WM", "mothership-wm", "--desktopd", "--parent", parent); err != nil {
+	args := []string{"--desktopd", "--parent", parent}
+	if native {
+		args = []string{"--desktopd", "--native"}
+	}
+	if err := s.start("WM", "mothership-wm", args...); err != nil {
 		return startupError(ctx, err)
 	}
 	line, err := s.wait("WM", "WAYLAND_DISPLAY=")
@@ -122,6 +157,7 @@ func run(ctx context.Context, bin string, original []string, out, stderr io.Writ
 		return startupError(ctx, err)
 	}
 	fmt.Fprintln(out, "Mothership Shell ready in Home")
+	fmt.Fprintf(out, "MOTHERSHIP_BUILD=%s\n", bin)
 	fmt.Fprintf(out, "MOTHERSHIP_WAYLAND=%s\n", filepath.Join(owned, socket))
 	return s.monitor()
 }

@@ -9,7 +9,7 @@
 #define FLOAT_BAR 20
 #define FLOAT_GRIP 16
 
-enum node_layout { TILING, STACK, FLOAT, FLOW, FLOW_HORIZONTAL, FLOW_VERTICAL };
+enum node_layout { TILING, STACK, FLOAT, FLOW, FLOW_HORIZONTAL, FLOW_VERTICAL, STAGE };
 enum { FLOW_GAP=18 };
 
 static inline bool flow_layout(enum node_layout layout) {
@@ -20,6 +20,14 @@ static inline bool flow_vertical(enum node_layout layout,int width,int height) {
 	return layout==FLOW_VERTICAL || (layout==FLOW && height>width);
 }
 struct rect { int x, y, width, height; };
+
+enum { STAGE_EDGE=12 };
+
+static inline struct rect stage_rect(int width,int height) {
+	int margin=width>=180?STAGE_EDGE:0;
+	int content_h=height>4*STAGE_EDGE ? height-STAGE_EDGE : height;
+	return (struct rect){margin,0,width-2*margin,content_h};
+}
 
 static inline int clamp_int(int v, int lo, int hi) {
 	return v < lo ? lo : v > hi ? hi : v;

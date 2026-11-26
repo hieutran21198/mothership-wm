@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -eu
+[ "$#" -eq 1 ] && [ -n "$1" ] || { echo 'Usage: mothership-smoke-native CANDIDATE_DIR' >&2; exit 2; }
+candidate="$(realpath -e -- "$1")"
+[ -f "$candidate/.mothership-candidate" ] || { echo 'Use a completed candidate.' >&2; exit 1; }
+test_root="$(mktemp -d)"
+pid=
+cleanup() {
+  if [ -n "$pid" ]; then
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  rm -rf -- "$test_root"
+}
+trap cleanup EXIT
+mkdir -m 0700 "$test_root"/{home,run,config,state}
+env -u WAYLAND_DISPLAY -u WAYLAND_SOCKET -u DISPLAY \
+  HOME="$test_root/home" XDG_RUNTIME_DIR="$test_root/run" \
+  XDG_CONFIG_HOME="$test_root/config" XDG_STATE_HOME="$test_root/state" \
+  WLR_RENDERER=pixman GSK_RENDERER=cairo MOTHERSHIP_NATIVE_TEST_HEADLESS=1 \
+  "$candidate/mothership" --native >"$test_root/stdout" 2>"$test_root/stderr" &
+pid=$!
+socket=
+for ((i=0; i<150; i++)); do
+  socket="$(sed -n 's/^MOTHERSHIP_WAYLAND=//p' "$test_root/stdout")"
+  if [[ "$socket" == "$test_root/run/"* ]] && [ -S "$socket" ]; then break; fi
+  if ! kill -0 "$pid" 2>/dev/null; then break; fi
+  sleep 0.1
+done
+if [[ "$socket" != "$test_root/run/"* ]] || [ ! -S "$socket" ]; then
+  cat "$test_root/stdout" "$test_root/stderr" >&2
+  echo 'Headless native startup did not reach shell readiness.' >&2
+  exit 1
+fi
+kill -TERM "$pid"
+wait "$pid"
+pid=
+[ ! -e "$socket" ] && [ ! -e "$(dirname -- "$socket")" ]
+printf 'Headless native smoke passed; physical TTY acceptance is still required.\n'

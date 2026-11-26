@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -eu
+umask 077
+dir="${XDG_STATE_HOME:-$HOME/.local/state}/mothership-dev"
+usage() {
+  printf >&2 'Usage: %s select CANDIDATE_DIR | rollback\n' "$0"
+  exit 2
+}
+case "${1:-}" in
+  select)
+    [ "$#" -eq 2 ] || usage
+    target="$(realpath -e -- "$2")"
+    ;;
+  rollback)
+    [ "$#" -eq 1 ] || usage
+    target="$(realpath -e -- "$dir/previous")"
+    ;;
+  *) usage ;;
+esac
+[ -f "$target/.mothership-candidate" ] || { printf >&2 'Not a completed Mothership candidate: %s\n' "$target"; exit 1; }
+for part in mothership mothership-wm mothership-desktopd mothership-command-center; do
+  [ -f "$target/$part" ] && [ -x "$target/$part" ] ||
+    { printf >&2 'Candidate missing executable: %s\n' "$part"; exit 1; }
+done
+mkdir -p -- "$dir"
+old="$(realpath -e -- "$dir/current" 2>/dev/null || true)"
+[ "$old" != "$target" ] || exit 0
+scratch="$(mktemp -d "$dir/.select-XXXXXXXX")"
+trap 'rm -rf -- "$scratch"' EXIT
+if [ -n "$old" ]; then
+  ln -s -- "$old" "$scratch/previous"
+  mv -T -- "$scratch/previous" "$dir/previous"
+fi
+ln -s -- "$target" "$scratch/current"
+mv -T -- "$scratch/current" "$dir/current"
+printf 'Next Mothership Dev login: %s\n' "$target"

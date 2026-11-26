@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -24,6 +25,11 @@ type testServer struct {
 
 func newTestServer(t *testing.T) testServer {
 	t.Helper()
+	return testServerWithConfig(t, "")
+}
+
+func testServerWithConfig(t *testing.T, config string) testServer {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "desktopd.sock")
 	l, err := net.ListenUnix("unixpacket", &net.UnixAddr{Name: path, Net: "unixpacket"})
 	if err != nil {
@@ -31,7 +37,7 @@ func newTestServer(t *testing.T) testServer {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- Serve(ctx, l, &app.Service{}) }()
+	go func() { done <- ServeWithConfig(ctx, l, &app.Service{}, nil, config) }()
 	t.Cleanup(func() {
 		cancel()
 		if err := <-done; err != nil {
@@ -469,6 +475,16 @@ func TestNodeOverviewAndLayoutRequireWMAcknowledgement(t *testing.T) {
 	want(10, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "flow"}, true)
 	apply(14, "focus", `{"domain":"Dev"}`, "node", "flow-vertical")
 	want(11, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow-vertical"}, true)
+	apply(15, "layout", `{"domain":"Dev","mode":"stage"}`, "layout", "stage")
+	want(12, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stage"}, false)
+	apply(16, "focus", `{"domain":"Review"}`, "node", "flow")
+	want(13, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Review", Mode: "flow"}, true)
+	apply(17, "focus", `{"domain":"Dev"}`, "node", "stage")
+	want(14, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "stage"}, true)
+	apply(18, "layout", `{"domain":"Dev","mode":"flow","restore_flow":true}`, "layout", "flow-vertical")
+	want(15, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow-vertical"}, false)
+	apply(19, "layout", `{"domain":"Dev","mode":"flow"}`, "layout", "flow")
+	want(16, domainipc.Selection{State: app.SelectionAcknowledged, Domain: "Dev", Mode: "flow"}, false)
 }
 
 func TestPrepareDoesNotSelectAndRevealUsesSingleLiveTicket(t *testing.T) {
@@ -511,4 +527,238 @@ func TestPrepareDoesNotSelectAndRevealUsesSingleLiveTicket(t *testing.T) {
 	if r := reply(t, s.request(7, "focus.reveal", body), 7); r.Error == nil || r.Error.Code != "stale_connect" {
 		t.Fatalf("ticket reused: %+v", r)
 	}
+}
+
+func TestDefaultNodeIsAnAcknowledgedHomeProjectionNotADomain(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.dial()
+	send(t, wm, "wm "+sessionID)
+	if got := read(t, wm); got != "ok" {
+		t.Fatal(got)
+	}
+	send(t, wm, "ready_default_node")
+	// The stored preference is normally true, but only Overview draws the map.
+	success(t, s.request(30, domainipc.MapShowMethod, "{}"), 30)
+	req := s.request(31, domainipc.DefaultNodeMethod, "{}")
+	cmd := strings.Fields(read(t, wm))
+	if len(cmd) != 2 || cmd[0] != "home_node" {
+		t.Fatal(cmd)
+	}
+	before := decode[domainipc.Snapshot](t, success(t, s.request(32, domainipc.SnapshotMethod, "{}"), 32))
+	if before.Selection.View != "home" || !before.MapVisible || len(before.Domains) != 0 {
+		t.Fatal(before)
+	}
+	send(t, wm, "applied "+cmd[1])
+	success(t, req, 31)
+	after := decode[domainipc.Snapshot](t, success(t, s.request(33, domainipc.SnapshotMethod, "{}"), 33))
+	if after.Selection.View != "home_node" || after.Selection.Domain != "" || len(after.Domains) != 0 || len(after.NodeProfiles) != 0 {
+		t.Fatal(after)
+	}
+	home := s.request(34, domainipc.HomeMethod, "{}")
+	cmd = strings.Fields(read(t, wm))
+	if len(cmd) != 2 || cmd[0] != "home" {
+		t.Fatal(cmd)
+	}
+	send(t, wm, "applied "+cmd[1])
+	success(t, home, 34)
+}
+
+func TestDefaultNodeSharesAcknowledgedLayoutWithoutDomain(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	send(t, wm, "ready_node_parity")
+	var id uint64
+	request := func(method, body string) (*net.UnixConn, uint64) {
+		id++
+		return s.request(id, method, body), id
+	}
+	snapshot := func() domainipc.Snapshot {
+		c, seq := request(domainipc.SnapshotMethod, "{}")
+		return decode[domainipc.Snapshot](t, success(t, c, seq))
+	}
+	apply := func(method, body, wantOp, wantMode string, before func()) {
+		c, seq := request(method, body)
+		fields := strings.Fields(read(t, wm))
+		wantFields := 2
+		if wantMode != "" {
+			wantFields++
+		}
+		if len(fields) != wantFields ||
+			fields[0] != wantOp || (wantMode != "" && fields[2] != wantMode) {
+			t.Fatalf("WM packet %v, want %s %s", fields, wantOp, wantMode)
+		}
+		if before != nil {
+			before()
+		}
+		send(t, wm, "applied "+fields[1])
+		success(t, c, seq)
+	}
+	rejected := func(body string) {
+		c, seq := request(domainipc.LayoutMethod, body)
+		if r := reply(t, c, seq); r.Error == nil {
+			t.Fatalf("unexpected layout acceptance: %s", body)
+		}
+	}
+	const stage = `{"domain":"","mode":"stage"}`
+	rejected(stage) // Blank Home is not the Default Node.
+	apply(domainipc.DefaultNodeMethod, "{}", "home_node", domainipc.Flow, nil)
+	if ss := snapshot(); ss.Selection.View != "home_node" || ss.Selection.Mode != domainipc.Flow ||
+		ss.Selection.Domain != "" || len(ss.Domains) != 0 || len(ss.NodeProfiles) != 0 {
+		t.Fatalf("Default Node gained a named identity: %+v", ss)
+	}
+	rejected(`{"domain":"","mode":"stack"}`)
+	apply(domainipc.LayoutMethod, `{"domain":"","mode":"flow-vertical"}`, "layout", domainipc.FlowVertical, nil)
+	apply(domainipc.LayoutMethod, stage, "layout", domainipc.Stage, func() {
+		if mode := snapshot().Selection.Mode; mode != domainipc.FlowVertical {
+			t.Fatalf("mode changed before acknowledgement: %s", mode)
+		}
+	})
+	c, seq := request(domainipc.CreateMethod, `{"domain":"Dev"}`)
+	success(t, c, seq)
+	apply(domainipc.FocusMethod, `{"domain":"Dev"}`, "node", domainipc.Flow, nil)
+	rejected(stage) // Empty domain cannot target an inactive Default Node.
+	apply(domainipc.DefaultNodeMethod, "{}", "home_node", domainipc.Stage, nil)
+	apply(domainipc.LayoutMethod, `{"domain":"","mode":"flow","restore_flow":true}`, "layout", domainipc.FlowVertical, nil)
+	ss := snapshot()
+	if ss.Selection.View != "home_node" || ss.Selection.Mode != domainipc.FlowVertical ||
+		len(ss.Domains) != 1 || ss.Domains[0] != "Dev" {
+		t.Fatal(ss)
+	}
+}
+
+func TestForceDeleteWaitsForInboxMove(t *testing.T) {
+	t.Run("acknowledged", func(t *testing.T) { testForceDeleteHandoff(t, true) })
+	t.Run("disconnected", func(t *testing.T) { testForceDeleteHandoff(t, false) })
+}
+
+func testForceDeleteHandoff(t *testing.T, acknowledge bool) {
+	s := newTestServer(t)
+	sub := s.request(1, domainipc.SubscribeMethod, "{}")
+	success(t, sub, 1)
+	wm := s.register()
+	send(t, wm, "ready_return_inbox")
+	next(t, sub, 1, app.WMChanged)
+	success(t, s.request(2, domainipc.CreateMethod, `{"domain":"Dev"}`), 2)
+	next(t, sub, 2, app.DomainCreated)
+	send(t, wm, "new 7")
+	next(t, sub, 3, app.WindowUpdated)
+	send(t, wm, "map 7")
+	next(t, sub, 4, app.WindowUpdated)
+	send(t, wm, "new 8")
+	next(t, sub, 5, app.WindowUpdated)
+	for i, id := range []string{"7", "8"} {
+		reqID := uint64(10 + i)
+		req := s.request(reqID, domainipc.AssignMethod, `{"domain":"Dev","session":"`+sessionID+`","window_id":`+id+"}")
+		cmd := strings.Fields(read(t, wm))
+		if len(cmd) != 3 || cmd[0] != "assigned" || cmd[2] != id {
+			t.Fatal(cmd)
+		}
+		send(t, wm, "applied "+cmd[1])
+		success(t, req, reqID)
+		next(t, sub, uint64(6+i), app.WindowUpdated)
+	}
+	result := reply(t, s.request(20, domainipc.DeleteMethod, `{"domain":"Dev"}`), 20)
+	if result.Error == nil || !strings.Contains(result.Error.Message, "Force Delete") {
+		t.Fatal(result)
+	}
+	req := s.request(21, domainipc.DeleteMethod, `{"domain":"Dev","force":true}`)
+	cmd := strings.Fields(read(t, wm))
+	if len(cmd) != 4 || cmd[0] != "inbox" || cmd[2] != "7" || cmd[3] != "8" {
+		t.Fatal(cmd)
+	}
+	assertQuiet(t, req)
+	before := decode[domainipc.Snapshot](t, success(t, s.request(22, domainipc.SnapshotMethod, "{}"), 22))
+	if len(before.Domains) != 1 || before.Windows[0].Domain != "Dev" {
+		t.Fatal(before)
+	}
+	if !acknowledge {
+		_ = wm.Close()
+		r := reply(t, req, 21)
+		if r.Error == nil || r.Error.Code != "outcome_unknown" {
+			t.Fatal(r)
+		}
+		after := decode[domainipc.Snapshot](t, success(t, s.request(23, domainipc.SnapshotMethod, "{}"), 23))
+		if len(after.Domains) != 1 || after.Domains[0] != "Dev" {
+			t.Fatal(after)
+		}
+		return
+	}
+	send(t, wm, "applied "+cmd[1])
+	success(t, req, 21)
+	for i, id := range []uint64{7, 8} {
+		win := decode[domainipc.Window](t, next(t, sub, uint64(8+i), app.WindowUpdated))
+		if win.ID != id || win.Domain != "" || win.Mapped != (id == 7) {
+			t.Fatal(win)
+		}
+	}
+	deleted := decode[domainipc.DomainBody](t, next(t, sub, 10, app.DomainDeleted))
+	if deleted.Domain != "Dev" {
+		t.Fatal(deleted)
+	}
+	after := decode[domainipc.Snapshot](t, success(t, s.request(23, domainipc.SnapshotMethod, "{}"), 23))
+	if after.Selection.View != "home" || len(after.Domains) != 0 || len(after.Windows) != 2 {
+		t.Fatal(after)
+	}
+}
+
+func TestShortcutApplyWaitsForWMAndPersistsAcrossConnections(t *testing.T) {
+	config := filepath.Join(t.TempDir(), "config.json")
+	s := testServerWithConfig(t, config)
+	waitReady := func(want bool) {
+		t.Helper()
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			snap := decode[domainipc.Snapshot](t, success(t, s.request(11, "snapshot", "{}"), 11))
+			if snap.WMReady == want {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("WM readiness did not change")
+	}
+
+	wm := s.dial()
+	send(t, wm, "wm "+sessionID)
+	if read(t, wm) != "ok" {
+		t.Fatal("WM registration failed")
+	}
+	send(t, wm, "ready_shortcuts")
+	waitReady(true)
+	def := decode[domainipc.Shortcuts](t, reply(t, s.request(1, "shortcuts.get", `{}`), 1).Body)
+	if def != domainipc.DefaultShortcuts() {
+		t.Fatalf("unexpected defaults: %+v", def)
+	}
+	bad := reply(t, s.request(2, "shortcuts.set", `{"close_window":"X","app_grid":"X","node_settings":",","node_keys":"numbers"}`), 2)
+	if bad.Error == nil || bad.Error.Code != "invalid_shortcuts" {
+		t.Fatalf("duplicate accepted: %+v", bad)
+	}
+	c := s.request(3, "shortcuts.set", `{"close_window":"X","app_grid":"B","node_settings":"S","node_keys":"function"}`)
+	packet := strings.Fields(read(t, wm))
+	if len(packet) != 6 || packet[0] != "shortcuts" || strings.Join(packet[2:], " ") != "45 48 31 59" {
+		t.Fatalf("bad WM packet %v", packet)
+	}
+	if _, err := os.Stat(config); !os.IsNotExist(err) {
+		t.Fatalf("shortcuts persisted before acknowledgement: %v", err)
+	}
+	send(t, wm, "applied "+packet[1])
+	if r := reply(t, c, 3); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	want := domainipc.Shortcuts{CloseWindow: "X", AppGrid: "B", NodeSettings: "S", NodeKeys: "function"}
+	if persisted, err := readShortcuts(config); err != nil || persisted != want {
+		t.Fatalf("saved %+v %v", persisted, err)
+	}
+	wm.Close()
+	waitReady(false)
+	next := s.dial()
+	send(t, next, "wm "+sessionID)
+	if read(t, next) != "ok" {
+		t.Fatal("WM re-registration failed")
+	}
+	send(t, next, "ready_shortcuts")
+	packet = strings.Fields(read(t, next))
+	if len(packet) != 6 || packet[0] != "shortcuts" || strings.Join(packet[2:], " ") != "45 48 31 59" {
+		t.Fatalf("not restored: %v", packet)
+	}
+	send(t, next, "applied "+packet[1])
 }

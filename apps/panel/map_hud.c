@@ -6,6 +6,10 @@
 #include <string.h>
 #include "map_hud.h"
 #include "map-profile.h"
+#include "map-guide.h"
+#include "map-fleet.h"
+#include "map-arcade.h"
+#include "map-pointer.h"
 #include "map-relay.h"
 #include "map-intro.h"
 #include "map-radar.h"
@@ -16,7 +20,44 @@
 #include "shell-type.h"
 
 static GtkWindow *hud;
-static GtkWidget *canvas, *annotations, *gpu_grid, *intro_layer, *relay_layer, *origin_layer, *minimap_layer, *detail_layer, *route_layer;
+static GtkWidget *notice_layer;
+static GtkWidget *canvas, *annotations, *gpu_grid, *intro_layer, *relay_layer, *origin_layer, *minimap_layer, *route_layer, *guide_layer, *detail_layer;
+static GtkWidget *arcade_layer;
+static gboolean arcade_playing;
+static void sync_arcade_layout(void);
+static unsigned guide_active;
+static guint guide_pulse;
+
+static void guide_set(unsigned next) {
+	if(guide_active==next) return;
+	guide_active=next;
+	if(guide_layer && gtk_widget_get_visible(guide_layer)) gtk_widget_queue_draw(guide_layer);
+}
+void map_hud_guide_keys(unsigned held) {
+	guide_set((guide_active&~(MAP_GUIDE_W|MAP_GUIDE_A|MAP_GUIDE_S|MAP_GUIDE_D))|held);
+}
+void map_hud_guide_grab(gboolean grabbed) {
+	guide_set((guide_active&~MAP_GUIDE_GRAB)|(grabbed?MAP_GUIDE_GRAB:0));
+}
+void map_hud_guide_command(unsigned command,gboolean held) {
+	guide_set(held?guide_active|command:guide_active&~command);
+}
+void map_hud_guide_reset(void) {
+	g_clear_handle_id(&guide_pulse,g_source_remove);
+	guide_set(0);
+}
+static gboolean expire_guide_scroll(gpointer unused) {
+	(void)unused;
+	guide_pulse=0;
+	guide_set(guide_active&~MAP_GUIDE_SCROLL);
+	return G_SOURCE_REMOVE;
+}
+static void guide_scroll(void) {
+	g_clear_handle_id(&guide_pulse,g_source_remove);
+	guide_set(guide_active|MAP_GUIDE_SCROLL);
+	guide_pulse=g_timeout_add(180,expire_guide_scroll,NULL);
+}
+
 static struct map_relay_motion relay_motion;
 static char *relay_node;
 static guint relay_tick;
@@ -41,10 +82,10 @@ static double fps_x,fps_y;
 static GHashTable *icons, *slots, *intro_labels, *map_labels;
 static char **names;
 static char *listed_names;
-static char *active_name, *profile_node, *profile_rows;
+static char *active_name, *selected_node, *profile_rows;
 static GHashTable *profile_data;
-static guint profile_refresh;
-static gboolean profile_open;
+static gboolean detail_open;
+static guint detail_age_refresh;
 static gboolean in_overview, showing_map, frosted_map, gpu_grid_ready;
 static int view_w=MAP_REFERENCE_W,view_h=MAP_REFERENCE_H,anchor_w,anchor_h;
 static PangoFontDescription *label_font;
@@ -54,6 +95,8 @@ static void clear_marker_labels(void);
 static void sync_route_motion(void);
 static gboolean route_source_visible(void);
 static void map_origin_point(double *x,double *y);
+static void sync_detail(void);
+static gboolean detail_button_pressed;
 
 
 static void clear_intro_labels(void) {
@@ -100,7 +143,9 @@ int map_hud_set_font(const char *family, double size) {
     g_clear_pointer(&label_font, pango_font_description_free);
     const char *effective=known?family:shell_font_family();
     label_font=shell_font_description(effective,size,
+        !g_ascii_strcasecmp(effective,SHELL_DISPLAY_FONT)?PANGO_WEIGHT_NORMAL:
         !g_ascii_strcasecmp(effective,shell_font_family())?PANGO_WEIGHT_SEMIBOLD:PANGO_WEIGHT_MEDIUM);
+    if(detail_layer) gtk_widget_queue_draw(detail_layer);
     return known;
 }
 
@@ -170,6 +215,8 @@ void map_hud_icons_replace(void *set) {
 	clear_intro_labels();
 	if (annotations) gtk_widget_queue_draw(annotations);
 	if (route_layer) gtk_widget_queue_draw(route_layer);
+	if (notice_layer) gtk_widget_queue_draw(notice_layer);
+	if (detail_layer) gtk_widget_queue_draw(detail_layer);
 }
 
 struct plane { double x, y, width, height, step; };
@@ -178,6 +225,14 @@ static const graphene_rect_t *radar_occluder(struct plane frame,graphene_rect_t 
 static int outer_margin = 24, inner_padding = 12;
 static struct map_camera camera;
 static struct map_zoom map_zoom={.scale=1};
+static GHashTable *notice_counts,*notice_pending;
+static GQueue notice_transit=G_QUEUE_INIT;
+static guint notice_tick;
+static gint64 notice_started;
+static double notice_phase;
+static void start_notice_transit(int animation);
+static void draw_notice_count(cairo_t *,const char *,double,double);
+static unsigned notice_count(const char *);
 static guint intro_tick;
 static gint64 intro_start, intro_elapsed, intro_scan_us;
 static gboolean intro_suppressed,native_radar,radar_tried;
@@ -197,6 +252,7 @@ static void camera_redraw(void) {
 	if (!showing_map) return;
 	if (annotations) gtk_widget_queue_draw(annotations);
 	if (origin_layer) gtk_widget_queue_draw(origin_layer);
+	if (notice_layer && gtk_widget_get_visible(notice_layer)) gtk_widget_queue_draw(notice_layer);
 	if (route_layer && gtk_widget_get_visible(route_layer)) gtk_widget_queue_draw(route_layer);
 	sync_route_motion();
 	if (relay_node && relay_layer) gtk_widget_queue_draw(relay_layer);
@@ -216,6 +272,7 @@ static gboolean place_camera(struct map_camera *at,double x,double y) {
 void map_hud_camera_viewport(int width,int height) {
 	if (width<120 || height<100) return;
 	view_w=width;view_h=height;
+	if(arcade_playing) sync_arcade_layout();
 	if (!anchor_w) { anchor_w=width;anchor_h=height; }
 	if (place_camera(&camera,camera.x,camera.y)) camera_redraw();
 	else sync_route_motion();
@@ -250,7 +307,10 @@ void map_hud_zoom(double x,double y,double delta,int animation) {
 			!map_frame_contains(view_w,view_h,outer_margin,x,y)) return;
 	if (animation==MAP_ANIMATION_OFF) {
 		map_hud_cancel_zoom();
-		apply_zoom(x,y,map_wheel_target(map_zoom.scale,delta));
+		double to=map_wheel_target(map_zoom.scale,delta);
+		if(to==map_zoom.scale) return;
+		apply_zoom(x,y,to);
+		guide_scroll();
 		return;
 	}
 	int direction=delta<0 ? 1 : -1;
@@ -259,6 +319,7 @@ void map_hud_zoom(double x,double y,double delta,int animation) {
 	double base=zoom_motion.tick && zoom_motion.direction==direction ? zoom_motion.to : map_zoom.scale;
 	double to=map_wheel_target(base,delta);
 	if (to==base) return;
+	guide_scroll();
 	zoom_motion.from=map_zoom.scale;
 	zoom_motion.to=to;
 	zoom_motion.x=x;
@@ -278,9 +339,19 @@ void map_hud_translate(double x,double y) {
 	if (place_camera(&camera,camera.x+x/map_zoom.scale,camera.y+y/map_zoom.scale)) camera_redraw();
 }
 
+void map_hud_center_mothership(void) {
+	if (!map_frame_available(view_w,view_h)) return;
+	struct map_frame_box box=map_frame_layout(view_w,view_h,outer_margin);
+	struct map_camera target=map_camera_center_point(FLEET_ORIGIN_X,FLEET_ORIGIN_Y,
+		box.x+box.width*.5,box.y+box.height*.5,view_w,view_h,map_zoom.scale);
+	if (place_camera(&camera,target.x,target.y)) camera_redraw();
+}
+
 void map_hud_set_spacing(const char *border, int outer, int inner, gboolean frosted) {
 	gdk_rgba_parse(&border_color, border);
+	gboolean frame_changed=outer_margin!=outer;
 	outer_margin = outer;
+	if(arcade_playing) sync_arcade_layout();
 	inner_padding = inner;
 	clear_intro_labels();
 	frosted_map = frosted;
@@ -290,6 +361,12 @@ void map_hud_set_spacing(const char *border, int outer, int inner, gboolean fros
 	if (canvas) gtk_widget_queue_draw(canvas);
 	if (annotations) gtk_widget_queue_draw(annotations);
 	if (route_layer) gtk_widget_queue_draw(route_layer);
+	if (notice_layer) gtk_widget_queue_draw(notice_layer);
+	if (guide_layer) gtk_widget_queue_draw(guide_layer);
+	// Minimap stores its own snapshot. Move its painted footprint in the
+	// same preview/rollback as the frame, without waiting for camera input.
+	if (frame_changed && minimap_layer) gtk_widget_queue_draw(minimap_layer);
+	if (frame_changed && detail_layer) gtk_widget_queue_draw(detail_layer);
 }
 
 static void plane_outline(cairo_t *cr, struct plane p, double inset) {
@@ -377,7 +454,7 @@ const char *map_hud_shortcut(int slot) {
 }
 
 static gboolean is_selected(const char *name) {
-	return profile_node && g_strcmp0(name,profile_node)==0;
+	return selected_node && g_strcmp0(name,selected_node)==0;
 }
 
 static void diamond(cairo_t *cr, double x, double y, double r) {
@@ -388,12 +465,7 @@ static void diamond(cairo_t *cr, double x, double y, double r) {
 	cairo_close_path(cr);
 }
 
-// The base ring/diamond has a shared axis-aligned painted footprint.
-#define FOCUS_DIAMOND_FACTOR 1.35
-#define NODE_IDLE_WIDTH 1.35
-#define NODE_FOCUS_WIDTH 1.2
 #define CUSTOM_FOCUS_WIDTH 1.1
-#define SHIP_RIM_WIDTH 1.0
 
 static double symbol_half(void);
 static gboolean custom_marker(const char *name) {
@@ -401,39 +473,92 @@ static gboolean custom_marker(const char *name) {
 }
 static double focus_marker_radius(const char *name) {
 	double half=symbol_half();
-	return custom_marker(name)?half+4*map_zoom.scale:half*FOCUS_DIAMOND_FACTOR;
+	return half+4*map_zoom.scale;
 }
 static double painted_marker_radius(const char *name) {
-	return is_selected(name)?focus_marker_radius(name)+1: symbol_half()+2;
+	if(custom_marker(name))
+		return is_selected(name)?focus_marker_radius(name)+1:symbol_half()+2;
+	return FLEET_NODE_HALF_HEIGHT*map_zoom.scale*(is_selected(name)?FLEET_FOCUS_SCALE:1)+1;
 }
 
-static void default_marker(cairo_t *cr,double x,double y,double r,gboolean active,gboolean selected) {
-	const GdkRGBA muted_edge = {0xaa/255.,0xc4/255.,0xd1/255.,1};
-	const GdkRGBA focus_edge = {0x75/255.,0xe3/255.,0xdd/255.,1};
-	const GdkRGBA focus_center = {0x57/255.,0xd4/255.,0xd2/255.,1};
-	if (!selected) {
-		// Compensate the mitered stroke so the visible blue edge, not the
-		// path centerline, has the same extent as the Mothership ring.
-		diamond(cr,x,y,r-NODE_IDLE_WIDTH/G_SQRT2);
-		cairo_set_source_rgba(cr,.018,.045,.058,.82);
-		cairo_set_line_width(cr,3);
-		cairo_stroke_preserve(cr);
-		source(cr,active?amber:muted_edge,.92);
-		cairo_set_line_width(cr,NODE_IDLE_WIDTH);
+static void fleet_outline(cairo_t *cr,const struct fleet_point *p,unsigned n) {
+	cairo_move_to(cr,p[0].x,p[0].y);
+	for(unsigned i=1;i<n;++i) cairo_line_to(cr,p[i].x,p[i].y);
+	cairo_close_path(cr);
+}
+
+static void fleet_part(cairo_t *cr,const struct fleet_point *p,unsigned n,
+	double red,double green,double blue) {
+	fleet_outline(cr,p,n);
+	cairo_set_source_rgb(cr,red,green,blue);
+	cairo_fill(cr);
+}
+
+static void draw_fleet_ship(cairo_t *cr,double x,double y,double scale,
+	gboolean mothership,gboolean active,gboolean selected,gboolean miniature) {
+	const struct fleet_point *p=mothership?fleet_mothership:fleet_node;
+	unsigned n=mothership?FLEET_COUNT(fleet_mothership):FLEET_COUNT(fleet_node);
+	const GdkRGBA idle_edge={.61,.77,.81,1},ship_edge={.56,.85,.89,1};
+	cairo_save(cr);
+	cairo_translate(cr,x,y);
+	cairo_scale(cr,scale,scale);
+	cairo_set_line_join(cr,CAIRO_LINE_JOIN_ROUND);
+	if(selected) {
+		cairo_save(cr);
+		cairo_scale(cr,FLEET_FOCUS_SCALE,FLEET_FOCUS_SCALE);
+		fleet_outline(cr,p,n);
+		source(cr,selected_outline,1);
+		cairo_set_line_width(cr,FLEET_FOCUS_EDGE/(scale*FLEET_FOCUS_SCALE));
 		cairo_stroke(cr);
+		cairo_restore(cr);
+	}
+	fleet_outline(cr,p,n);
+	cairo_set_source_rgb(cr,.080,.168,.216);
+	cairo_fill_preserve(cr);
+	if(miniature) {
+		source(cr,ship_edge,.95);
+		cairo_set_line_width(cr,.85/scale);
+		cairo_stroke(cr);
+		cairo_restore(cr);
 		return;
 	}
-	// Paint only the outlines: the gaps and hollow center reveal the map.
-	diamond(cr,x,y,r*FOCUS_DIAMOND_FACTOR);
-	source(cr,focus_edge,.98);
-	cairo_set_line_width(cr,NODE_FOCUS_WIDTH);
-	cairo_stroke(cr);
+
+	// Build clipped planes and cockpit inside the one external hull edge.
 	cairo_save(cr);
-	cairo_set_fill_rule(cr,CAIRO_FILL_RULE_EVEN_ODD);
-	diamond(cr,x,y,r);
-	diamond(cr,x,y,r*7/16);
-	source(cr,focus_center,1);
-	cairo_fill(cr);
+	cairo_clip(cr);
+	if(mothership) {
+		const struct fleet_point right[]={{0,-13},{4,-9},{6,-3},{12,-1},{16,4},
+			{16,8},{10,6},{6,9},{0,10}};
+		const struct fleet_point wing[]={{-4,-3},{-10,-1},{-14,3},{-15,6},{-11,4},{-7,3}};
+		const struct fleet_point glass[]={{0,-8},{2.5,-5.6},{2.5,-3},{0,-1.6},{-2.5,-3},{-2.5,-5.6}};
+		const struct fleet_point engine[]={{-4.8,9.6},{-3.6,10.3},{-2.7,12.4},{-4.5,12.4}};
+		fleet_part(cr,right,FLEET_COUNT(right),.14,.27,.33);
+		fleet_part(cr,wing,FLEET_COUNT(wing),.17,.34,.41);
+		cairo_save(cr);cairo_scale(cr,-1,1);
+		fleet_part(cr,wing,FLEET_COUNT(wing),.18,.35,.42);
+		cairo_restore(cr);
+		fleet_part(cr,glass,FLEET_COUNT(glass),.67,.92,.94);
+		fleet_part(cr,engine,FLEET_COUNT(engine),.43,.78,.83);
+		cairo_save(cr);cairo_scale(cr,-1,1);
+		fleet_part(cr,engine,FLEET_COUNT(engine),.43,.78,.83);
+		cairo_restore(cr);
+		cairo_move_to(cr,0,0);cairo_line_to(cr,0,4.8);
+		cairo_set_source_rgb(cr,.36,.61,.68);
+		cairo_set_line_width(cr,.65);cairo_stroke(cr);
+	} else {
+		const struct fleet_point right[]={{0,-12.6},{4.2,-8},{5,-2},{10.6,3.4},{10.6,7.2},
+			{3.5,3.8},{0,6.5}};
+		const struct fleet_point glass[]={{0,-7.5},{2.2,-4.9},{1.7,-2.5},{-1.7,-2.5},{-2.2,-4.9}};
+		const struct fleet_point engine[]={{-1.8,8.1},{1.8,8.1},{1.8,9.8},{-1.8,9.8}};
+		fleet_part(cr,right,FLEET_COUNT(right),.19,.33,.39);
+		fleet_part(cr,glass,FLEET_COUNT(glass),.65,.84,.87);
+		fleet_part(cr,engine,FLEET_COUNT(engine),.36,.64,.71);
+	}
+	cairo_restore(cr);
+	fleet_outline(cr,p,n);
+	source(cr,mothership?ship_edge:selected?selected_outline:active?amber:idle_edge,1);
+	cairo_set_line_width(cr,FLEET_SHIP_EDGE/scale);
+	cairo_stroke(cr);
 	cairo_restore(cr);
 }
 
@@ -460,7 +585,7 @@ static void draw_symbol(cairo_t *cr, const char *name, double x, double y) {
 		cairo_paint(cr);
 		cairo_restore(cr);
 	} else {
-		default_marker(cr,x,y,half,active,selected);
+		draw_fleet_ship(cr,x,y,map_zoom.scale,FALSE,active,selected,FALSE);
 		return;
 	}
 	if (active && !selected) {
@@ -584,10 +709,19 @@ static void snapshot_intro_label(GtkSnapshot *snap,const graphene_rect_t *bounds
 }
 
 static struct plane border_plane(int w,int h,double *inset) {
-	int margin=map_frame_margin(w,h,outer_margin);
-	int padding=MIN(inner_padding,(MIN(w,h)-2*margin-16)/2);
-	*inset=map_frame_content_inset(padding+.5);
-	return (struct plane){margin,margin,w-2*margin,h-2*margin,0};
+	struct map_frame_box box=map_frame_layout(w,h,outer_margin);
+	*inset=map_frame_content_inset(map_frame_content_padding(box,inner_padding)+.5);
+	return (struct plane){box.x,box.y,box.width,box.height,0};
+}
+
+static void sync_arcade_layout(void) {
+	if(!arcade_layer) return;
+	struct map_frame_box box=map_frame_layout(view_w,view_h,outer_margin);
+	// Keep the normal two frame strokes visible above the dock. Only the
+	// inset game field is opaque, and its corners follow the existing frame.
+	double pad=MAP_ARCADE_FRAME_INSET;
+	map_arcade_layout(arcade_layer,box.x+pad,box.y+pad,
+		box.width-2*pad,box.height-2*pad);
 }
 
 static void sync_layers(void) {
@@ -597,21 +731,68 @@ static void sync_layers(void) {
 	gint64 reveal_start=MAP_INTRO_FRAME_US+intro_scan_us;
 	gboolean frame=paint && (!intro || intro_elapsed>=MAP_INTRO_FRAME_US);
 	gboolean reveal=intro && intro_elapsed>=reveal_start;
+	gboolean world=paint && !arcade_playing;
+	gtk_widget_set_visible(arcade_layer,paint && arcade_playing);
 	gtk_widget_set_visible(canvas,frame);
-	gtk_widget_set_visible(gpu_grid,frame);
-	gtk_widget_set_visible(annotations,paint && (!intro || reveal));
-	gtk_widget_set_visible(route_layer,paint && (!intro ||
+	gtk_widget_set_visible(gpu_grid,frame && !arcade_playing);
+	gtk_widget_set_visible(annotations,world && (!intro || reveal));
+	gtk_widget_set_visible(route_layer,world && (!intro ||
 		(reveal && map_intro_beats_at(intro_elapsed-reveal_start).icon>=1)));
-	gtk_widget_set_visible(origin_layer,paint && (!intro ||
+	gtk_widget_set_visible(notice_layer,world && (!intro || reveal));
+	gtk_widget_set_visible(origin_layer,world && (!intro ||
 		(reveal && map_intro_beats_at(intro_elapsed-reveal_start).icon>=1)));
 	// The fast scan has its own surface. Hide, rather than just stop
 	// invalidating, the opening widget so GTK cannot keep a cached frame.
 	gtk_widget_set_visible(intro_layer,intro && !reveal && (!frame || !native_radar));
-	gtk_widget_set_visible(minimap_layer,frame && in_overview);
-	gtk_widget_set_visible(detail_layer,paint && !intro);
-	gtk_widget_set_visible(fps,fps_enabled && paint && !intro);
+	gtk_widget_set_visible(minimap_layer,frame && in_overview && !arcade_playing);
+	// This static instruction enters after the scan. It never owns radar
+	// occlusion or intercepts hover, pointer, wheel, or keyboard input.
+	gtk_widget_set_visible(guide_layer,frame && in_overview && !arcade_playing && (!intro || reveal));
+	sync_detail();
+	gtk_widget_set_visible(fps,fps_enabled && world && !intro);
 	gtk_widget_set_visible(GTK_WIDGET(hud),paint);
 	sync_route_motion();
+}
+
+gboolean map_hud_arcade_active(void) {return arcade_playing;}
+
+gboolean map_hud_arcade_start(void) {
+	if(!arcade_layer || !showing_map || !in_overview || intro_suppressed ||
+	   !map_frame_available(view_w,view_h) || arcade_playing) return FALSE;
+	arcade_playing=TRUE;
+	sync_arcade_layout();
+	map_hud_finish_effect();
+	map_arcade_start(arcade_layer);
+	map_pointer_aim_enabled(TRUE);
+	return TRUE;
+}
+
+void map_hud_arcade_stop(void) {
+	if(!arcade_playing) return;
+	arcade_playing=FALSE;
+	map_pointer_aim_enabled(FALSE);
+	map_arcade_stop(arcade_layer);
+	sync_layers();
+	camera_redraw();
+}
+
+void map_hud_arcade_focus(gboolean have_focus) {
+	if(arcade_playing) {
+		map_arcade_focus(arcade_layer,have_focus);
+		map_pointer_aim_enabled(have_focus);
+	}
+}
+
+void panel_map_weapon(gboolean plasma,gboolean pressed) {
+	if(arcade_playing) map_arcade_weapon(arcade_layer,plasma,pressed);
+}
+
+void panel_map_aim(gboolean valid,double x,double y) {
+	if(arcade_playing) map_arcade_aim(arcade_layer,valid,x,y);
+}
+
+gboolean map_hud_arcade_key(guint key,gboolean pressed) {
+	return arcade_playing && map_arcade_key(arcade_layer,key,pressed);
 }
 
 static const graphene_rect_t *radar_occluder(struct plane frame,graphene_rect_t *exclusion);
@@ -623,7 +804,7 @@ G_DEFINE_TYPE(MapOpening,map_opening,GTK_TYPE_WIDGET)
 static void opening_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	if (native_radar && intro_elapsed>=MAP_INTRO_FRAME_US) return;
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
-	if (w<120 || h<100) return;
+	if (!map_frame_available(w,h)) return;
 	double inset;
 	struct plane frame=border_plane(w,h,&inset);
 	graphene_rect_t bounds=GRAPHENE_RECT_INIT(frame.x,frame.y,frame.width,frame.height);
@@ -667,7 +848,7 @@ static gboolean intro_frame(GtkWidget *widget,GdkFrameClock *clock,gpointer data
 			struct plane frame=border_plane(w,h,&inset);
 			graphene_rect_t bounds=GRAPHENE_RECT_INIT(frame.x,frame.y,frame.width,frame.height);
 			graphene_rect_t exclusion;
-			if (w<120 || h<100 || !map_radar_step(hud,bounds,intro_elapsed-MAP_INTRO_FRAME_US,
+			if (!map_frame_available(w,h) || !map_radar_step(hud,bounds,intro_elapsed-MAP_INTRO_FRAME_US,
 					intro_scan_us,&border_color,radar_occluder(frame,&exclusion))) {
 				map_radar_end();
 				native_radar=FALSE;
@@ -693,9 +874,10 @@ static void stop_intro(void) {
 
 void map_hud_open_effect(int animation) {
 	stop_intro();
+	start_notice_transit(animation);
 	intro_suppressed=FALSE;
-	int margin=map_frame_margin(view_w,view_h,outer_margin);
-	intro_scan_us=map_intro_scan_us(view_w-2*margin);
+	struct map_frame_box box=map_frame_layout(view_w,view_h,outer_margin);
+	intro_scan_us=map_intro_scan_us(box.width);
 	if (animation!=MAP_ANIMATION_OFF)
 		intro_tick=gtk_widget_add_tick_callback(map_hud_clock(),intro_frame,NULL,NULL);
 	sync_layers();
@@ -721,37 +903,69 @@ static gboolean content_contains(struct plane frame,double inset,double x,double
 }
 
 static gboolean profile_layout_at(int w,int h,struct profile_layout *layout,struct profile_data **record) {
-	if (!profile_node || !profile_open) return FALSE;
+	if (!selected_node || !detail_open) return FALSE;
 	double x,y,inset;
 	struct plane frame=border_plane(w,h,&inset), nodes=node_plane(w,h);
-	if (!marker(nodes,profile_node,&x,&y)) return FALSE;
+	if (!marker(nodes,selected_node,&x,&y)) return FALSE;
 	project_map_point(&x,&y);
 	if (!content_contains(frame,inset,x,y)) return FALSE;
 	double margin=inset+9+PROFILE_RIM_GAP;
 	struct profile_rect safe={frame.x+margin,frame.y+margin,frame.width-2*margin,frame.height-2*margin};
-	*record=profile_for(profile_node);
+	*record=profile_for(selected_node);
 	// Keep the card next to the selected Node on the right when it fits.
 	// Its painted rim must clear the visible name as well as the symbol.
-	double reach=annotation_reach(profile_node);
-	const struct map_label *label=map_label_for(profile_node);
-	int width=MAX(label->logical.width,label->ink.x+label->ink.width);
+	double reach=annotation_reach(selected_node);
+	const struct map_label *label=map_label_for(selected_node);
+	int width=MAX(label->logical.width,label->ink.x+label->ink.width)+(notice_count(selected_node)?34:0);
+	graphene_rect_t mini;
+	gboolean has_mini=radar_occluder(frame,&mini)!=NULL;
+	// Prefer the approved width. Compact only when no side fits at that size.
+	for (int preferred=374; preferred>=226; preferred-=37)
 	for(enum profile_side side=PROFILE_RIGHT; side<PROFILE_SIDE_COUNT; ++side) {
-		double radius=painted_marker_radius(profile_node);
+		double radius=painted_marker_radius(selected_node);
 		double reserve=side==PROFILE_RIGHT?MAX(radius,reach+6+width):radius;
-		if (profile_place_on(layout,safe,x,y,reserve,profile_height(*record),side)) return TRUE;
+		if (!profile_place_on(layout,safe,x,y,reserve,profile_height(*record),preferred,side)) continue;
+		struct profile_rect c=layout->card;
+		double e=PROFILE_RIM_GAP+2;
+		graphene_rect_t bounds=GRAPHENE_RECT_INIT(c.x-e,c.y-e,c.w+2*e,c.h+2*e);
+		graphene_rect_t overlap;
+		if (!has_mini || !graphene_rect_intersection(&bounds,&mini,&overlap)) return TRUE;
 	}
 	return FALSE;
 }
 
-static gboolean refresh_profile_age(gpointer unused) {
+static gboolean refresh_detail_age(gpointer unused) {
 	(void)unused;
-	if(detail_layer && profile_node) gtk_widget_queue_draw(detail_layer);
+	gtk_widget_queue_draw(detail_layer);
 	return G_SOURCE_CONTINUE;
 }
 
-static void watch_profile_age(void) {
-	g_clear_handle_id(&profile_refresh,g_source_remove);
-	if(profile_node && profile_open) profile_refresh=g_timeout_add_seconds(60,refresh_profile_age,NULL);
+static void sync_detail(void) {
+	if (!detail_layer) return;
+	gboolean visible=detail_open && selected_node && in_overview && showing_map &&
+		!intro_tick && !intro_suppressed && !arcade_playing && !relay_node && !retract_tick;
+	gtk_widget_set_visible(detail_layer,visible);
+	if (!visible) {
+		detail_button_pressed=FALSE;
+		g_clear_handle_id(&detail_age_refresh,g_source_remove);
+	}
+	else if (!detail_age_refresh) detail_age_refresh=g_timeout_add_seconds(60,refresh_detail_age,NULL);
+}
+
+static gboolean detail_at(int w,int h,double x,double y,struct profile_layout *layout) {
+	struct profile_data *record;
+	return detail_layer && gtk_widget_get_visible(detail_layer) &&
+		profile_layout_at(w,h,layout,&record) && profile_contains(layout->card,PROFILE_CORNER,x,y);
+}
+
+void map_hud_press_connect(gboolean down,double x,double y) {
+	struct profile_layout card;
+	gboolean pressed=down && annotations &&
+		detail_at(gtk_widget_get_width(annotations),gtk_widget_get_height(annotations),x,y,&card) &&
+		profile_contains(card.fly,PROFILE_FLY_CORNER,x,y);
+	if(pressed==detail_button_pressed) return;
+	detail_button_pressed=pressed;
+	gtk_widget_queue_draw(detail_layer);
 }
 
 void map_hud_pause_route(void) {
@@ -760,7 +974,7 @@ void map_hud_pause_route(void) {
 }
 
 static gboolean route_can_move(void) {
-	return route_allowed && showing_map && profile_node && !relay_node &&
+	return !arcade_playing && route_allowed && showing_map && selected_node && !relay_node &&
 		route_layer && gtk_widget_get_mapped(route_layer) && route_source_visible();
 }
 
@@ -795,25 +1009,25 @@ static void reset_route(void) {
 	route_phase=0;
 }
 
-gboolean map_hud_close_profile(void) {
-	if (!profile_node) return FALSE;
-	g_clear_pointer(&profile_node,g_free);
-	profile_open=FALSE;
+gboolean map_hud_deselect(void) {
+	if (!selected_node) return FALSE;
+	g_clear_pointer(&selected_node,g_free);
+	detail_open=FALSE;
+	sync_detail();
 	reset_route();
-	watch_profile_age();
 	camera_redraw();
 	return TRUE;
 }
 
 void map_hud_restore_selection(const char *name) {
 	if (!name || !*name || !names || !g_strv_contains((const char *const *)names,name)) return;
-	if(g_strcmp0(profile_node,name)==0) map_hud_pause_route();
+	if(g_strcmp0(selected_node,name)==0) map_hud_pause_route();
 	else reset_route();
-	g_free(profile_node);
-	profile_node=g_strdup(name);
-	profile_open=FALSE;
+	g_free(selected_node);
+	selected_node=g_strdup(name);
+	detail_open=FALSE;
+	sync_detail();
 	sync_route_motion();
-	watch_profile_age();
 	camera_redraw();
 }
 
@@ -850,13 +1064,8 @@ gboolean map_hud_drag_inside(double px,double py) {
 gboolean map_hud_drag_can_start(double px,double py) {
 	if (!map_hud_drag_inside(px,py)) return FALSE;
 	int w=gtk_widget_get_width(annotations),h=gtk_widget_get_height(annotations);
-	struct profile_layout layout;
-	struct profile_data *record;
-	if (profile_layout_at(w,h,&layout,&record)) {
-		double gap=PROFILE_RIM_GAP+2;
-		if (px>=layout.card.x-gap && px<=layout.card.x+layout.card.w+gap &&
-			py>=layout.card.y-gap && py<=layout.card.y+layout.card.h+gap) return FALSE;
-	}
+	struct profile_layout card;
+	if (detail_at(w,h,px,py,&card)) return FALSE;
 	double inset;
 	struct plane frame=border_plane(w,h,&inset);
 	graphene_rect_t mini;
@@ -865,8 +1074,8 @@ gboolean map_hud_drag_can_start(double px,double py) {
 	double hx,hy;
 	map_origin_point(&hx,&hy);
 	if (content_contains(frame,inset,hx,hy)) {
-		double half=symbol_half();
-		if (hypot(px-hx,py-hy)<=half+1) return FALSE;
+		double half=FLEET_HULL_HALF_WIDTH*map_zoom.scale;
+		if (fabs(px-hx)<=half+1 && fabs(py-hy)<=FLEET_HULL_HALF_HEIGHT*map_zoom.scale+1) return FALSE;
 		if (!mothership_label) mothership_label=new_marker_label("Mothership");
 		const struct map_label *label=mothership_label;
 		double left=hx+half+6+label->ink.x, top=marker_label_top(label,hy)+label->ink.y;
@@ -875,27 +1084,32 @@ gboolean map_hud_drag_can_start(double px,double py) {
 	return node_at(w,h,px,py)==NULL;
 }
 
-static void click_at(int w,int h,double px,double py,void (*fly)(const char *)) {
-	struct profile_layout layout;
-	struct profile_data *record;
-	if (profile_layout_at(w,h,&layout,&record)) {
-		if (profile_contains(layout.fly,PROFILE_FLY_CORNER,px,py)) { fly(profile_node); return; }
-		if (profile_contains(layout.card,PROFILE_CORNER,px,py)) return;
-	}
-	const char *selected=node_at(w,h,px,py);
-	if (g_strcmp0(profile_node,selected)==0 && (profile_open || !selected)) return;
-	g_free(profile_node);
-	profile_node=g_strdup(selected);
-	profile_open=selected!=NULL;
-	reset_route();
-	sync_route_motion();
-	watch_profile_age();
-	camera_redraw();
-}
+const char *map_hud_selected(void) { return selected_node; }
 
-void map_hud_click(double px,double py,void (*fly)(const char *)) {
+void map_hud_click(double px,double py,void (*connect)(const char *)) {
 	if (!annotations || !showing_map || intro_tick || intro_suppressed) return;
-	click_at(gtk_widget_get_width(annotations),gtk_widget_get_height(annotations),px,py,fly);
+	int w=gtk_widget_get_width(annotations),h=gtk_widget_get_height(annotations);
+	struct profile_layout card;
+	if (detail_at(w,h,px,py,&card)) {
+		if (connect && profile_contains(card.fly,PROFILE_FLY_CORNER,px,py)) connect(selected_node);
+		return;
+	}
+	double unused;
+	graphene_rect_t mini;
+	if (radar_occluder(border_plane(w,h,&unused),&mini) &&
+		graphene_rect_contains_point(&mini,&GRAPHENE_POINT_INIT(px,py))) return;
+	const char *selected=node_at(w,h,px,py);
+	if (g_strcmp0(selected_node,selected)==0) {
+		if (!selected || detail_open) return;
+	} else {
+		g_free(selected_node);
+		selected_node=g_strdup(selected);
+		reset_route();
+	}
+	detail_open=selected_node!=NULL;
+	sync_detail();
+	sync_route_motion();
+	camera_redraw();
 }
 
 typedef GtkWidget MapSteadyFrame;
@@ -903,7 +1117,7 @@ typedef GtkWidgetClass MapSteadyFrameClass;
 G_DEFINE_TYPE(MapSteadyFrame,map_steady_frame,GTK_TYPE_WIDGET)
 static void steady_frame_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
-	if (w<120 || h<100) return;
+	if (!map_frame_available(w,h)) return;
 	double inset;
 	struct plane frame=border_plane(w,h,&inset);
 	if (gpu_grid_ready) {
@@ -931,8 +1145,8 @@ static void map_hud_rendered(double x,double y);
 /* Two passes keep labels above every icon. */
 // Home is a virtual coordinate of the map, not a Node or a control.
 static void map_origin_point(double *x,double *y) {
-	*x=94;
-	*y=252;
+	*x=FLEET_ORIGIN_X;
+	*y=FLEET_ORIGIN_Y;
 	project_map_point(x,y);
 }
 
@@ -949,7 +1163,8 @@ struct route_span { double first,last; };
 static gboolean route_visible_span(const char *name,double hx,double hy,double x,double y,struct route_span *span) {
 	double length=hypot(x-hx,y-hy);
 	if(length<=0.01) return FALSE;
-	double ux=fabs(x-hx)/length,uy=fabs(y-hy)/length,diag=ux+uy;
+	double dx=(x-hx)/length,dy=(y-hy)/length;
+	double ux=fabs(dx),uy=fabs(dy),diag=ux+uy;
 	double marker=focus_marker_radius(name);
 	const double clear=3, half_route=.65;
 	double border;
@@ -957,10 +1172,12 @@ static gboolean route_visible_span(const char *name,double hx,double hy,double x
 		double pad=clear+half_route+CUSTOM_FOCUS_WIDTH*.5, cut=5*map_zoom.scale;
 		border=MIN((marker+pad)/MAX(ux,uy),(2*marker-cut+pad*G_SQRT2)/diag);
 	} else {
-		double pad=clear+half_route+NODE_FOCUS_WIDTH*.5;
-		border=(marker+pad*G_SQRT2)/diag;
+		double pad=clear+half_route+FLEET_FOCUS_EDGE*.5;
+		border=fleet_route_exit(fleet_node,FLEET_COUNT(fleet_node),
+			map_zoom.scale*FLEET_FOCUS_SCALE,-dx,-dy,pad);
 	}
-	span->first=symbol_half()+clear+half_route;
+	span->first=fleet_route_exit(fleet_mothership,FLEET_COUNT(fleet_mothership),
+		map_zoom.scale,dx,dy,clear+half_route+FLEET_SHIP_EDGE*.5);
 	span->last=length-border;
 	return span->last>span->first;
 }
@@ -970,8 +1187,8 @@ static gboolean route_source_visible(void) {
 	struct plane frame=border_plane(view_w,view_h,&inset);
 	struct route_span span;
 	map_origin_point(&hx,&hy);
-	return route_endpoint(node_plane(view_w,view_h),frame,inset,profile_node,&x,&y) &&
-		route_visible_span(profile_node,hx,hy,x,y,&span);
+	return route_endpoint(node_plane(view_w,view_h),frame,inset,selected_node,&x,&y) &&
+		route_visible_span(selected_node,hx,hy,x,y,&span);
 }
 
 // Leave the route anchored to the real projected point even offscreen,
@@ -1002,11 +1219,21 @@ G_DEFINE_TYPE(MapMini,map_mini,GTK_TYPE_WIDGET)
 static struct profile_rect minimap_bounds(struct plane frame) {
 	// Equal inset from both straight painted edges. Use a smaller footprint
 	// on small windows rather than notch or move the underlying Map.
-	const double gap=18,extent=PROFILE_RIM_GAP+2;
+	const double gap=MAP_PANEL_GAP,extent=PROFILE_RIM_GAP+2;
 	double w=MIN(232,frame.width*.30),h=w*.60;
 	if(w<104 || h>frame.height*.40) return (struct profile_rect){0};
 	return (struct profile_rect){
 		frame.x+frame.width-gap-extent-w,frame.y+frame.height-gap-extent-h,w,h};
+}
+
+void map_hud_settings_room(int w,int h,int *inset,int *width,int *height) {
+	double unused;
+	struct plane frame=border_plane(w,h,&unused);
+	struct profile_rect mini=minimap_bounds(frame);
+	*inset=(int)frame.x+MAP_PANEL_GAP;
+	double bottom=mini.w>0?mini.y-PROFILE_RIM_GAP-2:frame.y+frame.height;
+	*width=MAX(1,(int)frame.width-2*MAP_PANEL_GAP);
+	*height=MAX(1,(int)floor(bottom)-*inset-MAP_PANEL_GAP);
 }
 
 static const graphene_rect_t *radar_occluder(struct plane frame,graphene_rect_t *exclusion) {
@@ -1032,11 +1259,16 @@ static void minimap_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	graphene_rect_t bounds=GRAPHENE_RECT_INIT(box.x-extent,box.y-extent,box.w+2*extent,box.h+2*extent);
 	cairo_t *cr=gtk_snapshot_append_cairo(snap,&bounds);
 	profile_draw_chrome(cr,box,TRUE);
-	double scale=MIN((box.w-18)/MAP_TABLE_W,(box.h-18)/MAP_TABLE_H);
-	double left=box.x+(box.w-MAP_TABLE_W*scale)*.5;
-	double top=box.y+(box.h-MAP_TABLE_H*scale)*.5;
-	double cx=left+(camera.x-MAP_TABLE_MIN_X)*scale;
-	double cy=top+(camera.y-MAP_TABLE_MIN_Y)*scale;
+	// The world bounds encompass both Nodes and the virtual route origin.
+	double min_x=MIN(MAP_TABLE_MIN_X,FLEET_ORIGIN_X),min_y=MIN(MAP_TABLE_MIN_Y,FLEET_ORIGIN_Y);
+	double max_x=MAX(MAP_TABLE_MIN_X+MAP_TABLE_W,FLEET_ORIGIN_X);
+	double max_y=MAX(MAP_TABLE_MIN_Y+MAP_TABLE_H,FLEET_ORIGIN_Y);
+	double width=max_x-min_x,height=max_y-min_y;
+	double scale=MIN((box.w-18)/width,(box.h-18)/height);
+	double left=box.x+(box.w-width*scale)*.5;
+	double top=box.y+(box.h-height*scale)*.5;
+	double cx=left+(camera.x-min_x)*scale;
+	double cy=top+(camera.y-min_y)*scale;
 	double vw=MIN(MAP_TABLE_W,w/map_zoom.scale)*scale,vh=MIN(MAP_TABLE_H,h/map_zoom.scale)*scale;
 	cairo_set_source_rgba(cr,.62,.78,.86,.82);
 	cairo_set_line_width(cr,1);
@@ -1048,16 +1280,47 @@ static void minimap_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 		if(selected!=pass || !marker(map,*n,&nx,&ny)) continue;
 		if(nx<MAP_TABLE_MIN_X || nx>MAP_TABLE_MIN_X+MAP_TABLE_W ||
 		   ny<MAP_TABLE_MIN_Y || ny>MAP_TABLE_MIN_Y+MAP_TABLE_H) continue;
-		double px=left+(nx-MAP_TABLE_MIN_X)*scale,py=top+(ny-MAP_TABLE_MIN_Y)*scale;
+		double px=left+(nx-min_x)*scale,py=top+(ny-min_y)*scale;
 		diamond(cr,px,py,selected?3.2:2.3);
 		source(cr,selected?selected_outline:text_color,selected?.95:.78);
 		cairo_fill(cr);
 	}
+	draw_fleet_ship(cr,left+(FLEET_ORIGIN_X-min_x)*scale,
+		top+(FLEET_ORIGIN_Y-min_y)*scale,.29,TRUE,FALSE,FALSE,TRUE);
 	cairo_destroy(cr);
 }
 static void map_mini_class_init(MapMiniClass *c) { GTK_WIDGET_CLASS(c)->snapshot=minimap_snapshot; }
 static void map_mini_init(MapMini *self) {
 	gtk_widget_set_can_target(GTK_WIDGET(self),FALSE);
+	gtk_widget_set_hexpand(GTK_WIDGET(self),TRUE);
+	gtk_widget_set_vexpand(GTK_WIDGET(self),TRUE);
+}
+
+typedef GtkWidget MapGuide;
+typedef GtkWidgetClass MapGuideClass;
+G_DEFINE_TYPE(MapGuide,map_guide,GTK_TYPE_WIDGET)
+
+static void guide_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
+	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
+	if (!map_frame_available(w,h)) return;
+	const double gap=18;
+	double inset;
+	struct plane frame=border_plane(w,h,&inset);
+	struct profile_rect mini=minimap_bounds(frame);
+	double x=frame.x+gap,y=frame.y+frame.height-gap-MAP_GUIDE_HEIGHT;
+	double available=(mini.w>0?mini.x-PROFILE_RIM_GAP-2:frame.x+frame.width)-x-gap;
+	int width=available>=MAP_GUIDE_WIDTH?MAP_GUIDE_WIDTH:MAP_GUIDE_COMPACT_WIDTH;
+	if (available<width || frame.height<MAP_GUIDE_HEIGHT+2*gap) return;
+	graphene_rect_t bounds=GRAPHENE_RECT_INIT(x,y,width,MAP_GUIDE_HEIGHT);
+	cairo_t *cr=gtk_snapshot_append_cairo(snap,&bounds);
+	cairo_translate(cr,x,y);
+	map_guide_draw(cr,width,guide_active);
+	cairo_destroy(cr);
+}
+static void map_guide_class_init(MapGuideClass *c) {GTK_WIDGET_CLASS(c)->snapshot=guide_snapshot;}
+static void map_guide_init(MapGuide *self) {
+	gtk_widget_set_can_target(GTK_WIDGET(self),FALSE);
+	gtk_widget_set_focusable(GTK_WIDGET(self),FALSE);
 	gtk_widget_set_hexpand(GTK_WIDGET(self),TRUE);
 	gtk_widget_set_vexpand(GTK_WIDGET(self),TRUE);
 }
@@ -1068,7 +1331,7 @@ G_DEFINE_TYPE(MapRelay,map_relay,GTK_TYPE_WIDGET)
 
 static void relay_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
-	if(w<120 || h<100 || !relay_node) return;
+	if(!map_frame_available(w,h) || !relay_node) return;
 	double inset,x,y,hx,hy;
 	struct plane frame=border_plane(w,h,&inset),map=node_plane(w,h);
 	map_origin_point(&hx,&hy);
@@ -1178,7 +1441,7 @@ static gboolean advance_relay(GtkWidget *widget,GdkFrameClock *clock,gpointer da
 
 gboolean map_hud_relay_begin(const char *name,void (*finish)(void)) {
 	int w=gtk_widget_get_width(annotations),h=gtk_widget_get_height(annotations);
-	if(w<120 || h<100) return FALSE;
+	if(!map_frame_available(w,h)) return FALSE;
 	double inset,x,y,hx,hy;
 	struct plane frame=border_plane(w,h,&inset);
 	map_origin_point(&hx,&hy);
@@ -1207,9 +1470,9 @@ void map_hud_relay_ack(void) {
 static void map_route(GtkSnapshot *snap,struct plane map,struct plane frame,double inset) {
 	double hx,hy,x,y;
 	map_origin_point(&hx,&hy);
-	if (route_endpoint(map,frame,inset,profile_node,&x,&y)) {
+	if (route_endpoint(map,frame,inset,selected_node,&x,&y)) {
 		struct route_span span;
-		if(route_visible_span(profile_node,hx,hy,x,y,&span)) {
+		if(route_visible_span(selected_node,hx,hy,x,y,&span)) {
 			graphene_point_t start=GRAPHENE_POINT_INIT(hx,hy);
 			graphene_rect_t run=GRAPHENE_RECT_INIT(span.first,-.65,span.last-span.first,1.3);
 			double offset=span.first+route_phase;
@@ -1227,13 +1490,153 @@ static void map_route(GtkSnapshot *snap,struct plane map,struct plane frame,doub
 	}
 }
 
+void map_hud_notice_count(const char *node,unsigned count) {
+	if(!notice_counts) notice_counts=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	if(count) g_hash_table_replace(notice_counts,g_strdup(node),GUINT_TO_POINTER(count));
+	else {
+		g_hash_table_remove(notice_counts,node);
+		if(notice_pending) g_hash_table_remove(notice_pending,node);
+	}
+	if(annotations) gtk_widget_queue_draw(annotations);
+	if(detail_layer && gtk_widget_get_visible(detail_layer) && g_strcmp0(node,selected_node)==0)
+		gtk_widget_queue_draw(detail_layer);
+}
+
+void map_hud_notice_received(const char *node) {
+	if(!notice_pending) notice_pending=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	g_hash_table_add(notice_pending,g_strdup(node));
+}
+
+static unsigned notice_count(const char *node) {
+	return notice_counts?GPOINTER_TO_UINT(g_hash_table_lookup(notice_counts,node)):0;
+}
+
+static void draw_notice_count(cairo_t *cr,const char *name,double x,double y) {
+	unsigned count=notice_count(name);
+	if(!count) return;
+	char text[8];
+	if(count>99) g_strlcpy(text,"99+",sizeof text);
+	else g_snprintf(text,sizeof text,"%u",count);
+	PangoLayout *layout=pango_cairo_create_layout(cr);
+	pango_layout_set_text(layout,text,-1);
+	PangoFontDescription *font=pango_font_description_from_string("Sans Bold 8");
+	pango_layout_set_font_description(layout,font);
+	pango_font_description_free(font);
+	int tw,th;pango_layout_get_pixel_size(layout,&tw,&th);
+	cairo_rectangle(cr,x,y-(th+2)*.5,tw+8,th+2);
+	cairo_set_source_rgba(cr,.19,.13,.31,.91);cairo_fill_preserve(cr);
+	cairo_set_source_rgba(cr,.77,.65,1,.8);cairo_set_line_width(cr,1);cairo_stroke(cr);
+	cairo_move_to(cr,x+4,y-th*.5);pango_cairo_show_layout(cr,layout);g_object_unref(layout);
+}
+
+static void end_notice_transit(void) {
+	if(notice_tick) gtk_widget_remove_tick_callback(notice_layer,notice_tick);
+	notice_tick=0;notice_started=0;notice_phase=0;
+	g_queue_clear_full(&notice_transit,g_free);
+	if(notice_layer) gtk_widget_queue_draw(notice_layer);
+}
+
+static gboolean notice_frame(GtkWidget *widget,GdkFrameClock *clock,gpointer unused) {
+	(void)unused;
+	if(intro_tick) return G_SOURCE_CONTINUE;
+	gint64 now=gdk_frame_clock_get_frame_time(clock);
+	while (!g_queue_is_empty(&notice_transit)) {
+		const char *node=g_queue_peek_head(&notice_transit);
+		double inset,x,y,hx,hy;
+		struct plane frame=border_plane(view_w,view_h,&inset);
+		map_origin_point(&hx,&hy);
+		if (notice_count(node) && route_endpoint(node_plane(view_w,view_h),frame,inset,node,&x,&y) &&
+			content_contains(frame,inset+3,hx,hy) && hypot(x-hx,y-hy)>35) {
+			if(!notice_started) notice_started=now;
+			notice_phase=(now-notice_started)/700000.;
+			if(notice_phase<1) break;
+		}
+		notice_phase=0;notice_started=0;g_free(g_queue_pop_head(&notice_transit));
+	}
+	gtk_widget_queue_draw(widget);
+	if(!g_queue_is_empty(&notice_transit)) return G_SOURCE_CONTINUE;
+	notice_tick=0;return G_SOURCE_REMOVE;
+}
+
+static void start_notice_transit(int animation) {
+	end_notice_transit();
+	if(!notice_pending || !notice_layer) return;
+	gboolean gtk_motion=TRUE;
+	g_object_get(gtk_widget_get_settings(notice_layer),"gtk-enable-animations",&gtk_motion,NULL);
+	if(animation!=MAP_ANIMATION_OFF && gtk_motion) {
+		for(char **n=names;n&&*n;++n)
+			if(notice_count(*n) && g_hash_table_contains(notice_pending,*n))
+				g_queue_push_tail(&notice_transit,g_strdup(*n));
+	}
+	g_hash_table_remove_all(notice_pending);
+	if(!g_queue_is_empty(&notice_transit))
+		notice_tick=gtk_widget_add_tick_callback(notice_layer,notice_frame,NULL,NULL);
+}
+
+typedef GtkWidget MapNotice;
+typedef GtkWidgetClass MapNoticeClass;
+G_DEFINE_TYPE(MapNotice,map_notice_layer,GTK_TYPE_WIDGET)
+static void notice_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
+	const char *node=g_queue_peek_head(&notice_transit);
+	if(!node||!notice_started||intro_tick) return;
+	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
+	double inset,x,y,hx,hy;
+	struct plane frame=border_plane(w,h,&inset);
+	map_origin_point(&hx,&hy);
+	struct route_span span;
+	if(!route_endpoint(node_plane(w,h),frame,inset,node,&x,&y) ||
+		!route_visible_span(node,hx,hy,x,y,&span)) return;
+	double dist=hypot(x-hx,y-hy),dx=(x-hx)/dist,dy=(y-hy)/dist;
+	double run=MAX(0,span.last-span.first);
+	double travel=MIN(notice_phase/.79,1);
+	double head=span.last-travel*run;
+	double tail=MIN(span.last,head+MIN(76,run*.55));
+	graphene_rect_t area=GRAPHENE_RECT_INIT(
+		MIN(hx+dx*head,hx+dx*tail)-16,MIN(hy+dy*head,hy+dy*tail)-16,
+		fabs(dx*(tail-head))+32,fabs(dy*(tail-head))+32);
+	if(notice_phase>=.79) area=GRAPHENE_RECT_INIT(hx-24,hy-24,48,48);
+	push_route_clip(snap,frame,inset);
+	cairo_t *cr=gtk_snapshot_append_cairo(snap,&area);
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_width(cr,1.7);
+	if(notice_phase<.79) {
+		double prev_x=0,prev_y=0;
+		for(int i=0;i<=24;i++) {
+			double t=i/24.,d=head+(tail-head)*t;
+			double curve=7+4*sin(t*15.3)*sin(t*G_PI);
+			double px=hx+dx*d-dy*curve,py=hy+dy*d+dx*curve;
+			if(i) {
+				cairo_set_source_rgba(cr,.77,.65,1,.93*(1-t)*MIN(1,travel*10));
+				cairo_move_to(cr,prev_x,prev_y);cairo_line_to(cr,px,py);cairo_stroke(cr);
+			} else if(tail-head>1) {
+				cairo_set_source_rgba(cr,.88,.80,1,MIN(1,travel*10));
+				cairo_arc(cr,px,py,2.3,0,2*G_PI);cairo_fill(cr);
+			}
+			prev_x=px;prev_y=py;
+		}
+	} else {
+		double flash=(notice_phase-.79)/.21;
+		cairo_set_source_rgba(cr,.77,.65,1,.85*(1-flash));
+		cairo_arc(cr,hx,hy,11+10*flash,0,2*G_PI);cairo_stroke(cr);
+	}
+	cairo_destroy(cr);gtk_snapshot_pop(snap);
+}
+static void notice_layer_unmap(GtkWidget *widget,gpointer data) {
+	(void)widget;(void)data;end_notice_transit();
+}
+static void map_notice_layer_class_init(MapNoticeClass *c) {GTK_WIDGET_CLASS(c)->snapshot=notice_snapshot;}
+static void map_notice_layer_init(MapNotice *self) {
+	gtk_widget_set_can_target(GTK_WIDGET(self),FALSE);
+	g_signal_connect(self,"unmap",G_CALLBACK(notice_layer_unmap),NULL);
+}
+
 typedef GtkWidget MapRoute;
 typedef GtkWidgetClass MapRouteClass;
 G_DEFINE_TYPE(MapRoute,map_route_layer,GTK_TYPE_WIDGET)
 
 static void route_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
-	if(!profile_node || w<120 || h<100) return;
+	if(!selected_node || !map_frame_available(w,h)) return;
 	double inset;
 	struct plane frame=border_plane(w,h,&inset);
 	map_route(snap,node_plane(w,h),frame,inset);
@@ -1262,12 +1665,12 @@ G_DEFINE_TYPE(MapOrigin,map_origin,GTK_TYPE_WIDGET)
 
 static void origin_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
-	if(w<120||h<100) return;
+	if(!map_frame_available(w,h)) return;
 	double hx,hy,inset;
 	struct plane frame=border_plane(w,h,&inset);
 	map_origin_point(&hx,&hy);
 	if(!content_contains(frame,inset,hx,hy)) return;
-	double half=symbol_half();
+	double half=FLEET_HULL_HALF_WIDTH*map_zoom.scale;
 	if(!mothership_label)mothership_label=new_marker_label("Mothership");
 	const struct map_label *label=mothership_label;
 	double label_x=hx+half+6,label_y=marker_label_top(label,hy);
@@ -1278,29 +1681,7 @@ static void origin_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	cairo_t *cr=gtk_snapshot_append_cairo(snap,&bounds);
 	plane_outline(cr,frame,inset);
 	cairo_clip(cr);
-	// Connect storyboard: blue-gray circular rim, cyan swept ship and spine.
-	cairo_save(cr);
-	cairo_translate(cr,hx,hy);
-	double scale=(half-SHIP_RIM_WIDTH*.5)/21;
-	cairo_scale(cr,scale,scale);
-	cairo_arc(cr,0,0,21,0,2*G_PI);
-	cairo_set_source_rgb(cr,.080,.142,.181);cairo_fill_preserve(cr);
-	cairo_set_source_rgba(cr,.33,.56,.61,.90);
-	cairo_set_line_width(cr,SHIP_RIM_WIDTH/scale);cairo_stroke(cr);
-	cairo_move_to(cr,0,-14.5);
-	cairo_line_to(cr,14,9.4);
-	cairo_line_to(cr,5.4,6.4);
-	cairo_line_to(cr,0,10.6);
-	cairo_line_to(cr,-5.4,6.4);
-	cairo_line_to(cr,-14,9.4);
-	cairo_close_path(cr);
-	cairo_set_source_rgb(cr,.101,.192,.232);cairo_fill_preserve(cr);
-	cairo_set_source_rgb(cr,.44,.87,.87);
-	cairo_set_line_width(cr,1.75);
-	cairo_set_line_join(cr,CAIRO_LINE_JOIN_ROUND);cairo_stroke(cr);
-	cairo_move_to(cr,0,-9.7);cairo_line_to(cr,0,6.1);
-	cairo_set_line_width(cr,1.4);cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);cairo_stroke(cr);
-	cairo_restore(cr);
+	draw_fleet_ship(cr,hx,hy,map_zoom.scale,TRUE,FALSE,FALSE,FALSE);
 	cairo_set_source_rgba(cr,.56,.80,.87,.95);
 	cairo_move_to(cr,label_x,label_y);
 	pango_cairo_show_layout(cr,label->layout);
@@ -1316,7 +1697,7 @@ static void map_origin_init(MapOrigin *self) {
 
 static void annotations_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
-	if(w<120||h<100) return;
+	if(!map_frame_available(w,h)) return;
 	static int last_width,last_height;
 	if (w!=last_width || h!=last_height) clear_intro_labels();
 	last_width=w;last_height=h;
@@ -1327,16 +1708,6 @@ static void annotations_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	double inset;
 	struct plane plane=node_plane(w,h),border=border_plane(w,h,&inset);
 	graphene_rect_t screen=GRAPHENE_RECT_INIT(0,0,w,h);
-	struct profile_layout profile;
-	struct profile_data *record;
-	gboolean profile_visible=profile_layout_at(w,h,&profile,&record);
-	if (!profile_visible && profile_node && profile_open) {
-		g_clear_pointer(&profile_node,g_free);
-		profile_open=FALSE;
-		reset_route();
-		gtk_widget_queue_draw(route_layer);
-		watch_profile_age();
-	}
 	gboolean drew=FALSE;
 	for (int pass=0;pass<2;pass++) {
 		for(char **n=names;n&&*n;++n) {
@@ -1350,7 +1721,7 @@ static void annotations_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 				const struct map_label *label=map_label_for(*n);
 				bounds=GRAPHENE_RECT_INIT(x+reach+6+label->ink.x-2,
 					marker_label_top(label,y)+label->ink.y-2,
-					label->ink.width+4,label->ink.height+4);
+					label->ink.width+4+(notice_count(*n)?34:0),label->ink.height+4);
 			}
 			graphene_rect_t clipped;
 			if(!graphene_rect_intersection(&bounds,&screen,&clipped))continue;
@@ -1370,7 +1741,11 @@ static void annotations_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 					cairo_translate(cr,-x,-y);
 				}
 				draw_symbol(cr,*n,x,y);
-			} else draw_label(cr,*n,x,y,reach);
+			} else {
+				draw_label(cr,*n,x,y,reach);
+				const struct map_label *label=map_label_for(*n);
+				draw_notice_count(cr,*n,x+reach+12+label->ink.x+label->ink.width,y);
+			}
 			cairo_destroy(cr);
 			drew=TRUE;
 		}
@@ -1394,7 +1769,8 @@ static void detail_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	struct profile_layout profile;
 	struct profile_data *record;
 	if (profile_layout_at(gtk_widget_get_width(widget),gtk_widget_get_height(widget),
-			&profile,&record)) profile_snapshot(snap,widget,profile,profile_node,record);
+			&profile,&record)) profile_snapshot(snap,widget,profile,selected_node,record,
+			detail_button_pressed?GTK_STATE_FLAG_ACTIVE:GTK_STATE_FLAG_NORMAL);
 }
 
 static void map_detail_class_init(MapDetailClass *c) { GTK_WIDGET_CLASS(c)->snapshot=detail_snapshot; }
@@ -1492,8 +1868,8 @@ void map_hud_init(void) {
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),intro_layer);
 	gtk_widget_set_visible(intro_layer,FALSE);
 	// One retained stack, bottom to top: grid/frame, radar, world (origin,
-	// Nodes/routes, relay), minimap, Detail. The fast radar is a native
-	// subsurface; it runs before world/Detail and shares the minimap
+	// Nodes/routes, relay), map guide/minimap, Detail. The fast radar is a native
+	// subsurface; it runs before world and shares the minimap
 	// exclusion with the GTK radar fallback.
 	origin_layer=g_object_new(map_origin_get_type(),NULL);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),origin_layer);
@@ -1501,6 +1877,9 @@ void map_hud_init(void) {
 	route_layer=g_object_new(map_route_layer_get_type(),NULL);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),route_layer);
 	gtk_widget_set_visible(route_layer,FALSE);
+	notice_layer=g_object_new(map_notice_layer_get_type(),NULL);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),notice_layer);
+	gtk_widget_set_visible(notice_layer,FALSE);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),annotations);
 	relay_layer=g_object_new(map_relay_get_type(),NULL);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),relay_layer);
@@ -1508,9 +1887,15 @@ void map_hud_init(void) {
 	minimap_layer=g_object_new(map_mini_get_type(),NULL);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),minimap_layer);
 	gtk_widget_set_visible(minimap_layer,FALSE);
+	guide_layer=g_object_new(map_guide_get_type(),NULL);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),guide_layer);
+	gtk_widget_set_visible(guide_layer,FALSE);
 	detail_layer=g_object_new(map_detail_get_type(),NULL);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),detail_layer);
 	gtk_widget_set_visible(detail_layer,FALSE);
+	arcade_layer=map_arcade_new(draw_fleet_ship);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),arcade_layer);
+	gtk_widget_set_visible(arcade_layer,FALSE);
 	gtk_widget_set_visible(gpu_grid,FALSE);
 	gtk_widget_set_visible(canvas,FALSE);
 	gtk_widget_set_visible(annotations,FALSE);
@@ -1527,6 +1912,8 @@ void map_hud_update(const char *node_names, GHashTable *positions, const char *n
 		listed_names = g_strdup(node_names);
 		g_strfreev(names);
 		names = g_strsplit(node_names, "\n", -1);
+		if(selected_node && !g_strv_contains((const char *const *)names,selected_node))
+			map_hud_deselect();
 	}
 	if (g_strcmp0(profile_rows,rows)!=0) {
 		if(map_labels) g_hash_table_remove_all(map_labels);
@@ -1545,9 +1932,11 @@ void map_hud_update(const char *node_names, GHashTable *positions, const char *n
 	in_overview = overview;
 	showing_map = visible;
 	if (!visible) {
+		map_hud_arcade_stop();
+		map_hud_guide_reset();
 		map_hud_relay_cancel();
 		map_hud_cancel_zoom();
-		map_hud_close_profile();
+		map_hud_deselect();
 		stop_intro();
 		intro_suppressed=FALSE;
 	}
@@ -1558,8 +1947,8 @@ void map_hud_update(const char *node_names, GHashTable *positions, const char *n
 	if(changed) {
 		clear_intro_labels();
 		if (gtk_widget_get_visible(minimap_layer)) gtk_widget_queue_draw(minimap_layer);
-		if (gtk_widget_get_visible(detail_layer)) gtk_widget_queue_draw(detail_layer);
 		if (gtk_widget_get_visible(route_layer)) gtk_widget_queue_draw(route_layer);
+		if (gtk_widget_get_visible(detail_layer)) gtk_widget_queue_draw(detail_layer);
 	}
 	if (gtk_widget_get_visible(annotations) && (changed || !was_visible)) gtk_widget_queue_draw(annotations);
 }

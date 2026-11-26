@@ -5,6 +5,7 @@ import (
 	_ "embed"
 	"fmt"
 	"image/png"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -20,8 +21,20 @@ const (
 )
 
 type wallpaperConfig struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"`
+	Path         string `json:"path"`
+	Mode         string `json:"mode"`
+	VideoEnabled *bool  `json:"video_enabled,omitempty"`
+}
+
+func (c wallpaperConfig) allowsVideo() bool {
+	return c.VideoEnabled == nil || *c.VideoEnabled
+}
+
+func (c wallpaperConfig) playable() wallpaperConfig {
+	if !c.allowsVideo() && strings.EqualFold(filepath.Ext(c.Path), ".mp4") {
+		c.Path = ""
+	}
+	return c
 }
 
 func loadWallpaperConfig(path string, warn func(string, ...any)) wallpaperConfig {
@@ -46,6 +59,32 @@ func loadWallpaperConfig(path string, warn func(string, ...any)) wallpaperConfig
 		cfg.Mode = defaults.Mode
 	}
 	return cfg
+}
+
+// The video decoder streams from a regular local file rather than loading its
+// bytes into the GTK process or resolving a network URI.
+func videoWallpaperPath(configPath, asset string) (string, bool, error) {
+	if !strings.EqualFold(filepath.Ext(asset), ".mp4") {
+		return "", false, nil
+	}
+	if strings.Contains(asset, "://") {
+		return "", true, fmt.Errorf("expected a local MP4 file")
+	}
+	if !filepath.IsAbs(asset) {
+		asset = filepath.Join(filepath.Dir(configPath), asset)
+	}
+	path, err := filepath.Abs(asset)
+	if err != nil {
+		return "", true, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", true, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", true, fmt.Errorf("expected a regular MP4 file")
+	}
+	return path, true, nil
 }
 
 func readWallpaper(configPath, asset string) ([]byte, error) {

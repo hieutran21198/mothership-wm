@@ -16,16 +16,20 @@ has either a `body` or an `error` with `code` and `message`.
 | Method | Request body | Response body |
 | --- | --- | --- |
 | `snapshot` | `{}` | Current snapshot |
+| `shortcuts.get` | `{}` | Saved shortcut table |
+| `shortcuts.set` | `{"close_window":"Q","app_grid":"A","node_settings":",","node_keys":"numbers"}` | `{}` after WM applies and desktopd saves the table; `node_keys` can also be `"function"` |
 | `subscribe` | `{}` | Initial snapshot, then updates on this connection |
 | `create` | `{"domain":"Dev","description":"Backend Platform"}` (description optional) | `{}` |
+| `delete` | `{"domain":"Dev","force":true}` (`force` optional; false by default) | `{}` after removal; Force waits for WM to return live members to Inbox |
 | `assign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7,"domain":"Dev"}` | `{}` |
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
 | `focus.prepare` | `{"domain":"Dev"}` | `{"ticket":42}` after WM preparation; no selection change |
 | `focus.reveal` | `{"ticket":42}` | `{}` after the first clipped WM output state |
-| `home` | `{}` | `{}` after WM acknowledgement |
+| `home` | `{}` | `{}` after WM acknowledgement of blank Home |
+| `home.node` | `{}` | `{}` after WM applies the internal Default Node from Home |
 | `overview` | `{}` | `{}` after clearing the app projection in WM |
 | `map.show` / `map.hide` | `{}` | `{}` after updating the HUD visibility preference only |
-| `layout` | `{"domain":"Dev","mode":"float"}` | `{}` after applying the mode in the currently selected Node |
+| `layout` | `{"domain":"Dev","mode":"float"}` | `{}` after applying the mode in the currently selected Node. Use `"mode":"stage"` for Stage. With `"mode":"flow"`, optional `"restore_flow":true` restores the Node’s last acknowledged Flow orientation when leaving Stage. |
 | `stack.next` | `{"domain":"Dev"}` | `{}` after advancing only the current Node's Flow or Stack |
 
 For example, request `{"id":12,"method":"create","body":{"domain":"Dev"}}`
@@ -59,14 +63,14 @@ Times are Unix seconds. The
 selection has `state`
 (`not_selected`, `acknowledged`, or `unknown`) and includes `domain`
 only for an acknowledged named Domain. Confirmed Home is
-`{"state":"acknowledged","view":"home"}`. Confirmed Overview has the same shape with `"view":"overview"` and no
+`{"state":"acknowledged","view":"home"}`. The internal Default Node is `{"state":"acknowledged","view":"home_node","mode":"flow"}`; it has no named Domain key or profile. Confirmed Overview has the same shape with `"view":"overview"` and no
 Domain or mode. Named selection from a current WM adds `mode` (`flow`, `flow-horizontal`, `flow-vertical`, `tiling`,
 `float` or `stack`). Mode changes use the existing selection event; Next
 does not create a false selection event. A mode command names the Node it
 intends to change; a stale target is rejected. Unknown and not selected
 retain their existing shapes. Derive Inbox from mapped windows
-without a `domain`; any beyond the first two by ID wait for a Home slot,
-but remain in the catalog and can be assigned directly.
+without a `domain`; entries beyond the Default Node’s projection capacity
+remain in the catalog and can be assigned directly.
 
 The subscription emits one snapshot response and then objects of the form
 `{"revision":8,"event":"domain.created","body":{"domain":"Dev","created_at":1795500000}}`.
@@ -74,6 +78,7 @@ The subscription emits one snapshot response and then objects of the form
 | Event | Body and client action |
 | --- | --- |
 | `domain.created` | Node profile; add that name and metadata. |
+| `domain.deleted` | `domain`; remove that name and profile. An acknowledged Force move publishes affected windows first. |
 | `window.updated` | Complete window entry; replace by window ID, or insert it. |
 | `window.closed` | `window_id`; remove that entry. |
 | `selection.changed` | Complete selection; replace it. If it includes `last_active`, update that Node profile after the acknowledged entry. |
@@ -100,3 +105,24 @@ Home, Overview or Map hide supersedes a prepared request. Reveal resolves
 live membership again; the ticket does not store stale window IDs.
 Read selection only from the normal snapshot/subscription, never from the
 preparation response. A stale ticket returns `stale_connect`.
+
+The matching WM advertises Inbox moves with `ready_return_inbox`. The
+`inbox SERIAL ID ...` command clears the assigned flag for up to eight live
+window IDs without opening a view; closed IDs are ignored. Wait for
+`applied SERIAL` before removing the durable Node record.
+
+
+A WM advertising `ready_shortcuts` also supports the earlier Inbox
+actions. desktopd restores saved shortcuts on that connection. The
+private `shortcuts ID CLOSE GRID SETTINGS NODE_FIRST` packet carries
+Linux physical keycodes. WM changes all four bindings before returning
+`applied ID`. Raw input and key repeat never cross this socket.
+
+
+A WM advertising `ready_node_parity` supports all earlier shortcuts and
+uses `home_node ID MODE` to enter Default Node. desktopd remembers Default
+Node's mode in the live session like other Node views. `layout` or `next`
+with an empty Domain targets Default Node only while it is the acknowledged
+selection. It does not target blank Home, Overview or an inactive view.
+Default Node accepts Flow and Stage modes; an older WM continues to receive
+`home_node ID` and does not expose Default Node layout changes.

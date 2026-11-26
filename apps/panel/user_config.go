@@ -7,6 +7,12 @@ import (
 	"mothership-wm/internal/userconfig"
 )
 
+const (
+	minPreviewZoom     = 100
+	defaultPreviewZoom = 150
+	maxPreviewZoom     = 200
+)
+
 type panelConfigPaths struct {
 	user, legacyMap, theme, wallpaper string
 }
@@ -19,6 +25,15 @@ type panelPreferences struct {
 	wallpaperSource string
 	settingsBase    mapSettings
 	usedLegacy      bool
+	homeWidth       int
+	cursorSize      int
+	homeGuide       bool
+	nodeGuide       bool
+	nodeTelemetry   bool
+	nodePreviewZoom int
+	toastMode       int
+	appPins         []string
+	defaultNode     bool
 }
 
 func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) panelPreferences {
@@ -29,7 +44,7 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 	base := defaultMapSettings(theme.BorderColor)
 	p := panelPreferences{
 		theme: theme, settings: base, wallpaper: wall, iconSource: paths.theme,
-		wallpaperSource: paths.wallpaper, settingsBase: base,
+		wallpaperSource: paths.wallpaper, settingsBase: base, homeWidth: defaultHomeWidth, cursorSize: userconfig.CursorSizeDefault, homeGuide: true, nodeGuide: true, nodePreviewZoom: defaultPreviewZoom, defaultNode: true,
 	}
 	doc, exists, err := userconfig.Read(paths.user)
 	if err != nil {
@@ -50,6 +65,45 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 		return p
 	}
 
+	p.homeWidth = loadHomeWidth(doc, warn)
+	p.cursorSize = userconfig.CursorSize(doc)
+	p.homeGuide = loadHomeGuide(doc, warn)
+	if node, err := doc.Child("node_panel"); err != nil {
+		warn("node_panel: %v", err)
+	} else {
+		for key, dest := range map[string]*bool{"show_keyboard_guide": &p.nodeGuide, "show_telemetry": &p.nodeTelemetry} {
+			raw, ok := node[key]
+			if !ok {
+				continue
+			}
+			var value *bool
+			if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+				warn("node_panel.%s must be true or false", key)
+			} else {
+				*dest = *value
+			}
+		}
+		if raw, ok := node["preview_zoom_percent"]; ok {
+			var zoom int
+			if err := json.Unmarshal(raw, &zoom); err != nil || zoom < minPreviewZoom || zoom > maxPreviewZoom {
+				warn("node_panel.preview_zoom_percent must be an integer between %d and %d", minPreviewZoom, maxPreviewZoom)
+			} else {
+				p.nodePreviewZoom = zoom
+			}
+		}
+	}
+	p.toastMode = loadToastMode(doc, warn)
+	p.appPins = loadAppPins(doc, warn)
+	if home, err := doc.Child("home"); err != nil {
+		warn("home: %v", err)
+	} else if raw, ok := home["default_node"]; ok {
+		var enabled *bool
+		if err := json.Unmarshal(raw, &enabled); err != nil || enabled == nil {
+			warn("home.default_node must be true or false")
+		} else {
+			p.defaultNode = *enabled
+		}
+	}
 	if raw, ok := doc["center_map"]; ok {
 		var style rawTheme
 		if _, err := doc.Child("center_map"); err != nil {
@@ -75,8 +129,9 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 	}
 	if raw, ok := doc["wallpaper"]; ok {
 		var patch struct {
-			Path *string `json:"path"`
-			Mode *string `json:"mode"`
+			Path         *string `json:"path"`
+			Mode         *string `json:"mode"`
+			VideoEnabled *bool   `json:"video_enabled"`
 		}
 		if _, err := doc.Child("wallpaper"); err != nil {
 			warn("wallpaper: %v", err)
@@ -85,6 +140,9 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 		} else {
 			if patch.Path != nil {
 				p.wallpaper.Path, p.wallpaperSource = *patch.Path, paths.user
+			}
+			if patch.VideoEnabled != nil {
+				p.wallpaper.VideoEnabled = patch.VideoEnabled
 			}
 			if patch.Mode != nil {
 				switch *patch.Mode {
@@ -154,5 +212,36 @@ func (p *panelPreferences) saveMap(path string, wanted mapSettings) error {
 	}
 	p.usedLegacy = false
 	p.settings = wanted
+	return nil
+}
+
+func (p *panelPreferences) saveNodePanel(path string, show, telemetry bool, zoom int) error {
+	if zoom < minPreviewZoom || zoom > maxPreviewZoom {
+		return fmt.Errorf("Preview zoom must be between %d%% and %d%%", minPreviewZoom, maxPreviewZoom)
+	}
+	doc, _, err := userconfig.Read(path)
+	if err != nil {
+		return err
+	}
+	module, err := doc.Child("node_panel")
+	if err != nil {
+		return err
+	}
+	if err := module.Set("show_keyboard_guide", show); err != nil {
+		return err
+	}
+	if err := module.Set("show_telemetry", telemetry); err != nil {
+		return err
+	}
+	if err := module.Set("preview_zoom_percent", zoom); err != nil {
+		return err
+	}
+	if err := doc.Set("node_panel", module); err != nil {
+		return err
+	}
+	if err := userconfig.Write(path, doc); err != nil {
+		return err
+	}
+	p.nodeGuide, p.nodeTelemetry, p.nodePreviewZoom = show, telemetry, zoom
 	return nil
 }

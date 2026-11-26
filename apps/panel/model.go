@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -28,12 +29,12 @@ type controller struct {
 }
 
 type view struct {
-	title, message, node, mode                      string
-	domains, emptyDomains                           []string
-	windows                                         []windowRow
-	profiles                                        []profileRow
-	enabled, overview, mapVisible, blankHome, ready bool
-	connectFailed, preparedRelay                    uint64
+	title, message, node, mode                                   string
+	domains, emptyDomains                                        []string
+	windows                                                      []windowRow
+	profiles                                                     []profileRow
+	enabled, overview, mapVisible, blankHome, ready, defaultNode bool
+	connectFailed, preparedRelay                                 uint64
 }
 
 type windowRow struct{ key, label string }
@@ -90,6 +91,8 @@ func (c *controller) render() {
 		switch {
 		case s.Selection.State == "acknowledged" && s.Selection.View == "home":
 			title = "Home"
+		case s.Selection.State == "acknowledged" && s.Selection.View == "home_node":
+			title = "Default Node"
 		case s.Selection.State == "acknowledged" && s.Selection.View == "overview":
 			title = "Overview"
 		case s.Selection.State == "acknowledged" && s.Selection.Domain != "":
@@ -105,15 +108,8 @@ func (c *controller) render() {
 		v.node, v.mode = s.Selection.Domain, s.Selection.Mode
 		v.overview = s.Selection.View == "overview"
 	}
-	if c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home" {
-		v.blankHome = true
-		for _, w := range s.Windows {
-			if w.Mapped && w.Domain == "" {
-				v.blankHome = false
-				break
-			}
-		}
-	}
+	v.blankHome = c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home"
+	v.defaultNode = c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home_node"
 	if c.online {
 		v.domains = append([]string(nil), s.Domains...)
 		v.profiles = profileRows(s)
@@ -249,7 +245,7 @@ func (c *controller) submit(method string, body any) {
 }
 
 func (c *controller) submitAfter(method string, body any, enterOverview bool) {
-	c.submitCommand(method, body, enterOverview, 0)
+	c.submitCommand(method, body, enterOverview, 0, "", nil)
 }
 
 func (c *controller) connect(name string, relay uint64) {
@@ -257,7 +253,7 @@ func (c *controller) connect(name string, relay uint64) {
 	if relay != 0 {
 		method = domainipc.PrepareFocusMethod
 	}
-	c.submitCommand(method, domainipc.DomainBody{Domain: name}, false, relay)
+	c.submitCommand(method, domainipc.DomainBody{Domain: name}, false, relay, "", nil)
 }
 
 func (c *controller) reveal(relay uint64) {
@@ -271,10 +267,14 @@ func (c *controller) reveal(relay uint64) {
 	ticket := c.focusTicket
 	c.focusTicket = 0
 	c.mu.Unlock()
-	c.submitCommand(domainipc.RevealFocusMethod, domainipc.FocusTicket{Ticket: ticket}, false, relay)
+	c.submitCommand(domainipc.RevealFocusMethod, domainipc.FocusTicket{Ticket: ticket}, false, relay, "", nil)
 }
 
-func (c *controller) submitCommand(method string, body any, enterOverview bool, relay uint64) {
+func (c *controller) createAndEnter(name string, finish func(error)) {
+	c.submitCommand(domainipc.CreateMethod, domainipc.CreateBody{Domain: name}, false, 0, name, finish)
+}
+
+func (c *controller) submitCommand(method string, body any, enterOverview bool, relay uint64, thenFocus string, finish func(error)) {
 	c.mu.Lock()
 	if !c.online || !c.state.WMReady || c.pending {
 		if relay != 0 {
@@ -282,12 +282,15 @@ func (c *controller) submitCommand(method string, body any, enterOverview bool, 
 			c.render()
 		}
 		c.mu.Unlock()
+		if finish != nil {
+			finish(errors.New("Desktop is busy or unavailable. Try again."))
+		}
 		return
 	}
 	c.pending = true
 	c.next++
 	id := c.next
-	if enterOverview {
+	if enterOverview || thenFocus != "" {
 		c.next++
 	}
 	c.message = "Applying…"
@@ -321,6 +324,15 @@ func (c *controller) submitCommand(method string, body any, enterOverview bool, 
 				}
 			}
 		}
+		if err == nil && thenFocus != "" {
+			// Enter only after desktopd persisted the Node. A failed entry
+			// does not undo creation or change the acknowledged view.
+			_, _, done, status := connection(c.ctx, c.path, domainipc.FocusMethod, id+1, domainipc.DomainBody{Domain: thenFocus})
+			done()
+			if status != nil {
+				err = fmt.Errorf("Created %s, but could not enter: %w", thenFocus, status)
+			}
+		}
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.pending = false
@@ -339,6 +351,9 @@ func (c *controller) submitCommand(method string, body any, enterOverview bool, 
 		// Command replies cannot change or override selection. Only the
 		// snapshot/event stream is authoritative, including newer events.
 		c.render()
+		if finish != nil {
+			finish(err)
+		}
 	}()
 }
 
@@ -361,6 +376,13 @@ func reduce(s *domainipc.Snapshot, e domainipc.Event) error {
 		s.Domains = append(s.Domains, v.Domain)
 		s.NodeProfiles = append(s.NodeProfiles, v)
 		sort.Strings(s.Domains)
+	case domainipc.DomainDeletedEvent:
+		v, err := domainipc.Decode[domainipc.DomainBody](e.Body)
+		if err != nil {
+			return err
+		}
+		s.Domains = slices.DeleteFunc(s.Domains, func(name string) bool { return name == v.Domain })
+		s.NodeProfiles = slices.DeleteFunc(s.NodeProfiles, func(n domainipc.NodeProfile) bool { return n.Domain == v.Domain })
 	case "window.updated":
 		v, err := domainipc.Decode[domainipc.Window](e.Body)
 		if err != nil {

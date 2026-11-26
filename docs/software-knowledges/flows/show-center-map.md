@@ -54,24 +54,20 @@ only Nodes and labels with the configured speed. Wheel inside the frame
 zooms around the cursor and scales the icons, not the label font, grid, frame
 or wallpaper. Drag from blank space inside the frame pulls the map with the
 pointer after a movement threshold. Release, leaving the frame or focus loss
-stops drag. M or H cancels movement and hides the Map, leaving the wallpaper
-and Command Center entry without reopening apps. Escape dismisses a
-profile only; it does not close the Map. Focus loss stops movement. Outside Map
+stops drag. Space centers Mothership at the current zoom, clamped by the
+world bounds. Q, Escape, M or a bare Meta tap hides Map for blank Home
+without reopening apps. Escape first dismisses a modal or Arcade. Focus
+loss stops movement. Outside Map
 View these controls keep their ordinary routing. Connect requests the named
 workspace and reveals it after acknowledgement, without map movement.
 
 ### F-MAP-5
 
 While Map View owns the existing shell input, click a Node marker or name.
-The Panel shows its profile beside the projected anchor and keeps the card
-inside the frame. Clicking a different Node replaces it; clicking empty
-space, including the margin, dismisses it. It also closes when its Node
-scrolls out of view or Map View loses focus. Connect in the profile uses the
-existing named-workspace request and acknowledgement. Node selection does
-not itself request a workspace switch or change Last active. Render the
-real name and optional description. Running time is Node age (now minus
-creation time), not window uptime. Last active is the last acknowledged
-entry into that named workspace, not layout or window events. Omit missing
-fields. Group mapped members with matching app IDs into one recognizable
-icon per app. Omit unknown IDs and show the empty line only when live
-membership is known empty. See the [Center Map UI contract](../system/center-map-ui.md).
+The Panel highlights that Node and shows its dashed Mothership route without
+opening a dialog or changing the workspace. A different Node replaces the
+selection. A blank click clears it. Enter connects the selected Node
+through the existing acknowledgement. Number keys 1–9 connect to their own
+slot, and every visible Node can be selected and connected without a number.
+Explicit Disconnect returns to the previous camera and last connected selection.
+See the [Center Map UI contract](../system/center-map-ui.md).

@@ -32,6 +32,16 @@ type Node struct {
 	Shortcut    int    `json:"shortcut"`
 }
 
+// NumberKey projects the saved named-Node ordinal onto the numeric keys.
+// Key 1 is always reserved for Default, so the ninth named ordinal has
+// no key. Keep the saved ordinals unchanged when upgrading older catalogs.
+func (n Node) NumberKey() int {
+	if n.Shortcut < 1 || n.Shortcut >= ShortcutSlots {
+		return 0
+	}
+	return n.Shortcut + 1
+}
+
 type Session struct {
 	ID      string
 	windows map[uint64]Window
@@ -42,6 +52,7 @@ type Window struct {
 	ID, Epoch     uint64
 	Domain, AppID string
 	Mapped        bool
+	PID           int
 }
 
 func ValidName(s string) bool {
@@ -94,6 +105,7 @@ func (s *State) FreeShortcut() int {
 
 func (s *State) Exists(name string) bool { _, ok := s.nodes[name]; return ok }
 func (s *State) Node(name string) Node   { return s.nodes[name] }
+func (s *State) Delete(name string)      { delete(s.nodes, name) }
 func (s *State) Put(n Node) {
 	if s.nodes == nil {
 		s.nodes = make(map[string]Node)
@@ -123,11 +135,13 @@ func NewSession(id string) *Session {
 	return &Session{ID: id, windows: make(map[uint64]Window)}
 }
 
-func (s *Session) Add(id uint64) bool {
+func (s *Session) Add(id uint64) bool { return s.AddProcess(id, 0) }
+
+func (s *Session) AddProcess(id uint64, pid int) bool {
 	if _, exists := s.windows[id]; exists || id == 0 {
 		return false
 	}
-	s.windows[id] = Window{ID: id}
+	s.windows[id] = Window{ID: id, PID: pid}
 	return true
 }
 
@@ -184,6 +198,17 @@ func (s *State) Assign(session *Session, sessionID string, id uint64, name strin
 	w.Domain, w.Epoch = name, session.epoch
 	session.windows[id] = w
 	return nil
+}
+
+// ReturnToInbox clears one live assignment without changing Window identity.
+func (s *Session) ReturnToInbox(id uint64, from string) (Window, bool) {
+	w, ok := s.windows[id]
+	if !ok || w.Domain != from || from == "" {
+		return Window{}, false
+	}
+	w.Domain, w.Epoch = "", 0
+	s.windows[id] = w
+	return w, true
 }
 
 // Windows returns ordered copies for deterministic projection, including

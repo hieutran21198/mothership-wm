@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="3">
+  <interface name="mothership_map_pointer_v1" version="23">
     <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
       inside the frame and left-button sequences in the mapped, focused Map View.
       Coordinates are logical and local
-      to the nested viewport. There is no global pointer observer or grab.
+      to the nested viewport. Arcade can separately opt in to passive aim
+      coordinates while that same Map View owns keyboard focus. There is no
+      global pointer observer or grab.
     </description>
     <request name="destroy" type="destructor"/>
     <request name="watch">
@@ -37,6 +39,186 @@
       </description>
       <arg name="phase" type="uint" enum="contact_phase"/>
       <arg name="x" type="fixed"/><arg name="y" type="fixed"/>
+    </event>
+    <request name="set_aim" since="4">
+      <arg name="enabled" type="uint"/>
+    </request>
+    <event name="aim" since="4">
+      <description summary="passive arcade pointer; invalid when outside the active frame"/>
+      <arg name="valid" type="uint"/>
+      <arg name="x" type="fixed"/><arg name="y" type="fixed"/>
+    </event>
+    <enum name="weapon" since="5">
+      <entry name="normal" value="1"/>
+      <entry name="plasma" value="2"/>
+    </enum>
+    <event name="weapon_button" since="5">
+      <description summary="primary or secondary button owned by the focused arcade"/>
+      <arg name="weapon" type="uint" enum="weapon"/>
+      <arg name="pressed" type="uint"/>
+    </event>
+    <event name="home_tap" since="6">
+      <description summary="unmodified Meta released in a focused nested app, Node, or Map"/>
+    </event>
+    <request name="set_video_frost" since="7">
+      <description summary="draw frosted glass behind the visible Map using the wallpaper buffer">
+        Only the watched Command Center may set this state. The margin is in
+        logical pixels; the compositor samples its existing wallpaper texture.
+      </description>
+      <arg name="enabled" type="uint"/><arg name="margin" type="uint"/>
+    </request>
+    <request name="set_node_strip" since="8">
+      <description summary="place the watched panel's active-Node preview strip">
+        Logical viewport rectangle. Zero width hides it. The compositor
+        uses only existing buffers of the current Node; no pixels or app
+        identities are returned to the client.
+      </description>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="motion" type="uint"/>
+    </request>
+    <request name="node_strip_hover" since="8">
+      <arg name="x" type="fixed"/>
+    </request>
+    <request name="node_strip_focus" since="8">
+      <arg name="x" type="fixed"/>
+    </request>
+    <event name="node_apps" since="9">
+      <description summary="open App Grid after the nested seat handled Meta+A"/>
+    </event>
+    <event name="node_settings" since="10">
+      <description summary="open Node Panel Settings after the nested seat handled Meta+comma"/>
+    </event>
+    <request name="window_picker" since="11">
+      <description summary="request the active Node's current chooser rows"/>
+    </request>
+    <request name="window_pick" since="11">
+      <description summary="activate a row in the last chooser snapshot; zero ID dismisses"/>
+      <arg name="serial" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+    </request>
+    <event name="window_count" since="11">
+      <description summary="number of windows eligible for the preview tray in the active Node"/>
+      <arg name="count" type="uint"/>
+    </event>
+    <event name="picker_begin" since="11">
+      <arg name="serial" type="uint"/><arg name="keyboard" type="uint"/>
+    </event>
+    <event name="picker_row" since="11">
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="title" type="string"/><arg name="app_id" type="string"/>
+    </event>
+    <event name="picker_highlight" since="11">
+      <arg name="serial" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+    </event>
+    <event name="picker_end" since="11">
+      <arg name="serial" type="uint"/>
+    </event>
+    <event name="window_overflow" since="12">
+      <description summary="number of eligible tray windows not visible in the painted preview lane"/>
+      <arg name="count" type="uint"/>
+    </event>
+    <request name="window_preview" since="13">
+      <description summary="place one active overflow thumbnail; pixels stay in the compositor"/>
+      <arg name="serial" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+    </request>
+    <request name="set_picker_scale" since="14">
+      <description summary="set the keyboard chooser's preview zoom percentage"/>
+      <arg name="percent" type="uint"/>
+    </request>
+    <event name="node_number" since="15">
+      <description summary="activate this displayed Node number without moving keyboard focus to the panel"/>
+      <arg name="slot" type="uint"/>
+    </event>
+    <request name="display_query" since="16">
+      <description summary="query the native output; only the watched shell may request this"/>
+    </request>
+    <request name="display_apply" since="16">
+      <description summary="commit an advertised mode and scale to the native output"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="refresh_mhz" type="int"/><arg name="scale_percent" type="int"/>
+    </request>
+    <event name="display_available" since="16">
+      <arg name="available" type="uint"/>
+    </event>
+    <event name="display_current" since="16">
+      <arg name="name" type="string"/><arg name="connector" type="string"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="refresh_mhz" type="int"/><arg name="scale_percent" type="int"/>
+    </event>
+    <event name="display_mode" since="16">
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="refresh_mhz" type="int"/>
+    </event>
+    <event name="display_done" since="16"/>
+    <event name="display_result" since="16">
+      <description summary="apply result: 0 rejected, 1 active and saved, 2 active but not saved"/>
+      <arg name="status" type="uint"/><arg name="message" type="string"/>
+    </event>
+    <request name="highlight_redraw" since="17">
+      <description summary="retired compatibility request">
+        No effect. Reserved for clients built against protocol version 17.
+      </description>
+      <arg name="enabled" type="uint"/>
+    </request>
+    <request name="set_cursor_size" since="18">
+      <description summary="apply a saved logical pointer size on the watched shell"/>
+      <arg name="size" type="uint"/>
+    </request>
+    <enum name="glass_slot" since="19">
+      <entry name="app_grid" value="0"/>
+      <entry name="notification_log" value="1"/>
+    </enum>
+    <request name="set_scene_glass" since="19">
+      <description summary="set popup glass bounds and paint opacity">
+        Coordinates are in logical output space. Opacity is 0–1000;
+        zero stops sampling and hides the glass.
+      </description>
+      <arg name="slot" type="uint" enum="glass_slot"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="opacity" type="uint"/>
+    </request>
+    <event name="scene_glass_available" since="19">
+      <description summary="advertise scene-glass slots to the watched panel">
+        Bit n means the compositor can attempt the GPU effect for slot n.
+        A clear bit leaves the panel's paint-only fallback in control.
+      </description>
+      <arg name="slots" type="uint"/>
+    </event>
+    <event name="node_slash" since="20">
+      <description summary="open scoped Slash from a Node shortcut"/>
+    </event>
+    <request name="group_query" since="21">
+      <description summary="get group layout for the pointed-at tray thumbnail"/>
+      <arg name="x" type="fixed"/><arg name="y" type="fixed"/>
+    </request>
+    <request name="group_action" since="21">
+      <description summary="apply group layout or a single group action"/>
+      <arg name="hi" type="uint"/><arg name="lo" type="uint"/>
+      <arg name="action" type="uint" enum="group_command"/>
+      <arg name="split_x" type="int"/><arg name="split_y" type="int"/><arg name="gap" type="int"/>
+    </request>
+    <enum name="group_command" since="21">
+      <entry name="apply" value="0"/><entry name="minimize" value="1"/>
+      <entry name="restore" value="2"/><entry name="ungroup" value="3"/>
+    </enum>
+    <event name="group_state" since="21">
+      <description summary="group settings snapshot scoped to the active node"/>
+      <arg name="hi" type="uint"/><arg name="lo" type="uint"/>
+      <arg name="count" type="uint"/><arg name="hidden" type="uint"/>
+      <arg name="split_x" type="int"/><arg name="split_y" type="int"/><arg name="gap" type="int"/>
+    </event>
+    <event name="group_settings_anchor" since="22">
+      <description summary="anchor Group Settings to the shared frame's Layout control"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+    </event>
+    <event name="node_notifications" since="23">
+      <description summary="open Notification Log for the active Node"/>
     </event>
   </interface>
 </protocol>

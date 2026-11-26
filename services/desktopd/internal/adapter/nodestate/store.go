@@ -93,6 +93,13 @@ func Open(stateHome, home string) (Store, []domain.Node, error) {
 	return s, nodes, nil
 }
 
+func (s Store) Delete(n domain.Node) error {
+	if !domain.ValidName(n.Name) {
+		return errors.New("invalid Node name")
+	}
+	return os.Remove(filepath.Join(s.dir, n.Name+".json"))
+}
+
 func (s Store) Save(n domain.Node) error {
 	if !domain.ValidName(n.Name) {
 		return errors.New("invalid Node name")

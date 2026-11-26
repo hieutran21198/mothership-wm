@@ -39,11 +39,6 @@ static inline GdkRGBA map_grid_junction(GdkRGBA grid) {
 		grid.blue*.42+.88*.58,.58};
 }
 
-/* The outer contour still owns the wallpaper clip. */
-static inline int map_frame_margin(int w, int h, int margin) {
-	return map_frame_effective_margin(w,h,margin);
-}
-
 static inline void map_frame_outline(cairo_t *cr, double x, double y, double w, double h, double inset) {
 	double l = x + .5 + inset, t = y + .5 + inset;
 	double r = x + w - .5 - inset, b = y + h - .5 - inset;
@@ -74,5 +69,7 @@ static inline void map_frame_strokes(cairo_t *cr,double x,double y,double w,doub
 
 GtkWidget *wallpaper_clock(void);
 void wallpaper_update_frost(gboolean enabled, int outer_margin);
+
+void wallpaper_add_guide(GtkWidget *guide);
 
 #endif

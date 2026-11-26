@@ -20,7 +20,7 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 	}
 	badBody := func() { sendFailure(c, req.ID, "invalid_body", "invalid request body") }
 	switch req.Method {
-	case domainipc.SnapshotMethod, domainipc.SubscribeMethod, domainipc.HomeMethod, domainipc.OverviewMethod, domainipc.MapShowMethod, domainipc.MapHideMethod:
+	case domainipc.SnapshotMethod, domainipc.SubscribeMethod, domainipc.HomeMethod, domainipc.DefaultNodeMethod, domainipc.OverviewMethod, domainipc.MapShowMethod, domainipc.MapHideMethod:
 		if _, err := domainipc.Decode[domainipc.Empty](req.Body); err != nil {
 			badBody()
 			return
@@ -38,10 +38,13 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			sendSuccess(c, req.ID)
 		case domainipc.SnapshotMethod:
 			sendSnapshot(c, req.ID, d.service.Snapshot())
-		case domainipc.HomeMethod, domainipc.OverviewMethod:
+		case domainipc.HomeMethod, domainipc.DefaultNodeMethod, domainipc.OverviewMethod:
 			apply := func() error { return d.focus("") }
+			if req.Method == domainipc.DefaultNodeMethod {
+				apply = d.defaultNode
+			}
 			if req.Method == domainipc.OverviewMethod {
-				apply = func() error { return d.viewAction(req.Method, "", "") }
+				apply = func() error { return d.viewAction(req.Method, "", "", false) }
 			}
 			if err := apply(); err != nil {
 				sendCommandError(c, req.ID, err)
@@ -49,6 +52,31 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			}
 			sendSuccess(c, req.ID)
 		}
+	case domainipc.ShortcutsGetMethod:
+		if _, err := domainipc.Decode[domainipc.Empty](req.Body); err != nil {
+			badBody()
+			return
+		}
+		d.mu.Lock()
+		next := d.shortcuts
+		d.mu.Unlock()
+		b, _ := json.Marshal(next)
+		_ = domainipc.WriteJSON(c, domainipc.Response{ID: req.ID, Body: b})
+	case domainipc.ShortcutsSetMethod:
+		next, err := domainipc.Decode[domainipc.Shortcuts](req.Body)
+		if err != nil {
+			badBody()
+			return
+		}
+		if _, err = next.Keycodes(); err != nil {
+			sendFailure(c, req.ID, "invalid_shortcuts", err.Error())
+			return
+		}
+		if err = d.setShortcuts(next); err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		sendSuccess(c, req.ID)
 	case domainipc.CreateMethod:
 		b, err := domainipc.Decode[domainipc.CreateBody](req.Body)
 		if err != nil || !domain.ValidName(b.Domain) || !domain.ValidDescription(b.Description) {
@@ -56,6 +84,17 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			return
 		}
 		if err := d.service.CreateNode(b.Domain, b.Description); err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		sendSuccess(c, req.ID)
+	case domainipc.DeleteMethod:
+		b, err := domainipc.Decode[domainipc.DeleteBody](req.Body)
+		if err != nil || !domain.ValidName(b.Domain) {
+			badBody()
+			return
+		}
+		if err := d.deleteNode(b.Domain, b.Force); err != nil {
 			sendCommandError(c, req.ID, err)
 			return
 		}
@@ -99,7 +138,7 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 		var b domainipc.LayoutBody
 		if req.Method == domainipc.LayoutMethod {
 			b, err = domainipc.Decode[domainipc.LayoutBody](req.Body)
-			if err == nil && !domainipc.ValidLayout(b.Mode) {
+			if err == nil && (!domainipc.ValidLayout(b.Mode) || (b.RestoreFlow && b.Mode != domainipc.Flow)) {
 				badBody()
 				return
 			}
@@ -108,11 +147,13 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			ref, err = domainipc.Decode[domainipc.DomainBody](req.Body)
 			b.Domain = ref.Domain
 		}
-		if err != nil || !validWord(b.Domain) {
+		// An empty Domain addresses the active Default Node only. The
+		// service rejects it on blank Home, Overview or a named Node.
+		if err != nil || (b.Domain != "" && !validWord(b.Domain)) {
 			badBody()
 			return
 		}
-		if err := d.viewAction(req.Method, b.Domain, b.Mode); err != nil {
+		if err := d.viewAction(req.Method, b.Domain, b.Mode, b.RestoreFlow); err != nil {
 			sendCommandError(c, req.ID, err)
 			return
 		}
@@ -168,7 +209,9 @@ func sendSuccess(c *net.UnixConn, id uint64) {
 
 func selectionWire(s app.Selection) domainipc.Selection {
 	v := domainipc.Selection{State: s.Kind, Domain: s.Domain, Mode: s.Mode}
-	if s.Home {
+	if s.DefaultNode {
+		v.View = "home_node"
+	} else if s.Home {
 		v.View = "home"
 	} else if s.Overview {
 		v.View = "overview"
@@ -177,11 +220,11 @@ func selectionWire(s app.Selection) domainipc.Selection {
 }
 
 func windowWire(w domain.Window) domainipc.Window {
-	return domainipc.Window{ID: w.ID, Mapped: w.Mapped, Domain: w.Domain, AppID: w.AppID}
+	return domainipc.Window{ID: w.ID, Mapped: w.Mapped, Domain: w.Domain, AppID: w.AppID, PID: w.PID}
 }
 
 func nodeWire(n domain.Node) domainipc.NodeProfile {
-	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive, Shortcut: n.Shortcut}
+	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive, Shortcut: n.NumberKey()}
 }
 
 func sendSnapshot(c *net.UnixConn, id uint64, s app.Snapshot) bool {
@@ -211,6 +254,8 @@ func eventWire(u app.Update) domainipc.Event {
 		body = domainipc.WMChangedBody{WMReady: u.WMReady, Session: u.Session, Selection: selectionWire(u.Selection)}
 	case app.DomainCreated:
 		body = nodeWire(u.Node)
+	case app.DomainDeleted:
+		body = domainipc.DomainBody{Domain: u.Domain}
 	case app.WindowUpdated:
 		body = windowWire(u.Window)
 	case app.WindowClosed:

@@ -1,7 +1,8 @@
 # Window manager
 
-Go owns startup and the parent selection; a cgo adapter uses the explicit
-wlroots Wayland backend. The [first slice](../../docs/software-knowledges/goals/boot-nested-wayland-compositor.md)
+Go owns startup and explicit backend selection. The default cgo path uses
+the wlroots nested Wayland backend. The opt-in `--native` path uses the
+local DRM and input seat and currently publishes one output. The [first slice](../../docs/software-knowledges/goals/boot-nested-wayland-compositor.md)
 is one nested output and one xdg-shell client. The [focus slice](../../docs/software-knowledges/goals/focus-nested-windows.md)
 adds two fixed side-by-side slots and one local human seat. Camera movement,
 general layout and the Panel are outside this slice. Start without desktopd
@@ -29,6 +30,29 @@ scale for physical buffers and informs nested clients via Wayland so they
 can draw at that resolution. Without both protocols, the nested output
 keeps its 1× fallback. No host scale setting is modified.
 
+## Presentation timing experiments
+
+The compositor publishes `wp_presentation` version 2. Set
+`MOTHERSHIP_EXPERIMENT_PRESENTATION=0` before launch for a baseline
+without presentation feedback.
+
+Set `MOTHERSHIP_EXPERIMENT_EXPLICIT_SYNC=1` before launching a separate
+test session. The compositor publishes `wp_linux_drm_syncobj_manager_v1`
+only if the renderer has a DRM fd and both the renderer and backend support
+timelines. Check the startup log and the client registry before comparing
+performance. Leave the experiment off for normal use.
+
+While the experiment is on, the normal window surface uses wlroots'
+acquire and release points. The strip, overflow picker, and keyboard
+projection share a compositor-owned GPU thumbnail for each visible window.
+Each copy waits on the client's acquire point and registers GPU completion
+with its release point. The cache is bounded to 640 × 400 pixels per image
+and refreshed when the source contents or viewport changes. If a safe copy
+cannot be made, the preview falls back instead of sampling the client buffer.
+Stage scale transitions and Map video frost still use their fallback for
+explicit-sync sources. The Node App Grid and Notification Log can sample
+explicit-sync windows through the bounded [scene-glass capture](../../docs/architecture/shell-scene-glass.md).
+
 ## Manual acceptance
 
 Only run this in a session approved for the test. Start from a terminal in
@@ -47,6 +71,18 @@ the child socket disappears and the same parent is still usable. Follow the
 [Flow scenarios](../../docs/software-knowledges/flows/boot-nested-wayland-compositor.md)
 for the failure check. A successful CLI test is not native acceptance.
 
+### Shell popup regression check
+
+In a disposable full Mothership session, open Home Settings with comma.
+Pause the pointer over **Panel width**; no tooltip should appear. Click **+**,
+select **All Nodes** under **Show toasts**, and save. Reopen Settings and
+verify that both changes persisted. Open the Notification Log and use its
+Node filter to exercise a real layer popup. Repeat at 100% and 150%.
+For a freeze, launch the test session with `WAYLAND_DEBUG=client`.
+Each command-center layer popup must receive `xdg_popup.configure`
+after its initial commit. A button event in the trace alone does not
+prove that GTK processed it.
+
 ## Flow and window chrome
 
 Managed Nodes default to Flow. Check the [layout and frame behavior](../../docs/software-knowledges/flows/view-node-layouts.md#f-view-2)
@@ -56,6 +92,11 @@ For a manual axis, from the nested runtime use
 active Node. Use `flow-horizontal` or `flow` for horizontal or automatic.
 If COSMIC handles Alt+Tab before the nested output can see it, use **Next
 window** from Command Center or `bin/mothership-desktopd next Dev`.
+
+Win + top-row 1–9 routes to the displayed Node shortcut while the nested
+output has keyboard focus. COSMIC also binds these chords to workspaces.
+A chord reserved by the parent cannot reach the nested WM; the nested
+session does not change host key bindings.
 
 ## Two-window focus check
 

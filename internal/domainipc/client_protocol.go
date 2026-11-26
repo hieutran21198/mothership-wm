@@ -12,11 +12,14 @@ const (
 	SnapshotMethod     = "snapshot"
 	SubscribeMethod    = "subscribe"
 	CreateMethod       = "create"
+	DeleteMethod       = "delete"
+	DomainDeletedEvent = "domain.deleted"
 	AssignMethod       = "assign"
 	FocusMethod        = "focus"
 	PrepareFocusMethod = "focus.prepare"
 	RevealFocusMethod  = "focus.reveal"
 	HomeMethod         = "home"
+	DefaultNodeMethod  = "home.node"
 	OverviewMethod     = "overview"
 	LayoutMethod       = "layout"
 	NextMethod         = "stack.next"
@@ -60,6 +63,11 @@ type CreateBody struct {
 	Description string `json:"description,omitempty"`
 }
 
+type DeleteBody struct {
+	Domain string `json:"domain"`
+	Force  bool   `json:"force,omitempty"`
+}
+
 type FocusTicket struct {
 	Ticket uint64 `json:"ticket"`
 }
@@ -69,21 +77,23 @@ type DomainBody struct {
 }
 
 type LayoutBody struct {
-	Domain string `json:"domain"`
-	Mode   string `json:"mode"`
+	Domain      string `json:"domain"`
+	Mode        string `json:"mode"`
+	RestoreFlow bool   `json:"restore_flow,omitempty"`
 }
 
 const (
 	Flow           = "flow"
 	FlowHorizontal = "flow-horizontal"
 	FlowVertical   = "flow-vertical"
+	Stage          = "stage"
 	Tiling         = "tiling"
 	Stack          = "stack"
 	Float          = "float"
 )
 
 func ValidLayout(mode string) bool {
-	return IsFlow(mode) || mode == Tiling || mode == Stack || mode == Float
+	return IsFlow(mode) || mode == Stage || mode == Tiling || mode == Stack || mode == Float
 }
 
 func IsFlow(mode string) bool {
@@ -109,6 +119,7 @@ type Window struct {
 	Domain string `json:"domain,omitempty"`
 	Mapped bool   `json:"mapped"`
 	AppID  string `json:"app_id,omitempty"`
+	PID    int    `json:"pid,omitempty"`
 }
 
 type Snapshot struct {

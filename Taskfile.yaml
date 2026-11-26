@@ -25,8 +25,28 @@ tasks:
     cmds:
       - go test ./apps/wm
 
+  wm:test-flow-group:
+    desc: Test split and gap bounds for Flow groups
+    cmds:
+      - |
+        set -eu
+        out="$(mktemp)"
+        trap 'rm -f "$out"' EXIT
+        cc -std=c11 -Wall -Wextra -Werror apps/wm/tests/flow-group.c -o "$out"
+        "$out"
+
+  wm:test-frost:
+    desc: Test Frosted Map sample bounds in the wm-native devenv profile
+    cmds:
+      - |
+        set -eu
+        out="$(mktemp)"
+        trap 'rm -f "$out"' EXIT
+        cc -std=c11 -Wall -Wextra -Werror -DWLR_USE_UNSTABLE $(pkg-config --cflags wlroots-0.20 pixman-1) apps/wm/tests/video-frost-sample.c -lm -o "$out"
+        "$out"
+
   wm:build:
-    desc: Build the nested-only WM in the wm-native devenv profile
+    desc: Build the WM in the wm-native devenv profile
     cmds:
       - |
         if ! pkg-config --exists wlroots-0.20 wayland-client wayland-server wayland-protocols pixman-1 xkbcommon cairo pangocairo libdrm; then
@@ -35,12 +55,12 @@ tasks:
         fi
         ./apps/wm/generate-parent-protocols.sh
         ./internal/wayland/generate-map-pointer.sh wm
-        CGO_ENABLED=1 go build -tags wlroots -o bin/mothership-wm ./apps/wm
+        CGO_ENABLED=1 go build -tags wlroots -o "${MOTHERSHIP_BUILD_DIR:-bin}/mothership-wm" ./apps/wm
 
   desktopd:build:
     desc: Build the private local Domain daemon and command client
     cmds:
-      - go build -o bin/mothership-desktopd ./services/desktopd/cmd/desktopd
+      - go build -tags tray -o "${MOTHERSHIP_BUILD_DIR:-bin}/mothership-desktopd" ./services/desktopd/cmd/desktopd
 
   desktopd:test:
     desc: Test local Domain policy and protocol
@@ -56,12 +76,56 @@ tasks:
     desc: Build the native GTK4 Command Center
     cmds:
       - ./internal/wayland/generate-map-pointer.sh panel
-      - CGO_ENABLED=1 go build -tags panel -o bin/mothership-command-center ./apps/panel
+      - CGO_ENABLED=1 go build -tags panel -o "${MOTHERSHIP_BUILD_DIR:-bin}/mothership-command-center" ./apps/panel
 
   mothership:run:
+    env:
+      MOTHERSHIP_BUILD_DIR: bin
     desc: Build and run one private nested native Shell session
     cmds:
       - devenv shell --offline --profile wm-native -- task wm:build desktopd:build
       - devenv shell --offline --profile panel-native -- task panel:build
       - go build -o bin/mothership ./cmd/mothership
-      - exec ./bin/mothership
+      - exec devenv shell --offline --profile panel-native -- ./bin/mothership
+
+
+  mothership:candidate:
+    desc: Test and build a separate session candidate without replacing the running build
+    cmds:
+      - |
+        set -eu
+        mkdir -p "$PWD/bin/candidates"
+        candidate="$(mktemp -d "$PWD/bin/candidates/build-XXXXXXXX")"
+        trap 'rm -rf -- "$candidate"' EXIT
+        export MOTHERSHIP_BUILD_DIR="$candidate"
+        devenv shell --offline --profile wm-native -- task wm:test wm:test-frost wm:test-flow-group desktopd:test wm:build desktopd:build
+        devenv shell --offline --profile panel-native -- task panel:test panel:build
+        go test ./cmd/mothership
+        go build -o "$candidate/mothership" ./cmd/mothership
+        touch "$candidate/.mothership-candidate"
+        trap - EXIT
+        printf 'Candidate ready: %s\n' "$candidate"
+
+  mothership:select:
+    desc: Select a tested candidate for the next Mothership Dev login
+    env:
+      MOTHERSHIP_CANDIDATE: '{{.CANDIDATE}}'
+    cmds:
+      - bash scripts/mothership-select select "$MOTHERSHIP_CANDIDATE"
+
+  mothership:rollback:
+    desc: Select the previous candidate for the next Mothership Dev login
+    cmds:
+      - bash scripts/mothership-select rollback
+
+  mothership:smoke-native:
+    desc: Verify a candidate starts and exits with a headless output and no parent
+    env:
+      MOTHERSHIP_CANDIDATE: '{{.CANDIDATE}}'
+    cmds:
+      - devenv shell --offline --profile panel-native -- bash scripts/mothership-smoke-native "$MOTHERSHIP_CANDIDATE"
+
+  mothership:render-debug:
+    desc: Capture 10 seconds of WM presentation, damage and frost decisions
+    cmds:
+      - bash scripts/mothership-render-debug

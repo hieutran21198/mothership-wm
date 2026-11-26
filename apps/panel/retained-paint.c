@@ -26,7 +26,8 @@ G_DEFINE_TYPE(RetainedPaint,retained_paint,GTK_TYPE_WIDGET)
 static GskPath *outline(int w,int h,int margin,double pad) {
 	cairo_surface_t *surface=cairo_recording_surface_create(CAIRO_CONTENT_ALPHA,NULL);
 	cairo_t *cr=cairo_create(surface);
-	map_frame_outline(cr,margin,margin,w-2*margin,h-2*margin,pad);
+	struct map_frame_box box=map_frame_layout(w,h,margin);
+	map_frame_outline(cr,box.x,box.y,box.width,box.height,pad);
 	cairo_path_t *shape=cairo_copy_path(cr);
 	GskPathBuilder *b=gsk_path_builder_new();
 	gsk_path_builder_add_cairo_path(b,shape);
@@ -46,7 +47,7 @@ static void paths(RetainedPaint *p,int w,int h,int margin,int padding) {
 
 static void image_released(gpointer p) { cairo_surface_destroy(p); }
 
-static GdkTexture *image_texture(cairo_surface_t *surface) {
+GdkTexture *wallpaper_image_texture(cairo_surface_t *surface) {
 	cairo_surface_flush(surface);
 	int w=cairo_image_surface_get_width(surface),h=cairo_image_surface_get_height(surface);
 	int stride=cairo_image_surface_get_stride(surface);
@@ -127,8 +128,8 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
 	if(w<1||h<1) return;
 	graphene_rect_t screen=GRAPHENE_RECT_INIT(0,0,w,h);
-	int margin=map_frame_margin(w,h,p->margin);
-	int padding=MIN(p->padding,(MIN(w,h)-2*margin-16)/2);
+	struct map_frame_box frame=map_frame_layout(w,h,p->margin);
+	int padding=map_frame_content_padding(frame,p->padding);
 	if (p->wallpaper) {
 		if (!p->texture) return;
 		const GdkRGBA bg={.023,.047,.081,1};
@@ -138,8 +139,8 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 		graphene_rect_t box=GRAPHENE_RECT_INIT(fit.x,fit.y,fit.width,fit.height);
 		gtk_snapshot_push_clip(snap,&screen);
 		gtk_snapshot_append_texture(snap,p->texture,&box);
-		if (p->frost && p->blur && w>=120 && h>=100) {
-			paths(p,w,h,margin,0);
+		if (p->frost && p->blur && map_frame_available(w,h)) {
+			paths(p,w,h,p->margin,0);
 			gtk_snapshot_push_fill(snap,p->frame,GSK_FILL_RULE_WINDING);
 			gtk_snapshot_push_opacity(snap,.82);
 			gtk_snapshot_append_texture(snap,p->blur,&box);
@@ -147,9 +148,9 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 			gtk_snapshot_pop(snap);
 		}
 		gtk_snapshot_pop(snap);
-	} else if (w>=120 && h>=100) {
+	} else if (map_frame_available(w,h)) {
 		if(p->tint.alpha>0) {
-			paths(p,w,h,margin,padding);
+			paths(p,w,h,p->margin,padding);
 			gtk_snapshot_push_fill(snap,p->frame,GSK_FILL_RULE_WINDING);
 			gtk_snapshot_append_color(snap,&p->tint,&screen);
 			gtk_snapshot_pop(snap);
@@ -160,12 +161,13 @@ static void retained_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 		graphene_rect_t tile=GRAPHENE_RECT_INIT(x,y,pitch,pitch);
 		// The content's long edges are rectangular; mask only its tiny corners.
 		// A full output-sized mask is needless GPU work during the radar pass.
-		double inset=map_frame_content_inset(padding+.5),edge=margin+.5+inset,cut=map_frame_cut_at(inset);
-		double right=w-edge,bottom=h-edge;
-		grid_repeat(snap,p->texture,&tile,edge,edge+cut,right-edge,bottom-edge-2*cut);
-		grid_repeat(snap,p->texture,&tile,edge+cut,edge,right-edge-2*cut,cut);
-		grid_repeat(snap,p->texture,&tile,edge+cut,bottom-cut,right-edge-2*cut,cut);
-		grid_corners(snap,p->texture,&tile,edge,edge,right,bottom,cut);
+		double inset=map_frame_content_inset(padding+.5),edge=.5+inset,cut=map_frame_cut_at(inset);
+		double left=frame.x+edge, top=frame.y+edge;
+		double right=frame.x+frame.width-edge,bottom=frame.y+frame.height-edge;
+		grid_repeat(snap,p->texture,&tile,left,top+cut,right-left,bottom-top-2*cut);
+		grid_repeat(snap,p->texture,&tile,left+cut,top,right-left-2*cut,cut);
+		grid_repeat(snap,p->texture,&tile,left+cut,bottom-cut,right-left-2*cut,cut);
+		grid_corners(snap,p->texture,&tile,left,top,right,bottom,cut);
 	}
 }
 
@@ -181,7 +183,7 @@ static void retained_realize(GtkWidget *widget) {
 	p->context=map_gpu_context(widget,p->wallpaper?"wallpaper":"grid");
 	if (!p->context) return;
 	if (p->wallpaper) {
-		if (!p->texture && p->image) p->texture=image_texture(p->image);
+		if (!p->texture && p->image) p->texture=wallpaper_image_texture(p->image);
 		prepare_frost(p);
 		gtk_widget_set_opacity(p->fallback,p->texture?0:1);
 	} else {
@@ -237,7 +239,7 @@ void retained_wallpaper_source(GtkWidget *widget,cairo_surface_t *image,gboolean
 	p->image=image?cairo_surface_reference(image):NULL;
 	p->contain=contain;
 	p->blur_attempted=FALSE;
-	if (p->context && p->image) p->texture=image_texture(p->image);
+	if (p->context && p->image) p->texture=wallpaper_image_texture(p->image);
 	gtk_widget_set_opacity(p->fallback,p->texture?0:1);
 	prepare_frost(p);
 	gtk_widget_queue_draw(widget);

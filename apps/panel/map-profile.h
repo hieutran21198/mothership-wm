@@ -17,6 +17,7 @@ struct profile_data {
 	GskRenderNode *paint;
 	double paint_width, paint_height;
 	int paint_scale;
+	GtkStateFlags button_state;
 	gint64 age_min, activity_min;
 };
 
@@ -24,7 +25,7 @@ void profile_data_free(gpointer);
 GHashTable *profile_parse(const char *);
 void profile_draw_chrome(cairo_t *, struct profile_rect, gboolean flat);
 double profile_height(const struct profile_data *);
-void profile_snapshot(GtkSnapshot *, GtkWidget *, struct profile_layout, const char *, struct profile_data *);
+void profile_snapshot(GtkSnapshot *, GtkWidget *, struct profile_layout, const char *, struct profile_data *, GtkStateFlags);
 
 static inline gboolean profile_contains(struct profile_rect r,double cut,double x,double y) {
 	return x>=r.x && x<=r.x+r.w && y>=r.y && y<=r.y+r.h &&
@@ -37,10 +38,10 @@ static inline gboolean profile_contains(struct profile_rect r,double cut,double 
 enum profile_side { PROFILE_RIGHT, PROFILE_LEFT, PROFILE_BELOW, PROFILE_ABOVE, PROFILE_SIDE_COUNT };
 
 static inline gboolean profile_place_on(struct profile_layout *out,struct profile_rect safe,
-		double x,double y,double marker_radius,double height,enum profile_side side) {
+		double x,double y,double marker_radius,double height,double preferred_width,enum profile_side side) {
 	const double space=marker_radius+13;
-	double width=MIN(374,safe.w);
-	if (width<154 || safe.h<height) return FALSE;
+	double width=MIN(preferred_width,safe.w);
+	if (width<226 || safe.h<height) return FALSE;
 	double left,top;
 	if (side==PROFILE_RIGHT || side==PROFILE_LEFT) {
 		left=side==PROFILE_RIGHT ? x+space : x-space-width;

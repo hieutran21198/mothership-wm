@@ -3,8 +3,9 @@
 A Go window manager and desktop shell for Linux/Wayland. One 2D canvas, with
 windows organized into intentional flows rather than separate workspaces.
 
-**Status:** native Shell, nested Wayland WM and a local Domain service. No
-desktop session replacement or CI workflow.
+**Status:** GTK Shell, a Wayland WM, and a local Domain service. The nested
+session remains the known-good path. A one-output native developer session
+is available for TTY acceptance; it does not replace the default desktop.
 
 ## Run inside COSMIC
 
@@ -34,6 +35,24 @@ task versions
 `go.mod` is the Go version authority. The initial Nix input lock is carried
 over from the Platform toolchain, using the same input definitions. There is no
 Node.js, AWS, Terraform, deployment profile, or automatic hook setup.
+
+### Build a candidate beside the current session
+
+`devenv shell --offline -- task mothership:candidate` runs the local
+checks and builds all session binaries under a new `bin/candidates/`
+directory. It leaves the running session and its binaries alone. Test
+the previous and candidate builds independently. To start a nested test
+session from the candidate, use the exact printed directory:
+
+```sh
+devenv shell --offline --profile panel-native -- /path/to/candidate/mothership
+```
+
+This task does not apply an update. Keep the previous known-good build
+available until the candidate passes a session test. See [Mothership Dev
+login](docs/software-knowledges/flows/use-native-dev-session.md) for TTY
+acceptance, candidate selection, and rollback. Live panel replacement is
+not supported yet.
 
 ## Project layout
 

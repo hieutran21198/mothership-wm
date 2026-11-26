@@ -17,9 +17,12 @@ Each criterion names the Flow scenario that demonstrates it.
 
 - [Launch Mothership Shell in COSMIC](launch-native-shell.md).
 - [Open a terminal or file manager from Command Center](open-native-apps.md).
+- [Find and launch installed apps from App Grid](use-app-grid.md).
 - [Enter Nodes from Overview and choose a layout](view-node-layouts.md).
 
 - [Show a configurable Center Map HUD](show-center-map.md).
+
+- [Identify and revisit notifications](show-notifications.md).
 
 ## Template
 

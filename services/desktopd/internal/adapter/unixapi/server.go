@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,17 +25,21 @@ var (
 )
 
 type wmPeer struct {
-	conn      *net.UnixConn
-	session   *domain.Session
-	ready     bool
-	home      bool
-	views     bool
-	handoff   bool
-	done      chan struct{}
-	applied   chan struct{}
-	pending   uint64
-	selection *app.Selection
-	entry     bool
+	conn          *net.UnixConn
+	session       *domain.Session
+	ready         bool
+	home          bool
+	views         bool
+	handoff       bool
+	defaultNode   bool
+	defaultLayout bool
+	returnInbox   bool
+	shortcuts     bool
+	done          chan struct{}
+	applied       chan struct{}
+	pending       uint64
+	selection     *app.Selection
+	entry         bool
 }
 
 type preparedFocus struct {
@@ -44,16 +49,31 @@ type preparedFocus struct {
 }
 
 type desktop struct {
-	mu        sync.Mutex
-	controlMu sync.Mutex
-	service   *app.Service
-	wm        *wmPeer
-	next      uint64
-	prepared  *preparedFocus
+	mu         sync.Mutex
+	controlMu  sync.Mutex
+	service    *app.Service
+	removeNode func(domain.Node) error
+	wm         *wmPeer
+	next       uint64
+	prepared   *preparedFocus
+	configPath string
+	shortcuts  domainipc.Shortcuts
 }
 
 func Serve(ctx context.Context, l *net.UnixListener, useCases *app.Service) error {
-	d := desktop{service: useCases}
+	return ServeWithNodeStore(ctx, l, useCases, nil)
+}
+
+func ServeWithNodeStore(ctx context.Context, l *net.UnixListener, useCases *app.Service, remove func(domain.Node) error) error {
+	return ServeWithConfig(ctx, l, useCases, remove, "")
+}
+
+func ServeWithConfig(ctx context.Context, l *net.UnixListener, useCases *app.Service, remove func(domain.Node) error, configPath string) error {
+	shortcuts, err := readShortcuts(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "desktopd: shortcuts config ignored:", err)
+	}
+	d := desktop{service: useCases, removeNode: remove, configPath: configPath, shortcuts: shortcuts}
 	cancel := context.AfterFunc(ctx, func() {
 		l.Close()
 		d.mu.Lock()
@@ -134,17 +154,33 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !w.ready {
-		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views" && a[0] != "ready_handoff") {
+		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views" && a[0] != "ready_handoff" && a[0] != "ready_default_node" && a[0] != "ready_return_inbox" && a[0] != "ready_shortcuts" && a[0] != "ready_node_parity") {
 			return false
 		}
 		// WM registers before serving any Wayland clients: its initial snapshot is empty.
-		w.handoff = a[0] == "ready_handoff"
+		w.defaultLayout = a[0] == "ready_node_parity"
+		w.shortcuts = w.defaultLayout || a[0] == "ready_shortcuts"
+		w.returnInbox = w.shortcuts || a[0] == "ready_return_inbox"
+		w.defaultNode = w.returnInbox || a[0] == "ready_default_node"
+		w.handoff = w.defaultNode || a[0] == "ready_handoff"
 		w.views = w.handoff || a[0] == "ready_views"
 		w.home = w.views || a[0] == "ready_home"
 		w.ready = d.service.Ready(w.session, w.home)
+		if w.ready && w.shortcuts && d.shortcuts != domainipc.DefaultShortcuts() {
+			go func() {
+				d.controlMu.Lock()
+				defer d.controlMu.Unlock()
+				d.mu.Lock()
+				s := d.shortcuts
+				d.mu.Unlock()
+				if err := d.applyShortcuts(w, s); err != nil {
+					fmt.Fprintln(os.Stderr, "desktopd: restore shortcuts:", err)
+				}
+			}()
+		}
 		return w.ready
 	}
-	if len(a) != 2 && !(len(a) == 3 && a[0] == "app") {
+	if len(a) != 2 && !(len(a) == 3 && (a[0] == "app" || a[0] == "new")) {
 		return false
 	}
 	id, err := strconv.ParseUint(a[1], 10, 64)
@@ -176,7 +212,15 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 		}
 		return d.service.WindowAppID(w.session, id, appID)
 	case "new":
-		return d.service.WindowAdded(w.session, id)
+		pid := 0
+		if len(a) == 3 {
+			value, err := strconv.ParseInt(a[2], 10, 32)
+			if err != nil || value <= 0 {
+				return false
+			}
+			pid = int(value)
+		}
+		return d.service.WindowAddedWithPID(w.session, id, pid)
 	case "map", "unmap":
 		return d.service.WindowMapping(w.session, id, a[0] == "map")
 	case "close":
@@ -215,6 +259,41 @@ func validSession(id string) bool {
 	}
 	_, err := hex.DecodeString(id)
 	return err == nil
+}
+
+func (d *desktop) deleteNode(name string, force bool) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	plan, err := d.service.BeginDelete(name, force)
+	if err != nil {
+		d.mu.Unlock()
+		return err
+	}
+	defer d.service.CancelDelete(plan)
+	if len(plan.Windows) != 0 {
+		w := d.wm
+		if w == nil || !w.ready || !w.returnInbox {
+			d.mu.Unlock()
+			return errors.New("WM does not support moving windows to Default Node")
+		}
+		ack := d.beginApply(w, nil)
+		packet := fmt.Sprintf("inbox %d", ack.serial)
+		for _, win := range plan.Windows {
+			packet += fmt.Sprintf(" %d", win.ID)
+		}
+		d.mu.Unlock()
+		if !d.awaitApply(w, ack, packet) {
+			return errOutcomeUnknown
+		}
+		d.mu.Lock()
+	}
+	if d.prepared != nil && d.prepared.name == name {
+		d.prepared = nil
+	}
+	err = d.service.FinishDelete(plan, d.removeNode)
+	d.mu.Unlock()
+	return err
 }
 
 func (d *desktop) assign(session string, id uint64, name string) error {
@@ -332,6 +411,41 @@ func (d *desktop) focusView(name string, ticket uint64) error {
 	return nil
 }
 
+// The reserved Home projection is independent of named Domain ownership.
+func (d *desktop) defaultNode() error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	w := d.wm
+	state := d.service.Snapshot()
+	if w == nil || !w.ready || !w.defaultNode {
+		d.mu.Unlock()
+		return errors.New("Default Node is unavailable")
+	}
+	if state.Selection.DefaultNode && !state.MapVisible {
+		d.mu.Unlock()
+		return nil
+	}
+	selection := app.Selection{Kind: app.SelectionAcknowledged, Home: true, DefaultNode: true}
+	if w.defaultLayout {
+		selection.Mode = d.service.NodeMode("")
+		if selection.Mode == "" {
+			selection.Mode = domainipc.Flow
+		}
+	}
+	ack := d.beginApply(w, &selection)
+	d.prepared = nil
+	packet := fmt.Sprintf("home_node %d", ack.serial)
+	if selection.Mode != "" {
+		packet += " " + selection.Mode
+	}
+	d.mu.Unlock()
+	if !d.awaitApply(w, ack, packet) {
+		return errOutcomeUnknown
+	}
+	return nil
+}
+
 type applyAck struct {
 	serial uint64
 	done   chan struct{}
@@ -376,7 +490,7 @@ func (d *desktop) awaitApply(w *wmPeer, ack applyAck, packet string) bool {
 }
 
 // View actions join the existing serialized WM acknowledgement path.
-func (d *desktop) viewAction(method, name, mode string) error {
+func (d *desktop) viewAction(method, name, mode string, restoreFlow bool) error {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
 	d.mu.Lock()
@@ -397,13 +511,27 @@ func (d *desktop) viewAction(method, name, mode string) error {
 			d.mu.Unlock()
 			return err
 		}
+		if active.DefaultNode && !w.defaultLayout {
+			d.mu.Unlock()
+			return errors.New("WM does not support Default Node layouts")
+		}
+		if active.DefaultNode && method == domainipc.LayoutMethod &&
+			mode != domainipc.Stage && !domainipc.IsFlow(mode) {
+			d.mu.Unlock()
+			return errors.New("Default Node supports Flow and Stage")
+		}
 		if method == domainipc.NextMethod {
-			if active.Mode != domainipc.Stack && !domainipc.IsFlow(active.Mode) {
+			if active.Mode != domainipc.Stack && active.Mode != domainipc.Stage && !domainipc.IsFlow(active.Mode) {
 				d.mu.Unlock()
-				return errors.New("Flow or Stack mode is not active")
+				return errors.New("Flow, Stage or Stack mode is not active")
 			}
 			command = "next"
 		} else {
+			if restoreFlow && active.Mode == domainipc.Stage {
+				if previous := d.service.LastFlowMode(name); previous != "" {
+					mode = previous
+				}
+			}
 			active.Mode = mode
 			selection, command = &active, "layout"
 		}

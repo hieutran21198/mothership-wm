@@ -6,6 +6,8 @@ package main
 #cgo pkg-config: wlroots-0.20 wayland-client wayland-server wayland-protocols pixman-1 xkbcommon cairo pangocairo libdrm
 #cgo CFLAGS: -DWLR_USE_UNSTABLE -I${SRCDIR}
 #include <stdint.h>
+#include <stdlib.h>
+#include "group-chrome.h"
 struct mothership_control;
 struct mothership_control *mothership_control_create(int parent_fd, int stop_write_fd);
 void mothership_control_destroy(struct mothership_control *control);
@@ -22,10 +24,14 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/internal/shellfonts"
+	"mothership-wm/internal/userconfig"
 )
 
 type nativeControl struct {
@@ -33,7 +39,11 @@ type nativeControl struct {
 }
 
 func newNativeControl(parent, stopWrite *os.File) nativeControl {
-	return nativeControl{handle: C.mothership_control_create(C.int(parent.Fd()), C.int(stopWrite.Fd()))}
+	fd := C.int(-1)
+	if parent != nil {
+		fd = C.int(parent.Fd())
+	}
+	return nativeControl{handle: C.mothership_control_create(fd, C.int(stopWrite.Fd()))}
 }
 
 func (c nativeControl) close() {
@@ -63,18 +73,38 @@ func (c nativeControl) watch(ctx context.Context) func() {
 }
 
 func launchNested(ctx context.Context, parentPath, domainPath string) error {
+	// Keep font setup and Group rendering on the compositor thread.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if fonts, cleanup, err := shellfonts.Extract(os.Getenv("XDG_RUNTIME_DIR")); err == nil {
+		defer cleanup()
+		defer C.group_chrome_clear_fonts()
+		for _, font := range fonts {
+			path := C.CString(font)
+			if !C.group_chrome_add_font(path) {
+				fmt.Fprintf(os.Stderr, "mothership-wm: could not register shell font %q\n", font)
+			}
+			C.free(unsafe.Pointer(path))
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "mothership-wm: shell fonts: %v\n", err)
+	}
+
 	// Pass an explicit connection fd. libwayland's normal connect API can
 	// otherwise prefer the inherited WAYLAND_SOCKET over the selected path.
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", parentPath)
-	if err != nil {
-		return fmt.Errorf("connect to nested Wayland parent %q: %w", parentPath, err)
+	var parent *os.File
+	if parentPath != "" {
+		conn, err := (&net.Dialer{}).DialContext(ctx, "unix", parentPath)
+		if err != nil {
+			return fmt.Errorf("connect to nested Wayland parent %q: %w", parentPath, err)
+		}
+		parent, err = conn.(*net.UnixConn).File()
+		conn.Close()
+		if err != nil {
+			return fmt.Errorf("retain Wayland parent connection: %w", err)
+		}
+		defer parent.Close()
 	}
-	parent, err := conn.(*net.UnixConn).File()
-	conn.Close()
-	if err != nil {
-		return fmt.Errorf("retain Wayland parent connection: %w", err)
-	}
-	defer parent.Close()
 
 	readStop, writeStop, err := os.Pipe()
 	if err != nil {
@@ -101,7 +131,11 @@ func launchNested(ctx context.Context, parentPath, domainPath string) error {
 
 	var reason *C.char
 	if C.mothership_wm_run(control.handle, C.int(readStop.Fd()), domainFD, &reason) != 0 {
-		return fmt.Errorf("nested Wayland backend: %s", C.GoString(reason))
+		kind := "nested"
+		if parentPath == "" {
+			kind = "native"
+		}
+		return fmt.Errorf("%s Wayland backend: %s", kind, C.GoString(reason))
 	}
 	return nil
 }
@@ -136,4 +170,35 @@ func connectDesktop(ctx context.Context, path string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+//export wmLoadCursorSize
+func wmLoadCursorSize() C.int {
+	home, _ := os.UserHomeDir()
+	doc, _, err := userconfig.Read(userconfig.Path(home))
+	if err != nil {
+		return C.int(userconfig.CursorSizeDefault)
+	}
+	return C.int(userconfig.CursorSize(doc))
+}
+
+//export wmLoadDisplay
+func wmLoadDisplay(connector *C.char, w, h, hz, scale *C.int) {
+	home, _ := os.UserHomeDir()
+	p, err := readDisplay(userconfig.Path(home), C.GoString(connector))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mothership-wm display settings: %v\n", err)
+		return
+	}
+	*w, *h, *hz, *scale = C.int(p.Width), C.int(p.Height), C.int(p.Refresh), C.int(p.Scale)
+}
+
+//export wmSaveDisplay
+func wmSaveDisplay(connector *C.char, w, h, hz, scale C.int) *C.char {
+	home, _ := os.UserHomeDir()
+	p := displayPreference{C.GoString(connector), int(w), int(h), int(hz), int(scale)}
+	if err := saveDisplay(userconfig.Path(home), p); err != nil {
+		return C.CString(err.Error())
+	}
+	return nil
 }

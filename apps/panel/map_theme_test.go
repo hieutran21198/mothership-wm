@@ -88,7 +88,7 @@ func TestMapThemeFontAndFallback(t *testing.T) {
 	if got := run(`{"font_family":" DejaVu Sans ","font_size":20.5}`, 0); got.FontFamily != "DejaVu Sans" || got.FontSize != 20.5 {
 		t.Fatalf("valid font %+v", got)
 	}
-	if got := run(`{"font_family":"foo,bar","font_size":7}`, 2); got.FontFamily != defaultShellFamily || got.FontSize != 13 {
+	if got := run(`{"font_family":"foo,bar","font_size":7}`, 2); got.FontFamily != defaultMapLabelFamily || got.FontSize != 13 {
 		t.Fatalf("invalid font %+v", got)
 	}
 	if got := run(`{"font_family":"MonoSpace","font_size":29}`, 1); got.FontFamily != "MonoSpace" || got.FontSize != 13 {

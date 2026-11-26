@@ -5,6 +5,9 @@ hardware and display layers give the shell its identity without taking space
 or focus from the apps or restyling them. The design direction and references
 are approved. This is not approval of the final mockup or native implementation.
 
+The current native [Home Panel](home-panel.md) lists its approved dock recipes,
+reference images and native review cases.
+
 ## Foundations
 
 Use these named roles across shell components rather than choosing a new
@@ -17,6 +20,81 @@ shape or palette for each piece.
 | **Surface / glass** | Use cool-tinted translucent glass for the Map and a darker tinted inset face for readouts. Share the angular edge language with the metal without making either display look like another metal slab. Keep labels and guides sharp; blur only the backdrop. |
 | **Ink / text / signal** | Use high-contrast primary labels, quieter descriptions and a restrained cool accent for meaningful readouts and active states. Keep text and icons distinct from the edge treatments; don't rely on color alone to identify an action or status. |
 | **Space / clearance** | Cut a recess only for a named receiving component. Size and position the pocket and occupant together, with a common orientation and axis as appropriate. Make the occupant visibly use its pocket. Keep positive, visually even clearance between independent contours so they never touch, join, or overlap. Preserve usable viewport space and readable controls. |
+
+Use Black Ops One for shell screen and module titles and the displayed Node
+identity (Map marker, detail heading and Node bay). Use Chakra Petch for
+body text, controls, shortcuts, telemetry, notification content and window
+titles. Keep custom Map label fonts configurable.
+
+Show essential text in the interface itself. Do not add hover tooltips to
+Mothership controls. Keep accessible names on icon-only controls.
+
+Keep two distinct surface families:
+
+- **Mechanical hardware:** Home Panel, Home Panel Settings, and the outer
+  bezel of Center Map. Use physical controls and continuous machined
+  contours. Do not replace the hardware skin with projected glass.
+- **Analog displays:** the display inside the Center Map bezel, Map
+  Settings, Slash, App Grid and notifications. Use cool glass and thin projected outlines or separated
+  45° corner marks as prescribed by each overlay. Keep foreground controls
+  and type sharp. Do not add physical depth or a raised metal frame.
+
+Share neutral primitives such as glyphs and chamfer geometry. Buttons,
+borders, backgrounds, hover and focus treatments belong to their own
+family. A mechanical bezel may enclose an analog display without sharing
+its chrome.
+
+The [mechanical button reference](home-panel-references/mechanical-buttons.png)
+owns Home dock and Home Settings variants. Use one chamfered face for square
+icon buttons and wider text buttons. Idle shows a shallow lower face; hover
+raises the contrast at the top edge. Press darkens the face and lowers only
+the glyph or text by 1 logical pixel. The top lip recedes into a narrow inner
+shadow; press settles in 60 ms and release in 105 ms. Respect reduced motion.
+The outer contour, layout and hit target
+do not move. A toggled control retains a cyan edge. Keyboard focus has a pale
+inset outline. A primary action such as Save may have a cyan edge but does not
+latch. Keep Map Settings and other analog buttons independent.
+
+The approved [Open Corners button](home-panel-references/Analog-Button-Open-Corners.png)
+owns the discrete buttons inside analog surfaces. It is separate from
+mechanical buttons and from list or grid item highlights. Rest uses a flat, faint
+blue-black tint with no border. Hover adds four short 45° corners.
+Visible keyboard focus uses the same marks with a brighter stroke and
+soft glow. Press changes only color. Keep the shape, icon, layout and
+hit area fixed. On keeps a persistent tint and changed glyph or selected
+control, without adding a border. Disabled lowers contrast and does not
+react. Do not resample a blur for an individual button.
+
+Within the analog family, Slash results and Notification Log entries share
+one item treatment. Hover or selection shows local background blur with a
+darker tint and four small, separated corners. Do not sink, scale, or shift
+the item on press. Fade only the highlight opacity (150 ms in, 180 ms out)
+with ease-in-out. Keep the blur radius fixed and respect reduced motion.
+Hover does not change selection. The owning view controls content and actions.
+
+### Shell sizing and mounted modules
+
+- Start from the shell's default size and fixed bottom anchor. Content
+  inside the shell, such as buttons and window previews, can raise the
+  resting height of its own compartment to fit the content and padding.
+  Do not raise adjacent compartments just to match it.
+- A mounted module, such as Telemetry, aligns to its host but does not
+  contribute to the host's size. It can project above the shell without
+  moving the shell's contour or resizing its host compartment. A readout
+  fitted inside an existing compartment may share that compartment with
+  previews without changing its outer dimensions. On narrow
+  viewports, compact or hide the module before it covers shell content.
+- Review at the same viewport and scale with the mounted module on and
+  off. The base contour, bottom anchor, button bounds, and preview tray
+  bounds must match. Check that the module clears both the controls and
+  the expanded preview states. Verify a maximized client keeps the same
+  bounds and receives clicks outside the shell in both cases. Measure the
+  panel's resting geometry,
+  not the bounds of the floating module or a hover animation.
+- A maximized Node window meets the top edge of the resting rail. It
+  neither overlaps the rail nor reserves space for hover animations.
+  The Node keyboard guide is painted behind app windows. It is
+  noninteractive and never covers an app, even if their bounds overlap.
 
 ### Shared chamfer recipe
 
@@ -48,6 +126,18 @@ when adapting them.
 | Panel rail | The Command Center reference cut is 8 × 8 px (45°). The study rail uses 24 × 24 px breaks around the center and shoulders that run level to both screen edges. It borrows the navy depth from **Dev · Orbital cockpit**, with a 1.2 px `#58818E` rim painted inside its contour and a thin inset echo following a 14 px perpendicular offset. |
 | Map glass | Four 8 × 8 px exposed corner cuts. Rail breaks reflect across viewport y = 816.5 px; the Map lower side and center are y = 808 and 784 px, respectively. Tint `#20384B` at 23%, 1 px `#648B9F` edge at 35%, backdrop blur 8 in Penpot. |
 | Telemetry surround | A 440 × 39 px display with 7 × 7 px chamfers, in a pocket with 13 px normal painted-edge clearance at the top, bottom, and all four corresponding diagonals. Outer `#546A76` at 80%, inset `#18252E` at 98%. |
+
+## Keyboard navigation
+
+- Prefer **W / A / S / D** (up / left / down / right) for directional
+  navigation in shell-owned views. Avoid adding arrow-key bindings for the
+  same actions unless a native control or accessibility behavior needs them.
+- When an editable field has focus, let it receive **W / A / S / D** as text
+  and let the arrow keys move the caret, navigate suggestions, or adjust the
+  value as appropriate. Do not intercept either set of keys for shell
+  navigation while typing or composing text.
+- Apply these bindings only in the active shell view, not to client apps or
+  as a global key grab.
 
 ## Components
 
