@@ -257,6 +257,10 @@ the Node's normal focus policy. Hover alone does not acquire keyboard focus. On 
 enough to reveal the selected preview; leave its position in the order
 unchanged.
 
+In [Stage](node-stage.md), keep every window in the tray, including the
+presenting window or group. The focus marker moves between the existing
+cells as focus changes. Apply the usual clipping and `+N` rules.
+
 During a [Flow reorder](../flows/view-node-layouts.md#f-view-6), slide the
 desktop frames and tray cards on the same compositor frames, easing over
 about 190 ms. The tray stays horizontal in both Flow orientations. Keep the
@@ -282,8 +286,10 @@ The [approved level projection](home-panel-references/node-alt-tab-projection.sv
 belongs to Alt+Tab, not the `+N` grid. A quick swap does not start it.
 On further Tab presses while holding Alt, scroll the carousel only
 far enough to reveal the selection. Project a straight, read-only copy of
-the selected preview above the rail. The same compositor buffer supplies
-the source thumbnail and the projection; no app resize or pixel readback.
+the selected preview above the rail, including when its window already
+occupies Stage. For a shared group tile, project the group and mark the
+selected member. The compositor draws the projection directly from the
+source thumbnail buffers without resizing the app or reading pixels back.
 Use four softly shaded faces joining the corresponding four corners.
 The frame edges stay level and are limited to the output. Open the light
 and fade the image in over about 150 ms. Allow about 120 ms for a selection

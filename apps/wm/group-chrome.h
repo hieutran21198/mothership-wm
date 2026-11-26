@@ -1,6 +1,7 @@
 #ifndef MOTHERSHIP_GROUP_CHROME_H
 #define MOTHERSHIP_GROUP_CHROME_H
 #include <stdbool.h>
+#include <wlr/util/box.h>
 struct group_chrome;
 struct wlr_scene_tree;
 struct wlr_scene_node;
@@ -18,5 +19,6 @@ struct wlr_scene_tree *group_chrome_tree(struct group_chrome *);
 void group_chrome_place(struct group_chrome *,int x,int y,int w,int h,double scale,
 	unsigned number,bool focus);
 bool group_chrome_owns_node(const struct group_chrome *,const struct wlr_scene_node *);
+struct wlr_box group_chrome_control_box(const struct group_chrome *,enum group_control);
 enum group_control group_chrome_control(const struct group_chrome *,double x,double y);
 #endif

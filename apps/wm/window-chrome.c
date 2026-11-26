@@ -13,7 +13,7 @@
 #include <wlr/util/box.h>
 
 enum { TOP, BOTTOM, LEFT, RIGHT, STRIPS };
-enum { CUT=9, CORNER_ARM=17, BUTTON_GAP=5, BUTTON_EDGE=14,
+enum { CUT=9, CORNER_ARM=17, FOCUS_DASH=6, BUTTON_GAP=5, BUTTON_EDGE=14,
 	BUTTON_MIN=14, BUTTON_MAX=25, CONTROL_CENTER_Y=22 };
 struct point { double x,y; };
 
@@ -172,7 +172,18 @@ static void title(cairo_t *cr,const struct window_chrome *c) {
 	g_object_unref(layout);
 }
 
-static void draw_corners(cairo_t *cr,const struct window_chrome *c) {
+static void dash_edge(cairo_t *cr,double x,double y,double dx,double dy,double length) {
+	const double dash=FOCUS_DASH;
+	const int count=(int)floor((length-dash)/(2*dash));
+	if(count<1) return;
+	// Center complete dashes and leave a gap at each solid corner arm.
+	const double span=(2*count-1)*dash;
+	const double start=(length-span)/2;
+	cairo_move_to(cr,x+dx*start,y+dy*start);
+	cairo_rel_line_to(cr,dx*span,dy*span);
+}
+
+static void draw_outline(cairo_t *cr,const struct window_chrome *c) {
 	const bool member=group_member(c);
 	const double cut=member?6:CUT;
 	const double arm=member?12:CORNER_ARM;
@@ -193,6 +204,18 @@ static void draw_corners(cairo_t *cr,const struct window_chrome *c) {
 	const double alpha=c->focused?(member?.61:.96):(member?.30:.48);
 	cairo_set_source_rgba(cr,c->focused?.32:.35,c->focused?.90:.70,.92,alpha);
 	cairo_stroke(cr);
+	if(!c->focused) return;
+
+	const double inset=dt+arm;
+	const double pattern[]={FOCUS_DASH,FOCUS_DASH};
+	cairo_set_dash(cr,pattern,2,0);
+	cairo_set_source_rgba(cr,.32,.90,.92,alpha*.70);
+	dash_edge(cr,inset,dt,1,0,c->w-2*inset);
+	dash_edge(cr,inset,c->h-dt,1,0,c->w-2*inset);
+	dash_edge(cr,dt,inset,0,1,c->h-2*inset);
+	dash_edge(cr,c->w-dt,inset,0,1,c->h-2*inset);
+	cairo_stroke(cr);
+	cairo_set_dash(cr,NULL,0,0);
 }
 
 static void render(cairo_t *cr,struct window_chrome *c,int strip) {
@@ -217,7 +240,7 @@ static void render(cairo_t *cr,struct window_chrome *c,int strip) {
 		cairo_stroke(cr);
 	}
 	cairo_restore(cr);
-	draw_corners(cr,c);
+	draw_outline(cr,c);
 	if(strip!=TOP) return;
 	for(int i=0;i<4;i++) button(cr,control(c,i),i,c->focused,
 		(i==0&&c->floating)||(i==1&&c->maximized));
@@ -334,7 +357,7 @@ void window_chrome_update(struct window_chrome *c,int w,int h,double scale,
 	const int top=WINDOW_CONTENT_TOP,edge=WINDOW_CONTENT_EDGE;
 	struct wlr_box boxes[STRIPS]={{0,0,w,top},{0,h-edge,w,edge},
 		{0,top,edge,h-top-edge},{w-edge,top,edge,h-top-edge}};
-	// Focus changes all four marks; title and control state only affect the header.
+	// Focus changes the outline on every strip; title and controls only affect the header.
 	int dirty=c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
 		group_member(c)==group_member(&next)?1:STRIPS;
 	struct chrome_pixels *pixels[STRIPS]={0};

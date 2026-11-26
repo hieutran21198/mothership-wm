@@ -214,7 +214,11 @@ struct nested {
 	uint64_t next_layout_order;
 	struct xdg_view *stage_painted;
 	struct wlr_scene_tree *stage_overlay;
-	struct stage_scale stage_scale;
+	struct {
+		struct stage_scale sprite;
+		struct wlr_box anchor;
+	} stage_flight[FLOW_GROUP_MAX];
+	int stage_flight_count;
 	struct wlr_scene_tree *maximize_overlay;
 	struct {
 		struct stage_scale sprite;
@@ -229,7 +233,6 @@ struct nested {
 		int64_t started;
 		bool opening;
 	} tray_flight[FLOW_GROUP_MAX];
-	struct wlr_box stage_anchor;
 	double stage_amount, stage_rail_from, stage_rail_to;
 	int64_t stage_tick;
 	struct xdg_view *mode_slide_view;
@@ -256,7 +259,6 @@ struct nested {
 	struct wlr_scene_rect *group_marks[9],*group_tray_ring[NODE_WINDOWS];
 	struct {
 		struct group_chrome *chrome;
-		struct scene_glass *glass;
 		struct wlr_box box;
 		uint64_t leader;
 	} group_frame[NODE_WINDOWS/2];
@@ -573,17 +575,20 @@ static bool domain_send(struct nested *,const char *,uint64_t);
 static void select_projection(struct nested *,bool);
 static void apply_view_clip(struct xdg_view *);
 static bool is_flow(struct nested *);
+static bool is_stage(struct nested *);
 static struct xdg_view *find_view(struct nested *,uint64_t);
 static void strip_focus_view(struct nested *,struct xdg_view *);
+static void strip_reveal_window(struct nested *,struct xdg_view *);
 static void group_frame(struct nested *,struct timespec);
 static void flow_reorder_finish(struct nested *);
 static unsigned decorate_frames(struct nested *);
 static bool group_large(struct nested *wm) {
-	return is_flow(wm) && wm->parent_window.width>=FLOW_GROUP_MIN_WIDTH &&
+	return (is_flow(wm) || is_stage(wm)) && wm->parent_window.width>=FLOW_GROUP_MIN_WIDTH &&
 		wm->parent_window.height>=FLOW_GROUP_MIN_HEIGHT;
 }
 static bool group_visible(struct xdg_view *v) {
-	return v && v->mapped && v->tree && !v->minimized && !v->flowed_out && !v->maximized;
+	return v && v->mapped && v->tree && !v->minimized &&
+		(is_stage(v->wm) || (!v->flowed_out && !v->maximized));
 }
 static int group_members(struct nested *wm,struct xdg_view *v,
 		struct xdg_view *out[FLOW_GROUP_MAX],bool visible) {
@@ -600,6 +605,31 @@ static int group_members(struct nested *wm,struct xdg_view *v,
 		out[j]=part;
 	}
 	return n;
+}
+
+static struct rect stage_bounds(struct nested *wm) {
+	int height=wm->parent_window.height;
+	int work=shell_node_dock_top(height)-SHELL_NODE_GUIDE_HEIGHT-SHELL_NODE_GUIDE_GAP;
+	return stage_rect(wm->parent_window.width,work>120?work:height);
+}
+
+static void group_window_tiles(struct xdg_view *view,struct rect area,int count,
+		struct rect tiles[FLOW_GROUP_MAX]) {
+	struct rect inner={area.x+GROUP_FRAME_PAD,area.y+GROUP_FRAME_TOP,
+		area.width-2*GROUP_FRAME_PAD,area.height-GROUP_FRAME_TOP-GROUP_FRAME_PAD};
+	flow_group_tiles(inner,count,view->group_sx,view->group_sy,view->group_gap,220,140,tiles);
+}
+
+static int stage_members(struct nested *wm,struct xdg_view *view,struct xdg_view *members[FLOW_GROUP_MAX]) {
+	if(!group_visible(view) || view->slot<0)return 0;
+	int count=group_members(wm,view,members,true);
+	if(count>=2)return count;
+	members[0]=view;
+	return 1;
+}
+
+static bool stage_same_unit(struct nested *wm,struct xdg_view *a,struct xdg_view *b) {
+	return a==b || (a && b && a->group_id && a->group_id==b->group_id && group_large(wm));
 }
 static int64_t group_ms(void) {
 	struct timespec t;
@@ -638,16 +668,8 @@ static bool picker_scope(struct nested *wm) {
 	return wm->domain_active && !wm->revealing && !wm->overview_active &&
 		(!wm->home_active || wm->default_node_active);
 }
-static struct xdg_view *stage_tray_skip(struct nested *wm) {
-	return wm->layout==STAGE && picker_scope(wm)?wm->stage_painted:NULL;
-}
-
-static int tray_count(struct nested *wm) {
-	return wm->visible_count-(stage_tray_skip(wm)!=NULL);
-}
-
 static void notify_window_count(struct nested *wm) {
-	int count=picker_scope(wm)?tray_count(wm):0;
+	int count=picker_scope(wm)?wm->visible_count:0;
 	if(picker_protocol(wm) && count!=wm->last_window_count) {
 		wm->last_window_count=count;
 		mothership_map_pointer_v1_send_window_count(wm->map_pointer,count);
@@ -670,7 +692,7 @@ static void notify_window_overflow(struct nested *wm) {
 	int hidden=0;
 	if(picker_scope(wm))
 		for(int i=0;i<wm->visible_count;i++)
-			if(wm->slots[i] && wm->slots[i]!=stage_tray_skip(wm) && !preview_on_panel(wm,wm->slots[i])) hidden++;
+			if(wm->slots[i] && !preview_on_panel(wm,wm->slots[i])) hidden++;
 	if(hidden!=wm->last_window_overflow) {
 		wm->last_window_overflow=hidden;
 		mothership_map_pointer_v1_send_window_overflow(wm->map_pointer,hidden);
@@ -743,12 +765,8 @@ static bool strip_has_group(struct nested *wm) {
 	return false;
 }
 static double strip_slot(struct nested *wm,int slot) {
-	if(group_large(wm)) {
-		int part,n;
-		return strip_group_slot(wm,slot,&part,&n);
-	}
-	struct xdg_view *skip=stage_tray_skip(wm);
-	return slot-(skip && slot>skip->slot?stage_ease(wm->stage_amount):0.);
+	int part,n;
+	return group_large(wm)?strip_group_slot(wm,slot,&part,&n):slot;
 }
 
 static double strip_limit(struct nested *wm) {
@@ -756,27 +774,43 @@ static double strip_limit(struct nested *wm) {
 		int part,n;
 		return strip_limit_for(wm,strip_group_slot(wm,-1,&part,&n));
 	}
-	return strip_limit_for(wm,wm->visible_count-(stage_tray_skip(wm)?stage_ease(wm->stage_amount):0.));
+	return strip_limit_for(wm,wm->visible_count);
 }
 
-static double strip_reveal_at(struct nested *wm,double slot,double offset,double limit) {
-	double left=slot*STRIP_PITCH,right=left+STRIP_PITCH;
+static double strip_reveal_at(struct nested *wm,double left,double right,double offset) {
 	if(left<offset) offset=left;
 	else if(right>offset+wm->node_strip.width) offset=right-wm->node_strip.width;
-	return fmax(0,fmin(offset,limit));
+	return fmax(0,fmin(offset,strip_limit(wm)));
+}
+
+static struct wlr_box strip_rest_tile(struct nested *wm,struct xdg_view *v,double offset) {
+	struct wlr_box lane=wm->node_strip;
+	int part=0,count=1;
+	double position=group_large(wm)?strip_group_slot(wm,v->slot,&part,&count):v->slot;
+	int h=lane.height-SHELL_PREVIEW_REST_INSET;
+	if(h<1 || lane.width<24 || v->slot<0)return (struct wlr_box){0};
+	int w=count>1?(int)round(GROUP_PITCH*STRIP_PITCH)-10:STRIP_PITCH-12;
+	int x=lane.x-(int)round(offset)+(int)round(position*STRIP_PITCH)+(count>1?5:(STRIP_PITCH-w)/2);
+	struct rect box={x,lane.y+lane.height-SHELL_PREVIEW_BOTTOM-h,w,h};
+	struct rect tiles[FLOW_GROUP_MAX];
+	flow_group_tiles(box,count,v->group_sx,v->group_sy,3,16,11,tiles);
+	struct rect tile=tiles[part];
+	return (struct wlr_box){tile.x,tile.y,tile.width,tile.height};
 }
 
 static double strip_goal(struct nested *wm,struct xdg_view *v,double offset) {
 	if(!v || v->slot<0 || wm->node_strip.width<=0) return offset;
-	int p=0,n=1;
-	double slot=group_large(wm)?strip_group_slot(wm,v->slot,&p,&n):strip_slot(wm,v->slot);
-	if(n>=2) {
-		double left=slot*STRIP_PITCH,right=left+GROUP_PITCH*STRIP_PITCH;
-		if(right-left>wm->node_strip.width || left<offset)offset=left;
-		else if(right>offset+wm->node_strip.width)offset=right-wm->node_strip.width;
-		return fmax(0,fmin(offset,strip_limit(wm)));
+	int part=0,count=1;
+	double slot=group_large(wm)?strip_group_slot(wm,v->slot,&part,&count):v->slot;
+	double left=slot*STRIP_PITCH,right=left+(count>=2?GROUP_PITCH:1)*STRIP_PITCH;
+	if(count>=2 && right-left>wm->node_strip.width) {
+		struct wlr_box tile=strip_rest_tile(wm,v,0);
+		if(tile.width>0) {
+			left=tile.x-wm->node_strip.x;
+			right=left+tile.width;
+		}
 	}
-	return strip_reveal_at(wm,slot,offset,strip_limit(wm));
+	return strip_reveal_at(wm,left,right,offset);
 }
 
 static void picker_rail_frame(struct nested *wm,int64_t ms) {
@@ -799,7 +833,7 @@ static struct xdg_view *strip_at(struct nested *wm,double x) {
 	for(int i=0;i<wm->visible_count;i++) {
 		struct xdg_view *v=wm->slots[i];
 		double left=strip_origin(wm)+strip_slot(wm,i)*STRIP_PITCH;
-		if(v!=stage_tray_skip(wm) && x>=left && x<left+STRIP_PITCH) return v;
+		if(x>=left && x<left+STRIP_PITCH) return v;
 	}
 	return NULL;
 }
@@ -808,7 +842,7 @@ static bool scroll_node_strip(void *data,struct wlr_surface *surface,double x,do
 		double delta,bool wheel) {
 	struct nested *wm=data;
 	const struct wlr_box *b=&wm->node_strip;
-	if(!node_strip_active(wm) || wm->stage_scale.tree || wm->picker_count || wm->picker_keyboard || wm->panel->wants_keyboard || surface!=wm->panel->layer->surface ||
+	if(!node_strip_active(wm) || wm->stage_flight_count || wm->picker_count || wm->picker_keyboard || wm->panel->wants_keyboard || surface!=wm->panel->layer->surface ||
 		x<b->x || x>=b->x+b->width || y<b->y || y>=b->y+b->height) return false;
 	flow_reorder_finish(wm);
 	double next=fmax(0,fmin(strip_limit(wm),wm->strip_offset+delta*(wheel?5.:1.)));
@@ -907,10 +941,9 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 	wm->strip_offset=fmin(wm->strip_offset,strip_limit(wm));
 	int count=wm->visible_count,pitch=STRIP_PITCH,start=strip_origin(wm);
 	bool compact=strip_has_group(wm);
-	struct xdg_view *skip=stage_tray_skip(wm);
 	int hot=-10;
-	if(!wm->stage_scale.tree && !wm->group_grab.source)
-		for(int i=0;i<count;i++) if(wm->slots[i]!=skip && wm->slots[i]->id==wm->strip_hover) {hot=i;break;}
+	if(!wm->stage_flight_count && !wm->group_grab.source)
+		for(int i=0;i<count;i++) if(wm->slots[i]->id==wm->strip_hover) {hot=i;break;}
 	bool moving=false;
 	double spread[NODE_WINDOWS]={0};
 	const double zoom=strip_hover_scale(wm),lift_spread=strip_hover_spread(wm);
@@ -930,8 +963,8 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 		bool hovered=hot==i;
 		if(compact && hot>=0 && wm->slots[i]->group_id &&
 			wm->slots[hot]->group_id==wm->slots[i]->group_id)hovered=true;
-		double goal=wm->slots[i]==skip?0:hovered?1:abs(hot-i)==1?.42:0;
-		if(!wm->strip_motion || wm->stage_scale.tree){p->lift=p->lift_from=p->lift_to=goal;}
+		double goal=hovered?1:abs(hot-i)==1?.42:0;
+		if(!wm->strip_motion || wm->stage_flight_count){p->lift=p->lift_from=p->lift_to=goal;}
 		else {
 			if(p->lift_to!=goal){
 				p->lift_from=p->lift;
@@ -963,7 +996,7 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 	// its slot, move the row right by that overflow so the lane's left edge
 	// never clips it. At rest, and at 100% hover zoom, this stays 0.
 	int lead=0;
-	if(count>0 && wm->slots[0]!=skip) {
+	if(count>0) {
 		int part=0,members=1;
 		if(compact) strip_group_slot(wm,0,&part,&members);
 		if(members>=2) {
@@ -988,7 +1021,7 @@ static void strip_draw(struct nested *wm,struct timespec now) {
 		if(!p->image) continue;
 		wlr_scene_node_set_enabled(&wm->group_tray_ring[i]->node,false);
 		struct xdg_view *v=i<count?wm->slots[i]:NULL;
-		if(!v || v==skip) {
+		if(!v) {
 			p->id=0;p->lift=0;p->painted_left=p->painted_right=0;
 			p->painted=(struct wlr_box){0};
 			wlr_scene_node_set_enabled(&p->ring->node.parent->node,false);
@@ -1108,7 +1141,7 @@ static void picker_focus_draw(struct nested *wm,struct timespec now) {
 	}
 	struct xdg_view *v=picker_view(wm,wm->picker_mark_id);
 	struct wlr_surface *surface=v?v->toplevel->base->surface:NULL;
-	if(!surface || v==stage_tray_skip(wm) || !surface->buffer ||
+	if(!surface || !surface->buffer ||
 			surface->current.width<=0 || surface->current.height<=0) {
 		picker_focus_clear(wm);return;
 	}
@@ -1214,7 +1247,7 @@ static void on_frame(struct wl_listener *listener, void *data) {
 	bool timed=clock_gettime(CLOCK_MONOTONIC,&now)==0;
 	bool tracing=timed && render_debug_active(wm->render_debug);
 	if(tracing && (wm->revealing || wm->flow_sliding || wm->reorder.active || wm->mode_slide_view ||
-			wm->stage_scale.tree || wm->maximize.view || wm->picker_rail_sliding))
+			wm->stage_flight_count || wm->maximize.view || wm->picker_rail_sliding))
 		render_debug_source(wm->render_debug,RENDER_MOTION);
 	if(timed) flow_reorder_frame(wm,now);
 	if (timed) {reveal_frame(wm,now);flow_slide_frame(wm,now);mode_slide_frame(wm,now);maximize_frame(wm,now);stage_scale_frame(wm,now);strip_draw(wm,now);picker_draw(wm);picker_focus_draw(wm,now);group_frame(wm,now);tray_flights_frame(wm,now);}
@@ -1369,9 +1402,7 @@ static void arrange_flow(struct nested *wm, struct xdg_view *center) {
 			struct rect area={vertical?pad:cursor,vertical?cursor:(h-gh)/2,w-2*pad,gh};
 			if(!vertical) area.y=pad; // Keep the bottom flush with work-area limits.
 			struct rect tiles[FLOW_GROUP_MAX];
-			struct rect inner={area.x+GROUP_FRAME_PAD,area.y+GROUP_FRAME_TOP,
-				area.width-2*GROUP_FRAME_PAD,area.height-GROUP_FRAME_TOP-GROUP_FRAME_PAD};
-			flow_group_tiles(inner,n,v->group_sx,v->group_sy,v->group_gap,220,140,tiles);
+			group_window_tiles(v,area,n,tiles);
 			for(int j=0;j<n;j++) {
 				group[j]->flow_base=tiles[j];group[j]->flow_unit=area;
 				placed[group[j]->slot]=true;
@@ -1441,7 +1472,7 @@ static void apply_view_clip(struct xdg_view *view) {
 
 static void place_view(struct xdg_view *view) {
 	if (view == NULL || view->slot < 0 || view->tree == NULL || view->wm->output == NULL ||
-			view->minimized || (!view->frame->node.enabled && !is_stage(view->wm) && view->wm->maximize.view!=view)) {
+			view->minimized || (!view->frame->node.enabled && view->wm->maximize.view!=view)) {
 		return;
 	}
 	struct nested *wm = view->wm;
@@ -1452,6 +1483,9 @@ static void place_view(struct xdg_view *view) {
 	}
 	bool node=node_view(wm),flow=is_flow(wm),stage=is_stage(wm);
 	bool floating=node && view_floats(view),maximized=view_maximized(view);
+	struct xdg_view *layout_group[FLOW_GROUP_MAX];
+	int count=group_members(wm,view,layout_group,stage);
+	bool grouped=count>=2;
 	struct rect r;
 	if (maximized || (node && wm->layout==STACK)) {
 		// App frame ends against the fixed rail, never on top of its controls.
@@ -1462,8 +1496,12 @@ static void place_view(struct xdg_view *view) {
 		r = view->slot == 0 ? (struct rect){0, 0, middle, height} :
 			(struct rect){middle, 0, width - middle, height};
 	} else if (stage) {
-		int work=shell_node_dock_top(height)-SHELL_NODE_GUIDE_HEIGHT-SHELL_NODE_GUIDE_GAP;
-		r=stage_rect(width,work>120?work:height);
+		r=stage_bounds(wm);
+		if(grouped) {
+			struct rect tiles[FLOW_GROUP_MAX];
+			group_window_tiles(view,r,count,tiles);
+			for(int i=0;i<count;i++) if(layout_group[i]==view) {r=tiles[i];break;}
+		}
 	} else if (floating) {
 		if (view->floating.width == 0) {
 			view->floating = float_start(view->slot, width, height);
@@ -1490,8 +1528,6 @@ static void place_view(struct xdg_view *view) {
 	wlr_scene_node_set_position(&view->frame->node,r.x,r.y);
 	wlr_scene_node_set_position(&view->tree->node,edge,bar);
 	if (framed && !view->chrome) view->chrome=window_chrome_create(view->frame);
-	struct xdg_view *layout_group[FLOW_GROUP_MAX];
-	bool grouped=group_members(wm,view,layout_group,false)>=2;
 	if (view->chrome) {
 		if (framed) window_chrome_update(view->chrome,r.width,r.height,(double)wm->parent_window.scale_120/120,
 			view->toplevel->title,wm->focused==view,flow && !grouped,floating,maximized,
@@ -1561,7 +1597,7 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		__typeof__(wm->group_frame[0]) *g=&wm->group_frame[i];
 		if(!g->leader || !group_chrome_owns_node(g->chrome,node))continue;
 		enum group_control action=group_chrome_control(g->chrome,x-g->box.x,y-g->box.y);
-		if(action!=GROUP_CONTROL_NONE) {
+		if(action!=GROUP_CONTROL_NONE && !wm->stage_flight_count) {
 			hit.decoration=find_view(wm,g->leader);
 			hit.chrome_action=action==GROUP_CONTROL_LAYOUT?WINDOW_CHROME_GROUP_LAYOUT:WINDOW_CHROME_GROUP_MINIMIZE;
 		}
@@ -1571,7 +1607,6 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		for (int i=0;i<wm->visible_count;i++) {
 			struct xdg_view *v=wm->slots[i];
 			if (!v || !v->chrome || !window_chrome_owns_node(v->chrome,node)) continue;
-			if (is_stage(wm) && v!=wm->focused) return hit;
 			enum window_chrome_hit action=window_chrome_hit_at(v->chrome,x-v->placement.x,y-v->placement.y);
 			if (action==WINDOW_CHROME_NONE) return hit;
 			hit.toplevel=v->toplevel->base->surface;
@@ -1580,7 +1615,7 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 			if (view_floats(v) && !view_maximized(v) &&
 					(action==WINDOW_CHROME_TITLE || action==WINDOW_CHROME_RESIZE)) {
 				hit.handle=v;hit.resize=action==WINDOW_CHROME_RESIZE;
-			} else if(action==WINDOW_CHROME_TITLE && group_large(wm) && !v->maximized) {
+			} else if(action==WINDOW_CHROME_TITLE && is_flow(wm) && group_large(wm) && !v->maximized) {
 				hit.handle=v;hit.defer_move_focus=true;
 			}
 			return hit;
@@ -1623,7 +1658,6 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 		for (int i = 0; i < NODE_WINDOWS; ++i) {
 			struct xdg_view *view = wm->slots[i];
 			if (view != NULL && view->tree == tree) {
-				if (is_stage(wm) && view!=wm->focused) return hit;
 				hit.surface = surface->surface;
 				hit.toplevel = view->toplevel->base->surface;
 				return hit;
@@ -2396,16 +2430,30 @@ static void stage_prime(struct xdg_view *view) {
 		wlr_surface_for_each_surface(view->toplevel->base->surface,stage_send_frame,&now);
 }
 
-static void present_stage(struct nested *wm) {
-	stage_scale_clear(&wm->stage_scale);
-	wm->stage_painted=wm->focused;
-	wm->stage_amount=1;
-	wm->stage_tick=0;
+static void stage_show_unit(struct nested *wm,struct xdg_view *view) {
+	struct xdg_view *members[FLOW_GROUP_MAX];
+	int count=stage_members(wm,view,members);
 	for(int i=0;i<wm->visible_count;i++) {
 		struct xdg_view *v=wm->slots[i];
-		wlr_scene_node_set_enabled(&v->frame->node,!v->minimized && v==wm->focused);
-		place_view(v);
+		bool paint=false;
+		for(int j=0;j<count;j++) paint|=v==members[j];
+		wlr_scene_node_set_enabled(&v->frame->node,paint);
 	}
+	for(int i=0;i<count;i++) place_view(members[i]);
+}
+
+static void stage_flights_clear(struct nested *wm) {
+	for(int i=0;i<wm->stage_flight_count;i++) stage_scale_clear(&wm->stage_flight[i].sprite);
+	wm->stage_flight_count=0;
+	wm->stage_tick=0;
+}
+
+static void present_stage(struct nested *wm) {
+	stage_flights_clear(wm);
+	wm->stage_painted=wm->focused;
+	wm->stage_amount=1;
+	if(!wm->picker_keyboard) strip_reveal_window(wm,wm->focused);
+	stage_show_unit(wm,wm->focused);
 }
 
 static bool flight_capture(struct nested *wm,struct stage_scale *scale,struct xdg_view *view,struct wlr_scene_tree *overlay) {
@@ -2420,7 +2468,7 @@ static bool flight_capture(struct nested *wm,struct stage_scale *scale,struct xd
 }
 static bool tray_flight_enabled(struct nested *wm,struct xdg_view *view) {
 	if(!view->mapped || view->minimized || view->slot<0)return false;
-	if(is_stage(wm))return wm->focused==view;
+	if(is_stage(wm))return stage_same_unit(wm,wm->focused,view);
 	return is_flow(wm) && (wm->focused && wm->focused->maximized?
 		wm->focused==view:!view->maximized);
 }
@@ -2435,23 +2483,11 @@ static void tray_flights_clear(struct nested *wm) {
 		f->id=0;
 	}
 }
-static struct wlr_box tray_flight_anchor(struct nested *wm,struct xdg_view *v,bool opening) {
-	struct wlr_box lane=wm->node_strip;
-	int part=0,count=1;
-	double position=group_large(wm)?strip_group_slot(wm,v->slot,&part,&count):strip_slot(wm,v->slot);
-	// An opening Stage app will disappear from the tray as soon as it lifts.
-	// Use the slot that was visible before that removal.
-	if(opening && is_stage(wm) && v==stage_tray_skip(wm))position=v->slot;
-	int h=lane.height-SHELL_PREVIEW_REST_INSET;
-	int w=count>1?(int)round(GROUP_PITCH*STRIP_PITCH)-10:STRIP_PITCH-12;
-	if(h<1 || lane.width<24)return (struct wlr_box){0};
-	int x=strip_origin(wm)+(int)round(position*STRIP_PITCH)+(count>1?5:(STRIP_PITCH-w)/2);
-	x=clamp_int(x,lane.x,lane.x+(lane.width>w?lane.width-w:0));
-	struct rect box={x,lane.y+lane.height-SHELL_PREVIEW_BOTTOM-h,w,h};
-	struct rect tiles[FLOW_GROUP_MAX];
-	flow_group_tiles(box,count,v->group_sx,v->group_sy,3,16,11,tiles);
-	struct rect a=tiles[part];
-	return (struct wlr_box){a.x,a.y,a.width,a.height};
+static struct wlr_box tray_flight_anchor(struct nested *wm,struct xdg_view *v) {
+	struct wlr_box tile=strip_rest_tile(wm,v,fmin(wm->strip_offset,strip_limit(wm)));
+	int remaining=wm->node_strip.width-tile.width;
+	tile.x=clamp_int(tile.x,wm->node_strip.x,wm->node_strip.x+(remaining>0?remaining:0));
+	return tile;
 }
 static void tray_flight_start(struct nested *wm,struct xdg_view *v,int index,bool opening,struct wlr_box anchor) {
 	if(!wm->strip_motion || !node_strip_active(wm) || v->slot<0 || !v->frame->node.enabled)return;
@@ -2476,7 +2512,7 @@ static void tray_flights_frame(struct nested *wm,struct timespec now) {
 			stage_scale_clear(&f->sprite);f->id=0;changed=true;
 			continue;
 		}
-		if(!f->opening)f->anchor=tray_flight_anchor(wm,v,false);
+		if(!f->opening)f->anchor=tray_flight_anchor(wm,v);
 		else wlr_scene_node_set_enabled(&v->frame->node,false);
 		if(f->anchor.width>0 && f->anchor.height>0)
 			stage_scale_draw(&f->sprite,f->anchor,stage_ease(f->opening?t:1.-t));
@@ -2484,37 +2520,30 @@ static void tray_flights_frame(struct nested *wm,struct timespec now) {
 	}
 	if(changed)nested_seat_refresh(wm->seat);
 }
-static bool stage_capture(struct nested *wm,struct xdg_view *view) {
-	bool enabled=view->frame->node.enabled;
-	if(!enabled) {
-		wlr_scene_node_set_enabled(&view->frame->node,true);
-		apply_view_clip(view);
-	}
-	bool ok=flight_capture(wm,&wm->stage_scale,view,wm->stage_overlay);
-	if(ok || !enabled) wlr_scene_node_set_enabled(&view->frame->node,false);
-	return ok;
-}
-
-static bool stage_prepare_anchor(struct nested *wm,struct xdg_view *view) {
+static bool stage_capture_unit(struct nested *wm,struct xdg_view *view) {
 	const struct wlr_box *lane=&wm->node_strip;
-	int w=STRIP_PITCH-12,h=lane->height-SHELL_PREVIEW_REST_INSET;
-	if(!node_strip_active(wm) || lane->width<STRIP_PITCH || h<=0 || view->slot<0) return false;
+	if(!node_strip_active(wm))return false;
+	struct xdg_view *members[FLOW_GROUP_MAX];
+	int count=stage_members(wm,view,members);
 	wm->stage_rail_from=wm->strip_offset;
-	wm->stage_rail_to=strip_reveal_at(wm,view->slot,wm->strip_offset,
-		strip_limit_for(wm,wm->visible_count));
-	wm->stage_anchor=(struct wlr_box){
-		lane->x+view->slot*STRIP_PITCH+(STRIP_PITCH-w)/2-(int)round(wm->stage_rail_to),
-		lane->y+lane->height-SHELL_PREVIEW_BOTTOM-h,w,h,
-	};
-	return true;
+	wm->stage_rail_to=strip_goal(wm,view,wm->strip_offset);
+	for(int i=0;i<count;i++) {
+		struct wlr_box anchor=strip_rest_tile(wm,members[i],wm->stage_rail_to);
+		if(anchor.width<=0 || anchor.x<lane->x || anchor.x+anchor.width>lane->x+lane->width ||
+				!members[i]->frame->node.enabled ||
+				!flight_capture(wm,&wm->stage_flight[i].sprite,members[i],wm->stage_overlay))return false;
+		wm->stage_flight[i].anchor=anchor;
+		wm->stage_flight_count++;
+	}
+	for(int i=0;i<count;i++) wlr_scene_node_set_enabled(&members[i]->frame->node,false);
+	return count>0;
 }
 
 static void stage_begin_switch(struct nested *wm) {
 	struct xdg_view *painted=wm->stage_painted;
 	if(!wm->strip_motion || !painted) {present_stage(wm);return;}
 	wm->strip_hover=0;
-	if(!wm->stage_scale.tree &&
-			(!stage_prepare_anchor(wm,painted) || !stage_capture(wm,painted))) {
+	if(!wm->stage_flight_count && !stage_capture_unit(wm,painted)) {
 		present_stage(wm);
 		return;
 	}
@@ -2522,7 +2551,7 @@ static void stage_begin_switch(struct nested *wm) {
 }
 
 static void stage_scale_frame(struct nested *wm,struct timespec now) {
-	if(!wm->stage_scale.tree) return;
+	if(!wm->stage_flight_count) return;
 	if(!wm->strip_motion || !node_strip_active(wm) || !wm->focused) {
 		present_stage(wm);
 		nested_seat_refresh(wm->seat);
@@ -2531,17 +2560,21 @@ static void stage_scale_frame(struct nested *wm,struct timespec now) {
 	int64_t ms=now.tv_sec*1000LL+now.tv_nsec/1000000;
 	double elapsed=wm->stage_tick?ms-wm->stage_tick:0;
 	wm->stage_tick=ms;
-	if(wm->stage_painted!=wm->focused) {
+	if(!stage_same_unit(wm,wm->stage_painted,wm->focused)) {
 		wm->stage_amount=fmax(0,wm->stage_amount-elapsed/200.);
 		if(wm->stage_amount<=0) {
-			wm->strip_offset=wm->stage_rail_to;
+			stage_flights_clear(wm);
+			wm->stage_tick=ms;
+			if(!wm->picker_keyboard) wm->strip_offset=wm->stage_rail_to;
 			wm->stage_painted=wm->focused;
-			if(!stage_prepare_anchor(wm,wm->focused) || !stage_capture(wm,wm->focused)) {
+			stage_show_unit(wm,wm->focused);
+			if(!stage_capture_unit(wm,wm->focused)) {
 				present_stage(wm);
 				nested_seat_refresh(wm->seat);
 				return;
 			}
-			wm->strip_offset=wm->stage_rail_from=wm->stage_rail_to;
+			if(!wm->picker_keyboard) wm->strip_offset=wm->stage_rail_to;
+			wm->stage_rail_from=wm->stage_rail_to;
 		}
 	} else {
 		wm->stage_amount=fmin(1,wm->stage_amount+elapsed/240.);
@@ -2554,7 +2587,8 @@ static void stage_scale_frame(struct nested *wm,struct timespec now) {
 	const double eased=stage_ease(wm->stage_amount);
 	if(!wm->picker_keyboard)
 		wm->strip_offset=wm->stage_rail_to+(wm->stage_rail_from-wm->stage_rail_to)*eased;
-	stage_scale_draw(&wm->stage_scale,wm->stage_anchor,eased);
+	for(int i=0;i<wm->stage_flight_count;i++)
+		stage_scale_draw(&wm->stage_flight[i].sprite,wm->stage_flight[i].anchor,eased);
 	wlr_output_schedule_frame(wm->output);
 }
 
@@ -2611,7 +2645,7 @@ static unsigned decorate_frames(struct nested *wm) {
 	const struct wlr_box output={0,0,wm->parent_window.width,wm->parent_window.height};
 	if(output.width<=0 || output.height<=0)return 0;
 	bool framed=view_has_frame(wm) && !wm->revealing;
-	bool moving=wm->drag || wm->flow_sliding || wm->reorder.active || wm->mode_slide_view || wm->stage_scale.tree || wm->maximize.view;
+	bool moving=wm->drag || wm->flow_sliding || wm->reorder.active || wm->mode_slide_view || wm->stage_flight_count || wm->maximize.view;
 	bool assigned[NODE_WINDOWS]={0};
 	unsigned trace=0;
 	int g=0;
@@ -2627,12 +2661,14 @@ static unsigned decorate_frames(struct nested *wm) {
 			if(bottom)break;
 		}
 		if(!bottom)continue;
-		struct rect r=view->flow_unit;
-		int offset=wm->flow_offset;
-		if(wm->reorder.active)
-			offset+=(int)round((wm->reorder.flow_from-offset)*wm->reorder.remaining);
-		if(flow_vertical(wm->layout,output.width,output.height))r.y+=offset;
-		else r.x+=offset;
+		struct rect r=is_stage(wm)?stage_bounds(wm):view->flow_unit;
+		if(is_flow(wm)) {
+			int offset=wm->flow_offset;
+			if(wm->reorder.active)
+				offset+=(int)round((wm->reorder.flow_from-offset)*wm->reorder.remaining);
+			if(flow_vertical(wm->layout,output.width,output.height))r.y+=offset;
+			else r.x+=offset;
+		}
 		struct wlr_box box={r.x,r.y,r.width,r.height};
 		if(!wlr_box_intersection(&(struct wlr_box){0},&box,&output))continue;
 		__typeof__(wm->group_frame[0]) *slot=&wm->group_frame[g++];
@@ -2640,10 +2676,8 @@ static unsigned decorate_frames(struct nested *wm) {
 		struct wlr_scene_tree *tree=group_chrome_tree(slot->chrome);
 		if(!tree)continue;
 		bool focused=false;
-		struct wlr_box holes[FLOW_GROUP_MAX];
 		for(int j=0;j<count;j++) {
 			assigned[members[j]->slot]=true;
-			holes[j]=client_aperture(members[j]);
 			focused|=wm->focused==members[j];
 		}
 		slot->box=box;
@@ -2651,21 +2685,12 @@ static unsigned decorate_frames(struct nested *wm) {
 		group_chrome_place(slot->chrome,r.x,r.y,r.width,r.height,wm->output->scale,
 			(unsigned)view->group_id,focused);
 		if(tree->node.link.next!=&bottom->link)wlr_scene_node_place_below(&tree->node,bottom);
-		if(wm->frame_glass_enabled && !slot->glass)slot->glass=scene_glass_create(wm->output,tree);
-		if(slot->glass) {
-			scene_glass_place_below(slot->glass,&tree->node);
-			struct wlr_scene_node *sources[NODE_WINDOWS+2];
-			size_t n=glass_below(wm,bottom,sources);
-			trace|=scene_glass_update_masked(slot->glass,box,1000,moving,
-				wl_display_get_event_loop(wm->server),sources,n,holes,count);
-		}
 	}
 	for(;g<NODE_WINDOWS/2;g++) {
 		__typeof__(wm->group_frame[0]) *slot=&wm->group_frame[g];
 		if(!slot->leader)continue;
 		slot->leader=0;
 		wlr_scene_node_set_enabled(&group_chrome_tree(slot->chrome)->node,false);
-		trace|=scene_glass_update(slot->glass,(struct wlr_box){0},0,false,NULL,NULL,0);
 	}
 	struct xdg_view *v;
 	wl_list_for_each(v,&wm->views,link) {
@@ -2785,9 +2810,19 @@ static void remember_focus(void *data, struct wlr_surface *surface) {
 				struct xdg_view *previous=wm->focused;
 				wm->focused=view;
 				if(previous!=view) {
-					stage_prime(view);
-					place_view(view);
-					stage_begin_switch(wm);
+					if(wm->stage_painted && stage_same_unit(wm,previous,view)) {
+						if(!wm->stage_flight_count) {
+							strip_reveal_window(wm,view);
+							place_view(previous);
+							place_view(view);
+							wm->stage_painted=view;
+						}
+					} else {
+						struct xdg_view *members[FLOW_GROUP_MAX];
+						int count=stage_members(wm,view,members);
+						for(int j=0;j<count;j++) stage_prime(members[j]);
+						stage_begin_switch(wm);
+					}
 				}
 			} else if(is_flow(wm)) {
 				bool changed=wm->focused!=view;
@@ -2837,9 +2872,8 @@ static void clear_slots(struct nested *wm) {
 	maximize_finish(wm);
 	tray_flights_clear(wm);
 	wm->group_grab.source=wm->group_join.id=0;
-	stage_scale_clear(&wm->stage_scale);
+	stage_flights_clear(wm);
 	wm->stage_painted=NULL;
-	wm->stage_tick=0;
 	wm->flow_sliding=false;
 	wm->mode_slide_view=NULL;
 	for (int i = 0; i < NODE_WINDOWS; ++i) {
@@ -2854,15 +2888,26 @@ static void clear_slots(struct nested *wm) {
 	wm->focused = NULL;
 }
 
-static void present_node(struct nested *wm,bool recenter) {
+static void present_node(struct nested *wm,bool recenter,uint64_t preferred_group) {
 	struct xdg_view *selected = best_view(wm, false);
 	struct xdg_view *top = selected;
 	for(int i=0;!top && i<wm->visible_count;i++)
 		if(!wm->slots[i]->minimized) top=wm->slots[i];
 	wm->focused=selected;
 	if (is_stage(wm)) {
+		if(preferred_group) {
+			struct xdg_view *survivor=NULL;
+			uint64_t rank=0;
+			for(int i=0;i<wm->visible_count;i++) {
+				struct xdg_view *v=wm->slots[i];
+				if(v->group_id!=preferred_group || v->minimized)continue;
+				uint64_t at=wm->default_node_active?v->home_focused_at:v->focused_at;
+				if(!survivor || at>rank) {survivor=v;rank=at;}
+			}
+			if(survivor) top=survivor;
+		}
 		wm->focused=top;
-		if(top && !selected) {
+		if(top && top!=selected) {
 			if(wm->default_node_active) top->home_focused_at=++wm->focus_order;
 			else top->focused_at=++wm->focus_order;
 		}
@@ -2906,7 +2951,8 @@ static void project_ordered_view(struct xdg_view *slots[NODE_WINDOWS],int *count
 
 static void project_home(struct nested *wm,bool recenter) {
 	if(!wm->default_node_active) { clear_slots(wm); return; }
-	struct xdg_view *next[NODE_WINDOWS]={0},*view;
+	struct xdg_view *next[NODE_WINDOWS]={0},*view,*previous=wm->focused;
+	uint64_t group=previous?previous->group_id:0;
 	int count=0;
 	wl_list_for_each(view,&wm->views,link) {
 		if(view->mapped && !view->assigned && view->tree) {
@@ -2915,7 +2961,7 @@ static void project_home(struct nested *wm,bool recenter) {
 		}
 	}
 	if(count==wm->visible_count && !memcmp(next,wm->slots,sizeof(next))) {
-		if(recenter) present_node(wm,true);
+		if(recenter) present_node(wm,true,0);
 		return;
 	}
 	clear_slots(wm);
@@ -2929,7 +2975,7 @@ static void project_home(struct nested *wm,bool recenter) {
 			next[i]->home_focused_at=++wm->focus_order;
 			break;
 		}
-	present_node(wm,recenter);
+	present_node(wm,recenter,previous && previous->slot<0?group:0);
 }
 
 static void refresh_home(struct nested *wm) {
@@ -3027,6 +3073,8 @@ static void reset_node_geometry(struct xdg_view *view) {
 }
 
 static void project_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS],bool recenter) {
+	struct xdg_view *previous=wm->focused;
+	uint64_t group=previous?previous->group_id:0;
 	clear_slots(wm);
 	if (members != wm->members) {
 		memcpy(wm->members, members, sizeof(wm->members));
@@ -3048,7 +3096,7 @@ static void project_named(struct nested *wm, const struct domain_member members[
 		}
 	}
 	for(int i=0;i<wm->visible_count;i++) wm->slots[i]->slot=i;
-	present_node(wm,recenter);
+	present_node(wm,recenter,previous && previous->slot<0?group:0);
 }
 
 static void refresh_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS]) {
@@ -3079,13 +3127,16 @@ static void strip_focus_view(struct nested *wm,struct xdg_view *v) {
 	struct wlr_surface *surface=v->toplevel->base->surface;
 	struct xdg_view *restoring[FLOW_GROUP_MAX]={0};
 	struct wlr_box anchors[FLOW_GROUP_MAX]={0};
+	bool expand_stage=false;
 	int n=0;
 	if(v->minimized) {
+		expand_stage=is_stage(wm) && stage_same_unit(wm,wm->focused,v);
 		n=group_members(wm,v,restoring,false);
 		if(n<2) {restoring[0]=v;n=1;}
 		tray_flights_clear(wm);
 		for(int j=0;j<n;j++) {
-			anchors[j]=tray_flight_anchor(wm,restoring[j],true);
+			if(!restoring[j]->minimized)continue;
+			anchors[j]=tray_flight_anchor(wm,restoring[j]);
 			restoring[j]->minimized=false;
 			if(restoring[j]!=v)stage_prime(restoring[j]);
 		}
@@ -3100,15 +3151,17 @@ static void strip_focus_view(struct nested *wm,struct xdg_view *v) {
 	remember_focus(wm,surface);
 	if(named_view(wm) && wm->layout==STACK) project_named(wm,wm->members,false);
 	else wm->focused=v;
+	if(expand_stage) present_stage(wm);
 	nested_seat_switch(wm->seat,surface,false);
-	if((is_flow(wm) || is_stage(wm)) && !wm->stage_scale.tree)
-		for(int j=0;j<n;j++)tray_flight_start(wm,restoring[j],j,true,anchors[j]);
+	if((is_flow(wm) || is_stage(wm)) && !wm->stage_flight_count)
+		for(int j=0;j<n;j++) if(anchors[j].width>0)
+			tray_flight_start(wm,restoring[j],j,true,anchors[j]);
 	wlr_output_schedule_frame(wm->output);
 }
 
 static bool group_can_join(struct nested *wm,struct xdg_view *source,struct xdg_view *target) {
 	if(!group_large(wm) || wm->revealing || !source || !target || source==target ||
-		source->slot<0 || target->slot<0 || !group_visible(target) ||
+		source->slot<0 || target->slot<0 || !group_visible(target) || target->maximized || target->flowed_out ||
 		!source->mapped || source->minimized || source->maximized ||
 		(source->group_id && source->group_id==target->group_id))return false;
 	struct xdg_view *old[FLOW_GROUP_MAX];
@@ -3116,6 +3169,7 @@ static bool group_can_join(struct nested *wm,struct xdg_view *source,struct xdg_
 }
 
 static void group_join_views(struct nested *wm,struct xdg_view *source,struct xdg_view *target,struct rect from) {
+	if(is_stage(wm)) tray_flights_clear(wm);
 	group_detach(source);
 	struct xdg_view *old[FLOW_GROUP_MAX];
 	int n=group_members(wm,target,old,false);
@@ -3128,9 +3182,18 @@ static void group_join_views(struct nested *wm,struct xdg_view *source,struct xd
 	source->group_order=++wm->next_group_order;
 	source->group_sx=target->group_sx;source->group_sy=target->group_sy;source->group_gap=target->group_gap;
 	source->flowed_out=false;
-	arrange_flow(wm,source);
-	strip_focus_view(wm,source);
-	if(wm->strip_motion) wm->group_join=(__typeof__(wm->group_join)){source->id,-1,from};
+	if(is_stage(wm)) {
+		stage_flights_clear(wm);
+		wm->stage_painted=NULL;
+		bool already_focused=wm->focused==source;
+		strip_focus_view(wm,source);
+		if(already_focused) present_stage(wm);
+		nested_seat_refresh(wm->seat);
+	} else {
+		arrange_flow(wm,source);
+		strip_focus_view(wm,source);
+		if(wm->strip_motion) wm->group_join=(__typeof__(wm->group_join)){source->id,-1,from};
+	}
 	wlr_output_schedule_frame(wm->output);
 }
 
@@ -3285,7 +3348,7 @@ static void picker_slide_to(struct nested *wm,uint64_t id) {
 	wm->picker_mark_id=id;
 	wm->strip_hover=0;
 	wm->picker_rail_from=wm->strip_offset;
-	wm->picker_rail_to=v==stage_tray_skip(wm)?wm->picker_rail_before:strip_goal(wm,v,wm->strip_offset);
+	wm->picker_rail_to=strip_goal(wm,v,wm->strip_offset);
 	wm->picker_rail_started=-1;
 	wm->picker_rail_sliding=wm->picker_rail_to!=wm->strip_offset;
 	wlr_output_schedule_frame(wm->output);
@@ -3300,7 +3363,7 @@ static void picker_show(struct nested *wm,const uint64_t *ids,int count) {
 	bool overflow_only=wl_resource_get_version(wm->map_pointer)>=12;
 	for(int i=0;i<count;i++) {
 		struct xdg_view *v=picker_view(wm,ids[i]);
-		if(!v || v==stage_tray_skip(wm) || (overflow_only && preview_on_panel(wm,v))) continue;
+		if(!v || (overflow_only && preview_on_panel(wm,v))) continue;
 		wm->picker_ids[wm->picker_count++]=ids[i];
 		char title[513],app[257];
 		snprintf(title,sizeof(title),"%s",v->toplevel->title?v->toplevel->title:"");
@@ -3338,7 +3401,7 @@ static bool cycle_window(void *data,enum cycle_phase phase,int steps) {
 		wm->cycle_count=0;
 		struct xdg_view *target=picker_view(wm,id);
 		if(wm->picker_keyboard) {
-			wm->strip_offset=target && target!=stage_tray_skip(wm)?strip_goal(wm,target,wm->strip_offset):
+			wm->strip_offset=target?strip_goal(wm,target,wm->strip_offset):
 				fmin(wm->picker_rail_before,strip_limit(wm));
 			picker_hide(wm);
 		}
@@ -3905,12 +3968,12 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 
 static void request_view_minimize(struct xdg_view *view,bool whole_group) {
 	struct nested *wm=view->wm;
-	if(!view->mapped || view->minimized || !wm->domain_active ||
+	if(!view->mapped || (!whole_group && view->minimized) || !wm->domain_active ||
 			wm->cleaning) return;
 	// Minimize is local visibility, not an unmap, Domain change, or
 	// process suspension. Keep the slot and the saved client geometry.
 	struct xdg_view *group[FLOW_GROUP_MAX];
-	int n=view->slot>=0?group_members(wm,view,group,false):0;
+	int n=view->slot>=0?group_members(wm,view,group,is_stage(wm) && !whole_group):0;
 	if((n>=2)!=whole_group)return;
 	if(wm->maximize.view==view)maximize_finish(wm);
 	if(n<2) {group[0]=view;n=1;}
@@ -3930,8 +3993,8 @@ static void request_view_minimize(struct xdg_view *view,bool whole_group) {
 	}
 	if(view->slot<0) return;
 	bool had_focus=previous && previous->minimized;
-	if(had_focus || (is_stage(wm) && wm->stage_painted==view) || !is_stage(wm))
-		present_node(wm,had_focus);
+	if(had_focus || (is_stage(wm) && stage_same_unit(wm,wm->stage_painted,view)) || !is_stage(wm))
+		present_node(wm,had_focus,0);
 	if(had_focus && wm->focused && is_stage(wm)) stage_prime(wm->focused);
 	struct wlr_surface *fallback=view_target(wm);
 	// A newly mapped neighbour may not have a focus rank yet.
@@ -3957,12 +4020,15 @@ static void group_show_settings(struct nested *wm,struct xdg_view *view,bool fro
 		for(int i=0;i<NODE_WINDOWS/2;i++) {
 			__typeof__(wm->group_frame[0]) *g=&wm->group_frame[i];
 			if(g->leader==view->id) {
+				struct wlr_box button=group_chrome_control_box(g->chrome,GROUP_CONTROL_LAYOUT);
 				mothership_map_pointer_v1_send_group_settings_anchor(wm->map_pointer,
-					g->box.x+g->box.width-190,g->box.y+GROUP_FRAME_RAIL-9);
+					g->box.x+button.x+button.width/2,g->box.y+button.y+button.height);
 				break;
 			}
 		}
-	mothership_map_pointer_v1_send_group_state(wm->map_pointer,id>>32,(uint32_t)id,n,view->minimized,
+	bool hidden=true;
+	for(int i=0;i<n;i++) hidden&=group[i]->minimized;
+	mothership_map_pointer_v1_send_group_state(wm->map_pointer,id>>32,(uint32_t)id,n,hidden,
 		view->group_sx,view->group_sy,view->group_gap);
 }
 
@@ -3990,9 +4056,10 @@ static void map_pointer_group_action(struct wl_client *client,struct wl_resource
 		return;
 	}
 	if(action==MOTHERSHIP_MAP_POINTER_V1_GROUP_COMMAND_RESTORE) {
-		if(view->minimized) strip_focus_view(wm,view);
+		for(int i=0;i<n;i++) if(group[i]->minimized) {strip_focus_view(wm,group[i]);break;}
 		return;
 	}
+	if(is_stage(wm)) tray_flights_clear(wm);
 	if(action==MOTHERSHIP_MAP_POINTER_V1_GROUP_COMMAND_UNGROUP) {
 		for(int i=0;i<n;i++)group[i]->group_id=group[i]->group_order=0;
 	} else if(action==MOTHERSHIP_MAP_POINTER_V1_GROUP_COMMAND_APPLY) {
@@ -4002,8 +4069,11 @@ static void map_pointer_group_action(struct wl_client *client,struct wl_resource
 			group[i]->group_gap=clamp_int(gap,0,FLOW_GROUP_GAP_MAX);
 		}
 	} else return;
-	arrange_flow(wm,wm->focused);
-	present_flow(wm);
+	if(is_stage(wm)) present_stage(wm);
+	else {
+		arrange_flow(wm,wm->focused);
+		present_flow(wm);
+	}
 	nested_seat_refresh(wm->seat);
 	wlr_output_schedule_frame(wm->output);
 }
@@ -4567,6 +4637,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	wlr_scene_node_set_enabled(&wm.node_strip_tree->node,false);
 	wm.stage_overlay=wlr_scene_tree_create(&wm.scene->tree);
 	if(!wm.stage_overlay) goto done;
+	wlr_scene_node_place_below(&wm.stage_overlay->node,&wm.node_strip_tree->node);
 	wm.picker_tree=wlr_scene_tree_create(&wm.scene->tree);
 	if(!wm.picker_tree) goto done;
 	wlr_scene_node_set_enabled(&wm.picker_tree->node,false);
@@ -4712,10 +4783,8 @@ done:
 		wl_list_remove(&wm.new_decoration.link);
 	}
 	for(unsigned i=0;i<SCENE_GLASS_COUNT;i++) scene_glass_destroy(wm.scene_glass[i].glass);
-	for(int i=0;i<NODE_WINDOWS/2;i++) {
-		scene_glass_destroy(wm.group_frame[i].glass);
+	for(int i=0;i<NODE_WINDOWS/2;i++)
 		group_chrome_destroy(wm.group_frame[i].chrome);
-	}
 	video_frost_destroy(wm.video_frost);
 	if (wm.backend != NULL) {
 		wlr_backend_destroy(wm.backend);

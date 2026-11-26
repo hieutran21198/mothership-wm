@@ -1,34 +1,26 @@
 # Node Stage layout
 
-Flow stays the default layout. In a named Node, open Node Panel Settings
-and choose **Layout → Stage** or **Flow**. The choice takes effect
-immediately and is remembered for the Node in this session. Switching does
-not reassign or restart any window. Keep the selected window when it is
-still eligible. Returning to Flow restores its orientation, order, and
-window sizes.
+Flow stays the default layout. In a named Node or Default Node, open Node
+Panel Settings and choose **Layout → Stage** or **Flow**. The choice takes
+effect immediately and the Node keeps it for this session. Keep the selected
+window if it is still eligible. Returning to Flow restores its orientation,
+order, and window sizes.
 
-- Stage shows one focused window, on both wide and narrow outputs. It
-  fills the work area above the Node Panel, inside the usual frame and
-  content padding. There is no companion pane or Stage pin button.
-- The tray and its overflow grid contain only windows that are off Stage.
-  The active window has no duplicate thumbnail. All windows still take
-  part in Alt+Tab.
-- When focus changes, the old window scales down to its slot in the tray.
-  Then the selected window leaves its slot and scales up to fill Stage.
-  Ease both phases in and out. Retain the painted buffers for the moving
-  view; do not request new client sizes or warp the image. The outgoing
-  view does not receive input. Rapid switches change the destination
-  without queuing each selection. With motion disabled, swap immediately.
-- Holding Alt previews off-Stage windows from their tray slots. Cycling
-  back to the active window does not draw a second copy. Releasing Alt
-  commits the switch; Escape cancels and restores the tray position.
+- Stage presents one standalone window or one [tiled group](../flows/view-node-layouts.md#f-view-5)
+  in the work area above the Node Panel. One member of the presenting group
+  holds keyboard focus. Selecting another member keeps the group in place
+  and moves focus directly to that window.
+- Use the same 1024 × 560 logical pixel minimum as Flow for tiled groups.
+  Below either dimension, Stage presents the selected member on its own
+  and retains the group for when the output fits it again.
+- Switch from the [preview tray](home-panel.md#node-panel) or commit
+  Alt+Tab. On a switch between standalone windows with motion enabled, scale
+  the outgoing window toward its thumbnail, then scale the incoming window
+  up from its thumbnail. Both thumbnails keep their tray slots during the
+  switch. Ease both phases in and out using retained buffers. Apply client
+  sizes for the final layout and keep the moving view out of input routing.
+  Rapid switches redirect to the latest target. With Motion Off, apply the
+  final layout immediately.
 
-Check on a wide output with at least three native windows. Switch using
-the tray and Alt+Tab. Verify that no two application windows are visible
-above the tray at once. Check that the active thumbnail is absent, the
-scaling starts and ends at the corresponding slot, and the outgoing
-window cannot receive input.
-Repeat on a narrow output and with Motion Off. Close the focused window
-and check that the next eligible window takes its place. Switch to Flow
-and back without closing the other apps, and verify that a different Node
-keeps its own layout.
+See [Stage switching](../flows/view-node-layouts.md#f-view-4) for the
+runtime checks.

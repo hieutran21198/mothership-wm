@@ -7,11 +7,11 @@ illustrative, not part of the compositor frame. The earlier
 current visual target. See the [shell design system](shell-design.md)
 for the analog material.
 
-- Show four short, separated 45° corners over a dark translucent bezel.
-  Do not join them with a perimeter stroke or add a raised control pocket.
-  Focus brightens the four corners without changing their geometry or
-  the app's size. Group members reuse quieter, shorter corner marks so
-  the group shell supplies the dominant outline.
+- Show four short 45° corner marks over a dark translucent bezel. For the
+  focused app, brighten the corners and add short cyan dashes along the
+  straight edges. Center the dashes on each edge and leave a gap at each
+  corner arm. Focus keeps the frame geometry and app size fixed. Group
+  members use shorter, quieter marks so the group shell stays legible.
 - Left-align the title on the flat header. Ellipsize it before the action
   icons. Do not draw placeholder agent badges.
 - Reuse the existing **Float**, **Maximize/Restore**, **Minimize** and
@@ -36,9 +36,10 @@ for the analog material.
 ## Review
 
 1. Capture at least two real native clients in one Flow Node, one focused
-   and one not. Compare the same four corners and flat control strip at matched zoom. Verify
-   title position, 45° cuts, unjoined sides, clearance and brighter focused
-   corners with the same geometry.
+   and one unfocused. Switch focus and compare both frames at matched zoom.
+   Verify that the brighter 45° corners and separated edge dashes follow
+   the focused app. Check title position, flat controls and clearance at
+   100% and 150%. In a group, check that the dashes identify the focused member.
 2. Record each client's actual configure sizes. Scroll the strip and use
    Next or nested Alt+Tab; these actions may translate the strip or raise
    Float, but must not send new sizes or leak the shortcut to the app.

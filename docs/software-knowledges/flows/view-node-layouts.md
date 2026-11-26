@@ -83,50 +83,72 @@ an eligible previous focus or leaves app focus clear.
 
 ### F-VIEW-4
 
-Choose Stage in a named Node's Panel Settings. Select another window from
-the tray or commit Alt+Tab. The previous window shrinks into its tray
-slot, then the selected window leaves its slot and grows into Stage.
-Only one window occupies Stage, and it has no thumbnail in the tray.
-Return to Flow without reassigning or restarting apps. See the
-[Stage layout](../system/node-stage.md) for focus, Motion Off, and close
-behavior.
+Open three native Wayland windows and choose Stage in Node Panel
+Settings. Click another preview. Check that both thumbnails keep their
+slots and the focus marker follows the selected window. Scroll until a
+thumbnail is fully clipped and verify that it appears in `+N`, including
+when its window is presenting.
 
+Tap Alt+Tab to switch. Start another gesture and press Tab repeatedly
+with Alt held until the selection returns to the presenting window. Check
+that its hologram uses its own tray thumbnail, with the app focus and size
+held until commit. Release Alt on the presenting window to dismiss the
+hologram without a Stage transition. Repeat with Shift to reverse, and
+test that Escape and loss of parent keyboard focus restore the prior tray
+position. Use a session that delivers Alt+Tab to the WM.
+
+Check the [Stage layout](../system/node-stage.md) at 100% and 150% scale.
+Capture the full viewport and matching tray crops for the switch and the
+hologram. Repeat with Motion Off and a compact output. Close the focused
+window and check that the next eligible window takes its place. Return to
+Flow and check that the apps keep their Node membership, Flow sizes, and
+order. Repeat in Default Node and check that each Node keeps its own layout.
 
 ### F-VIEW-5
 
-In Flow on a wide output, drag a tray thumbnail onto a second thumbnail or
-use the frame's title rail on the desktop. The potential group shows focus
-corners while the pointer rests on a valid target. At 300 ms the corners
-brighten; release to join, or leave the target to cancel. Do not join a fifth
-window. Use two columns, a large left tile and two right tiles, or a 2×2 grid
-for two, three, or four members respectively. Keep groups local to the Node
-and the compositor session. A smaller output or Stage presents the windows
-individually without clearing the stored group.
+On a wide output in Flow or Stage, drag a tray thumbnail onto a second
+thumbnail. In Flow, you can also drag the frame's title rail on the desktop.
+The potential group shows focus corners while the pointer rests on a valid
+target. At 300 ms the corners brighten. Release to join, or leave the target
+to cancel. A group accepts up to four windows. Use two columns, a large left
+tile and two right tiles, or a 2×2 grid for two, three, or four members
+respectively. Keep groups local to the Node and the compositor session.
+Both layouts retain stored groups on compact outputs and present their
+members individually.
 
-A group occupies one stop on the Flow strip and one shared outline in the
-preview tray. Hover enlarges the shared tile without separating its
-members. Alt+Tab selects a window. Project its group, if any, with the
-selected window marked. On commit, center the group as a unit; focus changes
-within it do not move it. Animate the joining app into its assigned tile
-using a preview, not one configure per frame. Respect reduced motion.
+A tiled group occupies one stop on the Flow strip or the main area on
+Stage. Its members share an outline in the preview tray. Hover enlarges
+the shared tile. Alt+Tab selects an individual window for keyboard focus
+and commits to its group as a unit. Flow centers the group when switching
+to it. A focus change within the group leaves its tiles in place. Animate
+the joining app in Flow using a preview and apply the final size when
+needed. Respect reduced motion.
 
-Use Layout on the shared Group frame to edit Split and Tiling Gap, or
-right-click its tray thumbnail. Group Settings also offers Ungroup. The
-frame uses one chamfered perimeter with a dark blurred backdrop sampled
-only behind its rail, padding and gutters. The Group heading uses Black Ops
-One; its controls use Chakra Petch. Keep the heading and controls on the
-shared group glass, without a separate header fill. Leave 12 logical pixels of clearance
-between the group rail or perimeter and the individual window frames.
-Tiling Gap changes only the spacing between those frames.
-Individual app content stays
-rectangular and unblurred.
-Individual Minimize, Maximize and Float are unavailable in an active group.
-Close still affects only that app. If a window leaves and only one
-toplevel remains, dissolve the group and return that window to ordinary
-Flow. Switching Nodes or minimizing does not dissolve the group.
-Minimize Group hides the whole group and
-leaves its tray entry. Click a member or commit Alt+Tab to restore the full
-group without changing its split or gap.
+Use the split-layout icon on the Group frame or right-click its tray
+thumbnail to open Group Settings. The frame control anchors the settings
+popover to its icon. Edit Split and Tiling Gap, or choose Ungroup. The
+minimize dash on the Group frame hides the whole group and keeps its tray
+entry. Click a member or commit Alt+Tab to restore the group with its split
+and gap. Groups stay with their Node across view changes and
+minimize/restore. Individual Minimize, Maximize and Float are unavailable
+in a tiled group. Close affects only that window. If one window remains,
+the WM dissolves the group and treats the remaining window as standalone.
+
+The Group frame uses one thin chamfered perimeter. Draw the Black Ops One
+heading and the two icons directly over the scene. The scene stays visible
+through the space around and between member frames. Leave 12 logical pixels
+between the group header or perimeter and the individual window frames.
+Tiling Gap changes the space between those frames. Keep client content
+rectangular and unblurred. Use fixed, separate hit targets for the two icons.
+
+With real Wayland clients on Stage, join two thumbnails and check that
+selecting either member moves focus without moving the tiles. Minimize,
+restore, adjust the split and gap, then ungroup. Verify that a compact
+output shows one member and that widening it restores the layout. Capture
+the viewport and matching header crops in Flow and Stage at 100% and 150%
+scale. Check that the scene shows through the header, edges, and gutters.
+Check the icon hit targets and popover anchor
+against the live scene.
 
 ### F-VIEW-6
 

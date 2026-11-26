@@ -2261,13 +2261,20 @@ void panel_node_group_state(uint64_t id,unsigned count,gboolean hidden,int sx,in
 	group_menu_button(GTK_BOX(row),"Apply",MOTHERSHIP_MAP_POINTER_V1_GROUP_COMMAND_APPLY);
 	gtk_box_append(GTK_BOX(box),row);
 	gtk_popover_set_child(GTK_POPOVER(group_popover),box);
-	gtk_popover_set_pointing_to(GTK_POPOVER(group_popover),&group_anchor);
+	GdkRectangle anchor=group_anchor;
+	int natural=0;
+	gtk_widget_measure(box,GTK_ORIENTATION_HORIZONTAL,-1,NULL,&natural,NULL,NULL);
+	// Allow room for the popover contents border and padding on both sides.
+	int inset=MIN(output_width/2,(natural+1)/2+16);
+	int origin=node_left+node_strip_x;
+	anchor.x=CLAMP(anchor.x+origin,inset,output_width-inset)-origin;
+	gtk_popover_set_pointing_to(GTK_POPOVER(group_popover),&anchor);
 	gtk_popover_popup(GTK_POPOVER(group_popover));
 }
 static void node_group_menu(GtkGestureClick *gesture,int count,double x,double y,gpointer unused) {
 	(void)count;(void)unused;
 	group_anchor_frame=FALSE;
-	group_anchor=(GdkRectangle){(int)x,(int)y,1,1};
+	group_anchor=(GdkRectangle){(int)x,-4,1,1};
 	panel_node_group_query(node_left+node_strip_x+x,
 		shell_node_dock_top(output_height)+y);
 	gtk_gesture_set_state(GTK_GESTURE(gesture),GTK_EVENT_SEQUENCE_CLAIMED);

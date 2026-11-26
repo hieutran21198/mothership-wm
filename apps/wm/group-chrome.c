@@ -11,7 +11,7 @@
 #include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/types/wlr_scene.h>
 
-enum { GROUP_CUT=10, GROUP_BUTTON_H=24, GROUP_BUTTON_Y=10 };
+enum { GROUP_CUT=10, GROUP_BUTTON_SIZE=24, GROUP_BUTTON_GAP=8, GROUP_BUTTON_EDGE=16 };
 struct group_strip { struct wlr_scene_buffer *image; };
 struct group_chrome {
 	struct wlr_scene_tree *tree;
@@ -47,10 +47,11 @@ static void contour(cairo_t *cr,int w,int h,double inset,int cut) {
 	cairo_line_to(cr,b-cut,c);cairo_line_to(cr,a+cut,c);
 	cairo_line_to(cr,a,c-cut);cairo_line_to(cr,a,a+cut);cairo_close_path(cr);
 }
-static struct wlr_box control(int w,enum group_control kind) {
-	const int margins=16,gap=8,a=62,b=138;
-	if(kind==GROUP_CONTROL_MINIMIZE)return (struct wlr_box){w-margins-b,GROUP_BUTTON_Y,b,GROUP_BUTTON_H};
-	return (struct wlr_box){w-margins-b-gap-a,GROUP_BUTTON_Y,a,GROUP_BUTTON_H};
+struct wlr_box group_chrome_control_box(const struct group_chrome *g,enum group_control kind) {
+	if(!g || kind<GROUP_CONTROL_LAYOUT || kind>GROUP_CONTROL_MINIMIZE)return (struct wlr_box){0};
+	int x=g->w-GROUP_BUTTON_EDGE-GROUP_BUTTON_SIZE;
+	if(kind==GROUP_CONTROL_LAYOUT)x-=GROUP_BUTTON_SIZE+GROUP_BUTTON_GAP;
+	return (struct wlr_box){x,(GROUP_FRAME_RAIL-GROUP_BUTTON_SIZE)/2,GROUP_BUTTON_SIZE,GROUP_BUTTON_SIZE};
 }
 static PangoFontMap *group_font_map;
 
@@ -82,6 +83,23 @@ static void text(cairo_t *cr,const char *value,const char *font,double size,int 
 	cairo_move_to(cr,x,y);pango_cairo_show_layout(cr,p);
 	pango_font_description_free(d);g_object_unref(p);
 }
+
+static void paint_control(cairo_t *cr,struct wlr_box box,enum group_control kind) {
+	cairo_save(cr);
+	cairo_translate(cr,box.x+box.width*.5,box.y+box.height*.5);
+	cairo_set_source_rgb(cr,.82,.93,.96);
+	cairo_set_line_width(cr,1.25);
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_SQUARE);
+	if(kind==GROUP_CONTROL_LAYOUT) {
+		cairo_rectangle(cr,-6,-5,12,10);
+		cairo_move_to(cr,-.5,-5);cairo_line_to(cr,-.5,5);
+	} else {
+		cairo_move_to(cr,-5,2);cairo_line_to(cr,5,2);
+	}
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
 static struct group_pixels *paint(struct group_chrome *g,struct wlr_box b,bool header) {
 	struct group_pixels *p=calloc(1,sizeof(*p));
 	if(!p)return NULL;
@@ -93,30 +111,27 @@ static struct group_pixels *paint(struct group_chrome *g,struct wlr_box b,bool h
 	cairo_t *cr=cairo_create(p->surface);
 	cairo_scale(cr,g->scale,g->scale);cairo_translate(cr,-b.x,-b.y);
 	contour(cr,g->w,g->h,.5,GROUP_CUT);
-	cairo_set_source_rgba(cr,.032,.074,.11,.62);
-	cairo_fill_preserve(cr);
 	cairo_set_source_rgba(cr,.39,.68,.76,g->focused?.83:.52);
 	cairo_set_line_width(cr,1);cairo_stroke(cr);
 	if(header) {
 		char name[32];snprintf(name,sizeof(name),"GROUP %02u",g->number);
 		cairo_set_source_rgb(cr,.82,.94,.96);
-		text(cr,name,"Black Ops One, Chakra Petch, Sans",15,16,12,g->w-250);
-		for(enum group_control i=GROUP_CONTROL_LAYOUT;i<=GROUP_CONTROL_MINIMIZE;i++) {
-			struct wlr_box box=control(g->w,i);
-			cairo_save(cr);cairo_translate(cr,box.x,box.y);
-			contour(cr,box.width,box.height,.5,3);
-			cairo_set_source_rgba(cr,.17,.28,.35,.52);cairo_fill_preserve(cr);
-			cairo_set_source_rgba(cr,.38,.55,.60,.6);cairo_stroke(cr);
-			cairo_set_source_rgb(cr,.82,.93,.96);
-			text(cr,i==GROUP_CONTROL_LAYOUT?"Layout":"Minimize Group","Chakra Petch, Sans",12,9,4,box.width-14);
-			cairo_restore(cr);
-		}
+		int title_end=group_chrome_control_box(g,GROUP_CONTROL_LAYOUT).x-GROUP_BUTTON_EDGE;
+		text(cr,name,"Black Ops One, Chakra Petch, Sans",15,GROUP_BUTTON_EDGE,12,title_end-GROUP_BUTTON_EDGE);
+		for(enum group_control i=GROUP_CONTROL_LAYOUT;i<=GROUP_CONTROL_MINIMIZE;i++)
+			paint_control(cr,group_chrome_control_box(g,i),i);
 	}
 	bool ok=cairo_status(cr)==CAIRO_STATUS_SUCCESS;cairo_destroy(cr);
 	if(!ok){cairo_surface_destroy(p->surface);free(p);return NULL;}
 	cairo_surface_flush(p->surface);wlr_buffer_init(&p->buffer,&pixels_impl,pw,ph);
 	return p;
 }
+
+static bool header_accepts_input(struct wlr_scene_buffer *buffer,double *sx,double *sy) {
+	const struct group_chrome *g=buffer->node.data;
+	return *sy>=GROUP_FRAME_RAIL || group_chrome_control(g,*sx,*sy)!=GROUP_CONTROL_NONE;
+}
+
 struct group_chrome *group_chrome_create(struct wlr_scene_tree *parent) {
 	struct group_chrome *g=calloc(1,sizeof(*g));if(!g)return NULL;
 	g->tree=wlr_scene_tree_create(parent);
@@ -125,6 +140,8 @@ struct group_chrome *group_chrome_create(struct wlr_scene_tree *parent) {
 		g->strips[i].image=wlr_scene_buffer_create(g->tree,NULL);
 		if(!g->strips[i].image){group_chrome_destroy(g);return NULL;}
 	}
+	g->strips[0].image->node.data=g;
+	g->strips[0].image->point_accepts_input=header_accepts_input;
 	wlr_scene_node_set_enabled(&g->tree->node,false);
 	return g;
 }
@@ -157,8 +174,8 @@ bool group_chrome_owns_node(const struct group_chrome *g,const struct wlr_scene_
 enum group_control group_chrome_control(const struct group_chrome *g,double x,double y) {
 	if(!g)return GROUP_CONTROL_NONE;
 	for(enum group_control i=GROUP_CONTROL_LAYOUT;i<=GROUP_CONTROL_MINIMIZE;i++) {
-		struct wlr_box b=control(g->w,i);
-		if(x>=b.x && x<b.x+b.width && y>=b.y && y<b.y+b.height)return i;
+		struct wlr_box b=group_chrome_control_box(g,i);
+		if(wlr_box_contains_point(&b,x,y))return i;
 	}
 	return GROUP_CONTROL_NONE;
 }
