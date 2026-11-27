@@ -1,6 +1,6 @@
 # Tractor-beam a window to another Node
 
-**Status:** keys implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-96C5L99n`) on 2026-11-27; drag not implemented.
+**Status:** keys implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-96C5L99n`) on 2026-11-27; drag implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27.
 Supports [Move a window to another Node in one gesture](../goals/move-windows-between-nodes.md).
 Design: [Fleet Ops preview, scene 4](../system/fleet-ops-preview.html).
 
@@ -11,10 +11,10 @@ destination. The WM reconciles the current projection and focus under
 
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
-| Grab | WM | A primary press on a [preview tray](../system/home-panel.md#node-panel) card that moves more than 8 logical px upward starts a beam drag, in a named Node or the Default Node. A shorter press stays a click that focuses the window. The WM keeps the pointer grab and draws the lifted card from its existing thumbnail. |
-| Targets | WM → Panel | The WM sends drag begin, position and end over the private shell Wayland protocol, not desktopd. The Panel shows the [Vector Strip](../system/shell-design.md#node-switcher) as paint only: every named Node and Default Node, with the current Node marked **Current** and Nodes holding eight members marked **Full** and disabled. |
+| Grab | WM | A primary press on a [preview tray](../system/home-panel.md#node-panel) card in a named Node or the Default Node, on any output width, is held by the WM. A short press stays a click that focuses the window. Once the card has moved 6 px and the pointer is more than 8 px above the tray, the drag becomes a beam and the WM draws the lifted card from its existing thumbnail. Lowering it back into the tray ends the beam; on wide outputs the existing group join still applies there. |
+| Targets | WM → Panel | The WM sends `beam` begin (card center), move, drop and cancel over the private shell protocol (v28), not desktopd. The Panel shows the [Node switcher strip](../system/shell-design.md#node-switcher) titled **MOVE WINDOW TO** as paint only: the Default Node (when enabled) then named Nodes by name, the window's own Node marked **Current**, and Nodes with eight windows dimmed as **Full · 8/8**. Neither can be chosen. |
 | Aim | Panel | The Panel hit-tests its own strip cells against the reported position, highlights one target and draws a dashed cyan beam from the card to it. Keep the rail and app geometry fixed. |
-| Drop | Panel → desktopd → WM | Release on an enabled target sends assign. Release elsewhere, **Esc**, focus loss or a lost grab cancels: the card eases back to its slot. |
+| Drop | Panel → desktopd → WM | Release on an eligible tile sends `assign`, or `unassign` for the Default Node. Release elsewhere, **Esc**, focus loss or a lost grab cancels: the strip closes and the window stays. |
 | Keys | WM → Panel → desktopd → WM | **Meta + Shift + number** on a focused app window in a Node assigns it to the Node with that number key. Number 1 clears membership into Inbox. The number group follows the 1–9 / F1–F9 shortcut setting. A missing slot changes nothing and records a System notice, like a missing Win + number. |
 | Settle | WM and Panel | After acknowledgement, the window leaves the current projection, the tray closes the gap and focus moves under the existing rule. With motion on, the card follows the beam into the target for about 180 ms. |
 

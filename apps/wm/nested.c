@@ -250,7 +250,7 @@ struct nested {
 		uint64_t source,target;
 		int64_t since;
 		double x,y,from_x,from_y;
-		bool tray,moved;
+		bool tray,moved,beam;
 	} group_grab;
 	struct {
 		uint64_t id;
@@ -1684,7 +1684,9 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 	for (struct wlr_scene_tree *tree = node->parent; tree != NULL; tree = tree->node.parent) {
 		if (wm->panel != NULL && wm->panel->scene->tree == tree) {
 			hit.surface = surface->surface;
-			if(group_large(wm) && !wm->panel->wants_keyboard && !wm->picker_count &&
+			// Any Node tray card can be dragged: up out of the tray it becomes
+			// a tractor beam; on wide outputs it can also join a group.
+			if(!wm->panel->wants_keyboard && !wm->picker_count &&
 					!wm->picker_keyboard && node_strip_active(wm) &&
 					y>=wm->node_strip.y && y<wm->node_strip.y+wm->node_strip.height) {
 				struct xdg_view *v=strip_hit(wm,x,y);
@@ -3441,17 +3443,45 @@ static void group_join_views(struct nested *wm,struct xdg_view *source,struct xd
 	wlr_output_schedule_frame(wm->output);
 }
 
+enum { BEAM_BEGIN, BEAM_MOVE, BEAM_DROP, BEAM_CANCEL, BEAM_LIFT=8 };
+static void beam_send(struct nested *wm,uint32_t phase,uint64_t id,double x,double y) {
+	if(!wm->map_pointer ||
+		wl_resource_get_version(wm->map_pointer)<MOTHERSHIP_MAP_POINTER_V1_BEAM_SINCE_VERSION) return;
+	mothership_map_pointer_v1_send_beam(wm->map_pointer,phase,id>>32,(uint32_t)id,(int)round(x),(int)round(y));
+}
+
 static void group_drag_update(struct nested *wm,enum nested_move_phase phase,double x,double y) {
 	struct xdg_view *source=find_view(wm,wm->group_grab.source);
-	if(phase==MOVE_CANCEL || !source || source->slot<0 || !group_large(wm)) {
-		wm->group_grab.source=wm->group_grab.target=0;wm->drag=NULL;
+	if(phase==MOVE_CANCEL || !source || source->slot<0 || (!group_large(wm) && !wm->group_grab.tray)) {
+		if(wm->group_grab.beam) beam_send(wm,BEAM_CANCEL,wm->group_grab.source,x,y);
+		wm->group_grab.source=wm->group_grab.target=0;wm->group_grab.beam=false;wm->drag=NULL;
 		if(wm->output)wlr_output_schedule_frame(wm->output);
 		return;
 	}
 	wm->group_grab.x=x;wm->group_grab.y=y;
 	wm->group_grab.moved|=hypot(x-wm->group_grab.from_x,y-wm->group_grab.from_y)>=6.;
+	// Tractor beam: a tray card lifted above the rail targets another Node.
+	bool beam=wm->group_grab.tray && wm->group_grab.moved && y<wm->node_strip.y-BEAM_LIFT;
+	if(beam!=wm->group_grab.beam) {
+		wm->group_grab.beam=beam;
+		if(beam) {
+			int i=source->slot;
+			beam_send(wm,BEAM_BEGIN,source->id,(wm->preview[i].painted_left+wm->preview[i].painted_right)/2.,
+				wm->preview[i].painted_top);
+		} else beam_send(wm,BEAM_CANCEL,source->id,x,y);
+	}
+	if(beam) {
+		if(phase==MOVE_DROP) {
+			// The shell decides the destination and submits the assignment.
+			beam_send(wm,BEAM_DROP,source->id,x,y);
+			wm->group_grab.source=wm->group_grab.target=0;wm->group_grab.beam=false;wm->drag=NULL;
+		} else beam_send(wm,BEAM_MOVE,source->id,x,y);
+		wm->group_grab.target=0;
+		wlr_output_schedule_frame(wm->output);
+		return;
+	}
 	struct xdg_view *target=NULL;
-	if(wm->group_grab.moved) {
+	if(wm->group_grab.moved && group_large(wm)) {
 		if(wm->group_grab.tray) target=strip_hit(wm,x,y);
 		else {
 			struct nested_hit hit=hit_view(wm,x,y);
@@ -3496,7 +3526,7 @@ static void group_frame(struct nested *wm,struct timespec now) {
 	bool ghost=false,outline=false,advance=false;
 	struct xdg_view *drag=find_view(wm,wm->group_grab.source);
 	struct xdg_view *joining=find_view(wm,wm->group_join.id);
-	if(group_large(wm) && !wm->revealing && drag && drag->slot>=0 && wm->group_grab.moved) {
+	if((group_large(wm) || wm->group_grab.beam) && !wm->revealing && drag && drag->slot>=0 && wm->group_grab.moved) {
 		if(wm->group_grab.tray) {
 			const int w=66,h=38;
 			int x=clamp_int(wm->group_grab.x+12,0,lane.width-w);

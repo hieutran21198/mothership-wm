@@ -763,6 +763,16 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	note_activity(seat);
 	bool was_held = seat->keys_held[key];
 	seat->keys_held[key] = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+	// Escape cancels a pointer drag (a beam, pin or window move) and
+	// swallows the button release that would otherwise end it.
+	if(key==KEY_ESC && seat->moving && seat->keys_held[key] && !was_held) {
+		seat->update_move(seat->data,MOVE_CANCEL,seat->x,seat->y);
+		seat->moving=false;
+		memcpy(seat->buttons_blocked,seat->buttons_held,sizeof(seat->buttons_held));
+		seat->keys_blocked[key]=true;
+		seat->blocked_count++;
+		return;
+	}
 	bool home_tap=false,meta=key==KEY_LEFTMETA || key==KEY_RIGHTMETA;
 	bool node_scope=!seat->screenshot_panel && seat->node_panel_key && seat->node_panel_key(seat->data,0)!=NULL;
 	bool home_allowed=!seat->screenshot_panel && (!seat->panel_focus || seat->map_home || node_scope);

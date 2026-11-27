@@ -77,6 +77,9 @@ static void pin_state(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,ui
 		int32_t x,int32_t y,int32_t w,int32_t h,const char *title,const char *app) {
 	(void)d;(void)p;panel_pin_state(((uint64_t)hi<<32)|lo,x,y,w,h,title,app);
 }
+static void beam(void *d,struct mothership_map_pointer_v1 *p,uint32_t phase,uint32_t hi,uint32_t lo,int32_t x,int32_t y) {
+	(void)d;(void)p;panel_beam(phase,((uint64_t)hi<<32)|lo,x,y);
+}
 static void pin_activate(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo) {
 	(void)d;(void)p;panel_pin_activate(((uint64_t)hi<<32)|lo);
 }
@@ -232,7 +235,7 @@ static const struct mothership_map_pointer_v1_listener events={
 	.screenshot_target=screenshot_target,.screenshot_image=screenshot_image,.screenshot_problem=screenshot_problem,
 	.node_switch_step=node_switch_step,.node_switch_finish=node_switch_finish,
 	.window_list_row=window_list_row,.window_list_end=window_list_end,.node_move=node_move,
-	.pin_state=pin_state,.pin_activate=pin_activate,
+	.pin_state=pin_state,.pin_activate=pin_activate,.beam=beam,
 };
 
 static void apply_aim(void) {

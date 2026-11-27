@@ -1,6 +1,6 @@
 # Move a window to another Node in one gesture
 
-**Status:** G-BEAM-2 and G-BEAM-3 for keys implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-96C5L99n`) on 2026-11-27; drag (G-BEAM-1) not implemented.
+**Status:** G-BEAM-2 and G-BEAM-3 for keys implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-96C5L99n`) on 2026-11-27; drag (G-BEAM-1) implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27.
 
 The desktop user needs to send a window to the Node where it belongs while
 looking at it, because the Command Center form asks for a Window ID and a

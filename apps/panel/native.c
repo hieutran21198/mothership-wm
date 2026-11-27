@@ -769,6 +769,18 @@ void panel_pin_state(uint64_t id,int x,int y,int w,int h,const char *title,const
 }
 void panel_pin_activate(uint64_t id) {panelPinActivate(id);}
 
+static gboolean named_node_shown(void);
+extern void panelBeamBegin(uint64_t,int,int);
+extern void panelBeamMove(int,int);
+extern void panelBeamEnd(int,int,int);
+// Tractor beam phases from the WM: 0 begin, 1 move, 2 drop, 3 cancel.
+void panel_beam(uint32_t phase,uint64_t id,int x,int y) {
+	if(phase==0) {
+		if(!named_node_shown() && !default_node) return;
+		panelBeamBegin(id,x,y);
+	} else if(phase==1) panelBeamMove(x,y);
+	else panelBeamEnd(phase==2,x,y);
+}
 
 static gboolean run_gtk_call(gpointer data) {
 	panelGtkCall((guint64)GPOINTER_TO_SIZE(data));

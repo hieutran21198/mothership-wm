@@ -1,6 +1,7 @@
 //go:build linux && cgo && panel
 
 #include "node-switcher.h"
+#include <math.h>
 #include "map-fleet.h"
 #include "shell-paint.h"
 #include "shell-type.h"
@@ -19,6 +20,40 @@ static GtkWindow *layer;
 static GtkWidget *canvas;
 static struct switcher_node *nodes;
 static size_t node_count, current_node, selected_node;
+static gboolean beam;
+static double beam_from_x, beam_from_y, beam_x, beam_y;
+enum { TILE_TOP = 59, TILE_HEIGHT = 91, FULL_NODE = 8 };
+
+// Shared by drawing and the beam hit test, so a drop lands on what is drawn.
+struct strip_geometry {
+	double ox, oy, scale, tile;
+	int width, height, padding, inside;
+	size_t first, visible;
+	gboolean stacked;
+};
+static gboolean strip_geometry(int w, int h, struct strip_geometry *g) {
+	if (!node_count || w < 260 || h < 160) return FALSE;
+	const int desired = CLAMP(STRIP_PADDING * 2 + MIN(node_count,STRIP_MAX_TILES) * 120,
+		STRIP_MIN_WIDTH,STRIP_MAX_WIDTH);
+	g->width = MIN(w - STRIP_MARGIN * 2,desired);
+	g->padding = g->width >= 380 ? STRIP_PADDING : 10;
+	g->inside = g->width - g->padding * 2;
+	g->stacked = g->inside < 416;
+	g->height = g->stacked ? 262 : 238;
+	const size_t capacity = MAX(1,(g->inside + TILE_GAP) / (TILE_MIN_WIDTH + TILE_GAP));
+	g->visible = MIN(node_count,MIN(STRIP_MAX_TILES,capacity));
+	size_t anchor = selected_node < node_count ? selected_node : current_node < node_count ? current_node : 0;
+	const size_t centered = anchor > g->visible / 2 ? anchor - g->visible / 2 : 0;
+	g->first = MIN(centered,node_count - g->visible);
+	g->tile = (g->inside - (g->visible - 1) * TILE_GAP) / (double)g->visible;
+	g->scale = MIN(1.,(h - 2 * STRIP_MARGIN) / (double)g->height);
+	g->ox = floor((w - g->width * g->scale) / 2);
+	g->oy = MAX(STRIP_MARGIN,floor((h - g->height * g->scale) / 2 - 12));
+	return TRUE;
+}
+static gboolean beam_eligible(size_t i) {
+	return i < node_count && i != current_node && nodes[i].window_count < FULL_NODE;
+}
 
 static const GdkRGBA primary = {.90,.96,.98,1};
 static const GdkRGBA quiet = {.67,.77,.82,1};
@@ -156,26 +191,17 @@ static void draw_guide(cairo_t *cr, PangoLayout *layout, int width, int y,
 static void draw(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
 	(void)area;
 	(void)data;
-	if (!node_count || w < 260 || h < 160) return;
-	const int desired = CLAMP(STRIP_PADDING * 2 + MIN(node_count,STRIP_MAX_TILES) * 120,
-		STRIP_MIN_WIDTH,STRIP_MAX_WIDTH);
-	const int width = MIN(w - STRIP_MARGIN * 2,desired);
-	const int padding = width >= 380 ? STRIP_PADDING : 10;
-	const int inside = width - padding * 2;
-	const gboolean stacked = inside < 416;
-	const int height = stacked ? 262 : 238;
-	const size_t capacity = MAX(1,(inside + TILE_GAP) / (TILE_MIN_WIDTH + TILE_GAP));
-	const size_t visible = MIN(node_count,MIN(STRIP_MAX_TILES,capacity));
-	const size_t centered = selected_node > visible / 2 ? selected_node - visible / 2 : 0;
-	const size_t first = MIN(centered,node_count - visible);
-	const double tile = (inside - (visible - 1) * TILE_GAP) / (double)visible;
+	struct strip_geometry g;
+	if (!strip_geometry(w,h,&g)) return;
+	const int width = g.width, padding = g.padding, inside = g.inside, height = g.height;
+	const gboolean stacked = g.stacked;
+	const size_t visible = g.visible, first = g.first;
+	const double tile = g.tile;
 
 	// Fit a short parent output without cropping the instructions.
-	const double scale = MIN(1.,(h - 2 * STRIP_MARGIN) / (double)height);
 	cairo_save(cr);
-	cairo_translate(cr,floor((w - width * scale) / 2),
-		MAX(STRIP_MARGIN,floor((h - height * scale) / 2 - 12)));
-	cairo_scale(cr,scale,scale);
+	cairo_translate(cr,g.ox,g.oy);
+	cairo_scale(cr,g.scale,g.scale);
 	face(cr,width,height);
 	rule(cr,width,43,padding);
 	rule(cr,width,189,padding);
@@ -192,19 +218,22 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
 	pango_layout_set_ellipsize(layout,PANGO_ELLIPSIZE_END);
 	pango_layout_set_height(layout,-1);
 	char position[48];
-	g_snprintf(position,sizeof(position),"%zu / %zu",selected_node + 1,node_count);
+	if (beam) g_strlcpy(position,"",sizeof(position));
+	else g_snprintf(position,sizeof(position),"%zu / %zu",selected_node + 1,node_count);
 	pango_layout_set_font_description(layout,body);
 	const int position_width = text_width(layout,position);
 	const int title_width = MAX(0,inside - position_width - 8);
 	label(cr,layout,&quiet,width - padding - position_width,14,position_width,
 		PANGO_ALIGN_RIGHT,position);
 	pango_layout_set_font_description(layout,title_font);
-	label(cr,layout,&primary,padding,11,title_width,PANGO_ALIGN_LEFT,"NODE SWITCHER");
+	label(cr,layout,&primary,padding,11,title_width,PANGO_ALIGN_LEFT,beam ? "MOVE WINDOW TO" : "NODE SWITCHER");
 
 	gboolean target_truncated = FALSE;
 	for (size_t i = first; i < first + visible; ++i) {
 		cairo_save(cr);
-		cairo_translate(cr,padding + (i - first) * (tile + TILE_GAP),59);
+		cairo_translate(cr,padding + (i - first) * (tile + TILE_GAP),TILE_TOP);
+		gboolean full = beam && i != current_node && nodes[i].window_count >= FULL_NODE;
+		if (full) cairo_push_group(cr);
 		gboolean selected = i == selected_node, current = i == current_node;
 		if (selected) selection(cr,tile);
 		ship(cr,tile / 2,selected,current);
@@ -220,15 +249,26 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
 		int name_height;
 		pango_layout_get_pixel_size(layout,NULL,&name_height);
 		pango_layout_set_spacing(layout,0);
-		if (current || !nodes[i].window_count) {
+		if (current || !nodes[i].window_count || full) {
 			pango_layout_set_font_description(layout,body);
 			pango_layout_set_height(layout,-1);
 			label(cr,layout,&quiet,2,MAX(67,name_y + name_height),tile - 4,
-				PANGO_ALIGN_CENTER,current ? "Current" : "Empty");
+				PANGO_ALIGN_CENTER,current ? "Current" : full ? "Full · 8/8" : "Empty");
+		}
+		if (full) {
+			cairo_pop_group_to_source(cr);
+			cairo_paint_with_alpha(cr,.45);
 		}
 		cairo_restore(cr);
 	}
 
+	if (beam && selected_node >= node_count) {
+		pango_layout_set_font_description(layout,body);
+		pango_layout_set_height(layout,-1);
+		label(cr,layout,&quiet,padding,159,inside,PANGO_ALIGN_CENTER,"Drop on a Node to move the window there.");
+		cairo_restore(cr);
+		return;
+	}
 	const struct switcher_node *target = &nodes[selected_node];
 	g_autofree char *window_count = target->window_count == 0 ? g_strdup("No open windows") :
 		g_strdup_printf("%d %s",target->window_count,target->window_count == 1 ? "window" : "windows");
@@ -258,8 +298,40 @@ static void draw(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data)
 	pango_font_description_set_absolute_size(body,12 * PANGO_SCALE);
 	pango_layout_set_font_description(layout,body);
 	cairo_translate(cr,padding,0);
-	draw_guide(cr,layout,inside,202,stacked);
+	if (!beam) draw_guide(cr,layout,inside,202,stacked);
+	else {
+		keycap(cr,layout,0,202,40,"Drop");
+		label(cr,layout,&selected_ink,46,203,40,PANGO_ALIGN_LEFT,"Move");
+		keycap(cr,layout,92,202,31,"Esc");
+		label(cr,layout,&quiet,129,203,46,PANGO_ALIGN_LEFT,"Cancel");
+	}
 	cairo_restore(cr);
+}
+
+// The tractor beam: a dashed cyan line from the dragged card to the
+// highlighted tile, or to the pointer while nothing is highlighted.
+static void draw_beam(cairo_t *cr, int w, int h) {
+	struct strip_geometry g;
+	if (!beam || !strip_geometry(w,h,&g)) return;
+	double tx = beam_x, ty = beam_y;
+	if (selected_node < node_count && selected_node >= g.first && selected_node < g.first + g.visible) {
+		tx = g.ox + (g.padding + (selected_node - g.first) * (g.tile + TILE_GAP) + g.tile / 2) * g.scale;
+		ty = g.oy + (TILE_TOP + TILE_HEIGHT) * g.scale;
+	}
+	const double dash[] = {5,4};
+	cairo_save(cr);
+	cairo_set_dash(cr,dash,2,0);
+	cairo_set_line_width(cr,1.5);
+	cairo_set_source_rgba(cr,.56,.85,.89,.9);
+	cairo_move_to(cr,beam_from_x,beam_from_y);
+	cairo_line_to(cr,tx,ty);
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
+static void draw_layer(GtkDrawingArea *area, cairo_t *cr, int w, int h, gpointer data) {
+	draw(area,cr,w,h,data);
+	draw_beam(cr,w,h);
 }
 
 static void clear_nodes(void) {
@@ -273,7 +345,7 @@ static void clear_nodes(void) {
 
 void node_switcher_show(const char *const *names, const char *const *descriptions,
 		const int *counts, size_t length, size_t current, size_t selected) {
-	if (selected >= length) {
+	if (selected >= length && !beam) {
 		node_switcher_hide();
 		return;
 	}
@@ -288,7 +360,7 @@ void node_switcher_show(const char *const *names, const char *const *description
 	current_node = current;
 	selected_node = selected;
 	if (!layer) {
-		layer = paint_only_layer("mothership-node-switcher","Mothership Node Switcher",draw,&canvas);
+		layer = paint_only_layer("mothership-node-switcher","Mothership Node Switcher",draw_layer,&canvas);
 		g_object_add_weak_pointer(G_OBJECT(layer),(gpointer *)&layer);
 	}
 	gtk_widget_queue_draw(canvas);
@@ -298,4 +370,33 @@ void node_switcher_show(const char *const *names, const char *const *description
 void node_switcher_hide(void) {
 	if (layer) gtk_widget_set_visible(GTK_WIDGET(layer),FALSE);
 	clear_nodes();
+	beam = FALSE;
+}
+
+void node_switcher_beam(const char *const *names, const char *const *descriptions,
+		const int *counts, size_t length, size_t current, double from_x, double from_y) {
+	if (!length) return;
+	beam = TRUE;
+	beam_from_x = beam_x = from_x;
+	beam_from_y = beam_y = from_y;
+	node_switcher_show(names,descriptions,counts,length,current,SIZE_MAX);
+}
+
+size_t node_switcher_beam_move(double x, double y) {
+	if (!beam || !canvas) return SIZE_MAX;
+	beam_x = x;
+	beam_y = y;
+	struct strip_geometry g;
+	size_t hit = SIZE_MAX;
+	if (strip_geometry(gtk_widget_get_width(canvas),gtk_widget_get_height(canvas),&g)) {
+		double lx = (x - g.ox) / g.scale - g.padding, ly = (y - g.oy) / g.scale;
+		if (lx >= 0 && ly >= TILE_TOP && ly <= TILE_TOP + TILE_HEIGHT) {
+			size_t i = g.first + (size_t)(lx / (g.tile + TILE_GAP));
+			double within = fmod(lx,g.tile + TILE_GAP);
+			if (i < g.first + g.visible && within <= g.tile && beam_eligible(i)) hit = i;
+		}
+	}
+	selected_node = hit;
+	gtk_widget_queue_draw(canvas);
+	return hit;
 }

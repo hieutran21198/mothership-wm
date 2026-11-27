@@ -315,6 +315,17 @@
       <arg name="width" type="int"/><arg name="height" type="int"/>
       <arg name="title" type="string"/><arg name="app_id" type="string"/>
     </event>
+    <event name="beam" since="28">
+      <description summary="a preview card dragged up out of the Node tray">
+        Phase 0 begins at the card's center, 1 follows the pointer, 2 drops
+        and 3 cancels. The shell shows its Node strip as the drop target,
+        hit-tests it, and submits the assignment on a drop. Pointer
+        positions stay on this shell connection.
+      </description>
+      <arg name="phase" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+    </event>
     <event name="pin_activate" since="28">
       <description summary="a click on the comms pin asks to connect to its window"/>
       <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
