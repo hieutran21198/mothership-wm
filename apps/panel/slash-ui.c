@@ -10,7 +10,7 @@
 #include "screenshot.h"
 
 enum slash_kind {
-	MODULE_APPS,MODULE_NODES,MODULE_WINDOWS,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
+	MODULE_APPS,MODULE_NODES,MODULE_WINDOWS,MODULE_MAPS,MODULE_MISSIONS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
 	COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,COMMAND_LAUNCH,
 	COMMAND_DISPLAY,COMMAND_SHORTCUTS,
 	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE,RESULT_WINDOW,RESULT_LAUNCH
@@ -35,6 +35,7 @@ static const struct {
 	{MODULE_NODES,"nodes","nodes "},
 	{MODULE_WINDOWS,"windows","windows "},
 	{MODULE_MAPS,"maps","maps "},
+	{MODULE_MISSIONS,"missions","missions "},
 	{MODULE_NOTIFICATIONS,"notifications","notifications "},
 	{MODULE_SETTINGS,"settings","settings "},
 	{MODULE_SCREENSHOT,"screenshot","screenshot "}
@@ -173,6 +174,11 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 		cairo_rectangle(cr,-7,-4,10,8);
 		cairo_move_to(cr,-3,-4);cairo_line_to(cr,-3,-7);cairo_line_to(cr,7,-7);
 		cairo_line_to(cr,7,1);cairo_line_to(cr,3,1);
+	} else if(kind==MODULE_MISSIONS) {
+		// Three timeline bars.
+		cairo_move_to(cr,-7,-4);cairo_line_to(cr,1,-4);
+		cairo_move_to(cr,-3,0);cairo_line_to(cr,7,0);
+		cairo_move_to(cr,-7,4);cairo_line_to(cr,-1,4);
 	} else if(kind==MODULE_NOTIFICATIONS) {
 		cairo_move_to(cr,-7,4);cairo_curve_to(cr,-4,2,-5,-1,-4,-4);
 		cairo_curve_to(cr,-3,-8,3,-8,4,-4);cairo_curve_to(cr,5,-1,4,2,7,4);
@@ -275,6 +281,8 @@ static void activation(GtkEntry *input,gpointer data) {
 	}
 	case MODULE_SCREENSHOT:
 		close_slash();show_view(SLASH_SCREENSHOT);break;
+	case MODULE_MISSIONS:
+		close_slash();show_view(SLASH_MISSIONS);break;
 	case RESULT_APP:
 		if(app_catalog_launch(s->app)) close_slash();
 		break;
@@ -469,6 +477,9 @@ static void refresh(void) {
 					.detail=w->key?g_strdup_printf("%s · %d",w->node,w->key):g_strdup(w->node)};
 				g_ptr_array_add(results,row);
 			}
+	} else if(module_available(MODULE_MISSIONS) && take_token(&query,"missions")) {
+		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
+		if(!*term) add(MODULE_MISSIONS,"missions",NULL);
 	} else if(module_available(MODULE_MAPS) && take_token(&query,"maps")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		if(!*term) add(MODULE_MAPS,"maps",NULL);

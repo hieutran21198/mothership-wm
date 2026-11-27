@@ -1,6 +1,6 @@
 # Show ship status on the Center Map
 
-**Status:** Cloak, its command packet and the Detail Silent running button implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-zvH5676i`) on 2026-11-27; the Detail Loadout row implemented with loadouts; Comms arcs and the Today row not implemented.
+**Status:** Cloak, its command packet and the Detail Silent running button implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-zvH5676i`) on 2026-11-27; the Detail Loadout and Today rows implemented with their features; Comms arcs not implemented.
 Supports [Read each Node's state from the Center Map](../goals/show-ship-status.md).
 Design: [Fleet Ops preview, scene 1](../system/fleet-ops-preview.html).
 

@@ -88,6 +88,38 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			return
 		}
 		sendSuccess(c, req.ID)
+	case domainipc.MissionsGetMethod:
+		b, err := domainipc.Decode[domainipc.MissionDayBody](req.Body)
+		if err != nil {
+			badBody()
+			return
+		}
+		log, err := d.service.MissionLog()
+		if err != nil {
+			sendFailure(c, req.ID, "unavailable", err.Error())
+			return
+		}
+		day, err := log.Day(b.Day, time.Now())
+		if err != nil {
+			sendFailure(c, req.ID, "invalid_day", err.Error())
+			return
+		}
+		body, _ := json.Marshal(missionWire(day))
+		_ = domainipc.WriteJSON(c, domainipc.Response{ID: req.ID, Body: body})
+	case domainipc.MissionsClearMethod:
+		if _, err := domainipc.Decode[domainipc.Empty](req.Body); err != nil {
+			badBody()
+			return
+		}
+		log, err := d.service.MissionLog()
+		if err == nil {
+			err = log.Clear(time.Now())
+		}
+		if err != nil {
+			sendFailure(c, req.ID, "unavailable", err.Error())
+			return
+		}
+		sendSuccess(c, req.ID)
 	case domainipc.LoadoutSetMethod:
 		b, err := domainipc.Decode[domainipc.LoadoutBody](req.Body)
 		if err != nil || !domain.ValidName(b.Domain) || !domain.ValidLoadout(b.Entries) {

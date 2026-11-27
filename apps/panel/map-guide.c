@@ -137,6 +137,20 @@ void slash_guide_draw(cairo_t *cr,int width) {
 	g_object_unref(layout);
 }
 
+// Mission Log: A/D change day; L, Q or Esc close.
+void mission_log_guide_draw(cairo_t *cr,int width) {
+	if(width<160) return;
+	PangoLayout *layout=pango_cairo_create_layout(cr);
+	PangoFontDescription *font=shell_font_description(NULL,10,PANGO_WEIGHT_SEMIBOLD);
+	pango_layout_set_font_description(layout,font);pango_font_description_free(font);
+	key(cr,layout,0,1,19,"A",FALSE);
+	key(cr,layout,22,1,19,"D",FALSE);
+	key(cr,layout,width-80,1,20,"L",FALSE);
+	key(cr,layout,width-56,1,20,"Q",FALSE);
+	key(cr,layout,width-32,1,32,"Esc",FALSE);
+	g_object_unref(layout);
+}
+
 void notification_log_guide_draw(cairo_t *cr,int width) {
 	if(width<180) return;
 	PangoLayout *layout=pango_cairo_create_layout(cr);
@@ -182,7 +196,7 @@ static int home_guide_columns(int width) {
 }
 
 int home_guide_height(int width,gboolean default_node) {
-	int cols=home_guide_columns(width),items=default_node?7:6;
+	int cols=home_guide_columns(width),items=home_guide_items(default_node);
 	return 2*HOME_GUIDE_INSET+HOME_GUIDE_ROW_HEIGHT*((items+cols-1)/cols);
 }
 
@@ -193,7 +207,7 @@ void home_guide_draw(cairo_t *cr,int width,gboolean default_node) {
 	ink(cr,0x637f8c);cairo_set_line_width(cr,1);cairo_stroke(cr);
 	face(cr,width,height,8,3.6);
 	ink(cr,0x324e5b);cairo_stroke(cr);
-	static const char *keys[]={"A","M","W","/",",","R","N"};
+	static const char *keys[]={"A","M","W","/",",","R","N","L"};
 	PangoLayout *layout=pango_cairo_create_layout(cr);
 	PangoFontDescription *font=shell_font_description(NULL,10,PANGO_WEIGHT_SEMIBOLD);
 	pango_layout_set_font_description(layout,font);pango_font_description_free(font);

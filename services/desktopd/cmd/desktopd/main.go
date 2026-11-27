@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"mothership-wm/internal/appbus"
 	"mothership-wm/internal/domainipc"
 	"mothership-wm/internal/userconfig"
+	"mothership-wm/services/desktopd/internal/adapter/missionlog"
 	"mothership-wm/services/desktopd/internal/adapter/nodestate"
 	"mothership-wm/services/desktopd/internal/adapter/tray"
 	"mothership-wm/services/desktopd/internal/adapter/unixapi"
@@ -54,6 +56,15 @@ func run(ctx context.Context, args []string) error {
 		}
 		service := app.New(nodes, store.Save, func(err error) { fmt.Fprintln(os.Stderr, "mothership-desktopd: save Last active:", err) })
 		service.UseLoadoutStore(store.SaveLoadout)
+		missions, err := missionlog.Open(os.Getenv("XDG_STATE_HOME"), os.Getenv("HOME"), time.Now(),
+			func(err error) { fmt.Fprintln(os.Stderr, "mothership-desktopd:", err) })
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mothership-desktopd: Mission Log unavailable:", err)
+		} else {
+			service.UseMissionLog(missions)
+			// Close at shutdown time, not when the defer is registered.
+			defer func() { missions.Close(time.Now()) }()
+		}
 		if address := os.Getenv(appbus.AddressEnv); address != "" {
 			stopTray, err := tray.Start(address)
 			if err != nil {

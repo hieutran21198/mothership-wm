@@ -157,6 +157,7 @@ func (s *Service) setSelection(conn *domain.Session, selection Selection, entry 
 			}
 		}
 		s.selection = selection
+		s.recordMission(selection)
 		if selection.Kind == SelectionAcknowledged && (selection.Domain != "" || selection.DefaultNode) && selection.Mode != "" {
 			s.layouts[selection.Domain] = selection.Mode
 			if domainipc.IsFlow(selection.Mode) {

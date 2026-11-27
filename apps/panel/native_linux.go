@@ -90,6 +90,7 @@ func main() {
 	pushSilentState()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	loadoutOffer = loadoutOfferFor
+	missionSelectionChanged = missionSelection
 	active = &controller{ctx: ctx, path: path, show: showNative, showSwitch: showNativeNodeSwitch}
 	checkSilentMarker()
 	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
@@ -143,7 +144,8 @@ func showNative(v view) {
 	}
 	var profiles strings.Builder
 	for _, p := range v.profiles {
-		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\t%d\t%d\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","), p.Shortcut, len(p.Loadout))
+		closed, open := missionTodayFor(p.Domain)
+		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\t%d\t%d\t%d\t%d\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","), p.Shortcut, len(p.Loadout), closed, open)
 	}
 	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode, profiles.String()}
 	ptr := make([]*C.char, len(s))

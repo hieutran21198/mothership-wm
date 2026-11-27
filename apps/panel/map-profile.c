@@ -81,9 +81,9 @@ GHashTable *profile_parse(const char *rows) {
 	GHashTable *out=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,profile_data_free);
 	g_auto(GStrv) lines=g_strsplit(rows,"\n",-1);
 	for(char **line=lines; *line; ++line) {
-		g_auto(GStrv) fields=g_strsplit(*line,"\t",8);
+		g_auto(GStrv) fields=g_strsplit(*line,"\t",10);
 		int count=g_strv_length(fields);
-		if(count<6 || count>8) continue;
+		if(count<6 || count>10) continue;
 		struct profile_data *d=g_new0(struct profile_data,1);
 		d->created_at=g_ascii_strtoll(fields[1],NULL,10);
 		d->last_active=g_ascii_strtoll(fields[2],NULL,10);
@@ -91,7 +91,9 @@ GHashTable *profile_parse(const char *rows) {
 		d->description=g_strdup(fields[4]);
 		d->app_ids=g_strsplit(fields[5],",",-1);
 		d->shortcut=count>=7?CLAMP((int)g_ascii_strtoll(fields[6],NULL,10),0,9):0;
-		d->loadout=count==8?CLAMP((int)g_ascii_strtoll(fields[7],NULL,10),0,8):0;
+		d->loadout=count>=8?CLAMP((int)g_ascii_strtoll(fields[7],NULL,10),0,8):0;
+		d->today_closed=count==10?MAX(0,g_ascii_strtoll(fields[8],NULL,10)):0;
+		d->today_open=count==10?MAX(0,g_ascii_strtoll(fields[9],NULL,10)):0;
 		g_hash_table_replace(out,g_strdup(fields[0]),d);
 	}
 	return out;
@@ -99,7 +101,8 @@ GHashTable *profile_parse(const char *rows) {
 
 double profile_height(const struct profile_data *d) {
 	return 108+(d && *d->description?24:0)+(d && (d->created_at>0 || d->last_active>0)?22:0)+
-		(d && d->loadout>0?22:0)+(d && (d->empty || d->app_ids[0])?27:0);
+		(d && d->loadout>0?22:0)+(d && (d->today_closed>0 || d->today_open>0)?22:0)+
+		(d && (d->empty || d->app_ids[0])?27:0);
 }
 
 static char *elapsed(gint64 from,gint64 now) {
@@ -271,6 +274,20 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 		cairo_move_to(cr,x+16,y);
 		pango_cairo_show_layout(cr,loadout);
 		g_object_unref(loadout);
+		y+=22;
+	}
+	if(d && (d->today_closed>0 || d->today_open>0)) {
+		// Mission Log time today, including the open visit.
+		gint64 today=d->today_closed+(d->today_open>0?MAX((gint64)0,now-d->today_open):0);
+		g_autofree char *value=today<60?g_strdup("<1m"):elapsed(now-today,now);
+		PangoLayout *row=stat_layout(cr,"Today",value);
+		int lh;pango_layout_get_pixel_size(row,NULL,&lh);
+		stat_icon(cr,x,y+lh*.5,FALSE);
+		pango_layout_set_width(row,MAX(1,w-16)*PANGO_SCALE);
+		pango_layout_set_ellipsize(row,PANGO_ELLIPSIZE_END);
+		cairo_move_to(cr,x+16,y);
+		pango_cairo_show_layout(cr,row);
+		g_object_unref(row);
 	}
 	double row=b.y+(b.h-29)*.5;
 	double available=layout.stealth.x-x-12;

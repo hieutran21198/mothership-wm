@@ -13,6 +13,7 @@ struct profile_data {
 	gint64 created_at,last_active;
 	gboolean empty;
 	int shortcut,loadout;
+	gint64 today_closed,today_open; // Mission Log seconds today; open start or 0
 	char **app_ids;
 	GPtrArray *icons;
 	GskRenderNode *paint;

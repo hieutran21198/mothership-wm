@@ -45,6 +45,10 @@ type view struct {
 // loadoutOffer is set by the native shell; tests leave it nil.
 var loadoutOffer func(domainipc.Snapshot, string) (int, int, bool)
 
+// missionSelectionChanged lets the native shell refresh today's Mission Log
+// totals when the acknowledged view changes; tests leave it nil.
+var missionSelectionChanged func(domainipc.Selection)
+
 // rerender refreshes the view from outside a state update.
 func (c *controller) rerender() {
 	c.mu.Lock()
@@ -127,6 +131,9 @@ func (c *controller) render() {
 		v.overview = s.Selection.View == "overview"
 	}
 	v.blankHome = c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home"
+	if missionSelectionChanged != nil && c.online && s.WMReady {
+		missionSelectionChanged(s.Selection)
+	}
 	if loadoutOffer != nil && c.online && s.WMReady && v.node != "" {
 		v.loadoutMissing, v.loadoutTotal, v.loadoutRunning = loadoutOffer(s, v.node)
 	}

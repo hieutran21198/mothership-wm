@@ -24,6 +24,8 @@ has either a `body` or an `error` with `code` and `message`.
 | `assign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7,"domain":"Dev"}` | `{}` |
 | `unassign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7}` | `{}` after the WM applies the return to Inbox; already in Inbox is a no-op. The view does not change. |
 | `loadout.set` | `{"domain":"Dev","entries":["com.mitchellh.ghostty.desktop"]}` | `{}` after the loadout file is committed; an empty list clears it. Up to eight desktop entry IDs; repeats allowed. Publishes `node.loadout` with the same body. See [Node loadout](../software-knowledges/flows/launch-node-loadout.md). |
+| `missions.get` | `{"day":"2026-11-27"}` | `{"day":…,"lanes":[{"node":"Ops"},{"default_node":true}],"segments":[[0,start,end],…],"open":[0,start,0]}`; `merged` is set when short gaps were joined to fit one packet. See [Mission Log](../software-knowledges/flows/review-mission-log.md). |
+| `missions.clear` | `{}` | `{}` after every stored day is deleted; an open segment restarts now. |
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
 | `focus.window` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7}` | `{}` after the WM applies the window's current Node (or the Default Node for Inbox) with that window as the keyboard target. See [Connect to a window](../software-knowledges/flows/search-windows.md#connect-to-a-window). |
 | `focus.prepare` | `{"domain":"Dev"}` | `{"ticket":42}` after WM preparation; no selection change |

@@ -102,9 +102,9 @@ The controls require a local PulseAudio-compatible playback server
 Show a small, noninteractive Map-style key strip above the dock on blank
 Home. Align its left edge with the dock, not the viewport, and keep a 16
 logical px vertical gap. Render only the **A**, **M**, **W**, **/**, **,**,
-**R**, and **N** keycaps, without text captions. Omit **W** if Default Node is disabled. Wrap at
-narrow widths, and hide it when Map, Settings, Slash, App Grid or Command
-Center is open. The guide is on by default. Save **Keyboard guide** under
+**R**, **N** and **L** keycaps, without text captions. Omit **W** if Default Node is disabled. Wrap at
+narrow widths, and hide it when Map, Settings, Slash, App Grid, the Mission
+Log or Command Center is open. The guide is on by default. Save **Keyboard guide** under
 `home_panel.show_keyboard_guide`; Cancel leaves the old value. This setting
 never changes the actual shortcuts or the guides in other views.
 
@@ -121,6 +121,7 @@ never changes the actual shortcuts or the guides in other views.
 | App Grid / `A` | Open the [App Grid](app-grid.md) on focused blank Home. The dock button also closes it; the button is unavailable in Map and Settings. |
 | `W` | Enter the internal [Default Node](../flows/use-home-inbox.md) from blank Home when enabled. |
 | `N` | Toggle the Notification Log on focused blank Home. Retain normal typing in Slash and App Grid. |
+| `L` | Toggle the [Mission Log](../flows/review-mission-log.md) on focused blank Home. It and the Notification Log replace each other. |
 | `/` | Open the Slash palette on focused blank Home. It is not a global shortcut or a terminal. |
 
 ## Slash palette
@@ -135,7 +136,7 @@ heading or redundant caption. Keep **↑**, **↓**, **Tab**, **Enter** and
 **Esc** as bare keycaps in a separate footer. Scroll the bounded list with
 the wheel or move the selection with the arrow keys.
 
-- An empty prompt lists `apps`, `nodes`, `windows`, `maps`,
+- An empty prompt lists `apps`, `nodes`, `windows`, `maps`, `missions`,
   `notifications` and `settings`. Complete a module to show its available
   commands. `windows <query>` searches live windows in every Node, also
   from a Node; see [Search windows](../flows/search-windows.md).

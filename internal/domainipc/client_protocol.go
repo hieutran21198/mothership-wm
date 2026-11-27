@@ -9,27 +9,29 @@ import (
 )
 
 const (
-	SnapshotMethod     = "snapshot"
-	SubscribeMethod    = "subscribe"
-	CreateMethod       = "create"
-	DeleteMethod       = "delete"
-	DomainDeletedEvent = "domain.deleted"
-	AssignMethod       = "assign"
-	UnassignMethod     = "unassign"
-	FocusMethod        = "focus"
-	FocusWindowMethod  = "focus.window"
-	PrepareFocusMethod = "focus.prepare"
-	RevealFocusMethod  = "focus.reveal"
-	HomeMethod         = "home"
-	DefaultNodeMethod  = "home.node"
-	OverviewMethod     = "overview"
-	LayoutMethod       = "layout"
-	NextMethod         = "stack.next"
-	MapShowMethod      = "map.show"
-	MapHideMethod      = "map.hide"
-	MapChangedEvent    = "map.visibility.changed"
-	LoadoutSetMethod   = "loadout.set"
-	NodeLoadoutEvent   = "node.loadout"
+	SnapshotMethod      = "snapshot"
+	SubscribeMethod     = "subscribe"
+	CreateMethod        = "create"
+	DeleteMethod        = "delete"
+	DomainDeletedEvent  = "domain.deleted"
+	AssignMethod        = "assign"
+	UnassignMethod      = "unassign"
+	FocusMethod         = "focus"
+	FocusWindowMethod   = "focus.window"
+	PrepareFocusMethod  = "focus.prepare"
+	RevealFocusMethod   = "focus.reveal"
+	HomeMethod          = "home"
+	DefaultNodeMethod   = "home.node"
+	OverviewMethod      = "overview"
+	LayoutMethod        = "layout"
+	NextMethod          = "stack.next"
+	MapShowMethod       = "map.show"
+	MapHideMethod       = "map.hide"
+	MapChangedEvent     = "map.visibility.changed"
+	LoadoutSetMethod    = "loadout.set"
+	MissionsGetMethod   = "missions.get"
+	MissionsClearMethod = "missions.clear"
+	NodeLoadoutEvent    = "node.loadout"
 )
 
 type Request struct {
@@ -61,6 +63,28 @@ type NodeProfile struct {
 	LastActive  int64    `json:"last_active,omitempty"`
 	Shortcut    int      `json:"shortcut,omitempty"`
 	Loadout     []string `json:"loadout,omitempty"`
+}
+
+// MissionDayBody asks for one local day, as YYYY-MM-DD.
+type MissionDayBody struct {
+	Day string `json:"day"`
+}
+
+// MissionLane names a Node, or the Default Node, in a Mission Log day.
+type MissionLane struct {
+	Node        string `json:"node,omitempty"`
+	DefaultNode bool   `json:"default_node,omitempty"`
+}
+
+// MissionDay is one day's time in Node views. Each segment is
+// [lane index, start, end] in Unix seconds; Open has end 0. Merged reports
+// that short gaps inside a lane were joined to fit one packet.
+type MissionDay struct {
+	Day      string        `json:"day"`
+	Lanes    []MissionLane `json:"lanes"`
+	Segments [][3]int64    `json:"segments"`
+	Open     *[3]int64     `json:"open,omitempty"`
+	Merged   bool          `json:"merged,omitempty"`
 }
 
 // LoadoutBody sets a Node's loadout (an empty list clears it) and is the

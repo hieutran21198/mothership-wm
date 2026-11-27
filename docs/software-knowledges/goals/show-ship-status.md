@@ -1,6 +1,6 @@
 # Read each Node's state from the Center Map
 
-**Status:** G-SHIP-2 (cloak) implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-zvH5676i`) on 2026-11-27; the other criteria not implemented.
+**Status:** G-SHIP-2 (cloak) implemented 2026-11-27 and owner accepted in a native Mothership Dev session (candidate `build-zvH5676i`) on 2026-11-27; G-SHIP-3 (Detail rows) implemented with loadouts and the Mission Log; Comms (G-SHIP-1) not implemented.
 
 The desktop user needs to see at a glance which Nodes are making sound or
 running silent, without connecting to each one. The unread badge and arrival

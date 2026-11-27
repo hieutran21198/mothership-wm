@@ -1,6 +1,6 @@
 # Record and review the Mission Log
 
-**Status:** design accepted 2026-11-27; not implemented.
+**Status:** implemented 2026-11-27 except lock detection and idle; owner accepted in a native Mothership Dev session (candidate `build-jk5prr29`) on 2026-11-27.
 Supports [See where the day went](../goals/review-mission-log.md).
 Design: [Fleet Ops preview, scenes 1 and 6](../system/fleet-ops-preview.html).
 
@@ -10,13 +10,13 @@ after the WM acknowledges it. Last active keeps its existing meaning in
 
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
-| Open segment | desktopd | On an acknowledged selection of a named Node or the Default Node, open a segment with the Node name, or a `default_node: true` flag instead of a name, and the start time. |
-| Close segment | desktopd | Close it on the next acknowledged selection, WM disconnect, desktopd shutdown or a confirmed lock. Split a segment at local midnight. Drop segments under 5 s. |
-| Persist | desktopd | Append closed segments to `$XDG_STATE_HOME/mothership-wm/missions/YYYY-MM-DD.jsonl`. Delete files older than 30 days at start-up. A write failure keeps the in-memory day and is logged once. |
-| Read | Panel → desktopd | `missions.get {day}` returns the day's segments plus the open one. The Panel subscribes to selection events to extend the live bar; it does not poll. |
-| Show | Panel | Slash `missions` or **L** on focused blank Home opens the analog Mission Log above the dock. One lane per Node with Node glyph and name, a 24-hour axis with ticks every three hours, cyan segment bars, a brighter cap on the live segment and a total per Node. A/D (or Left/Right) changes day; Esc, L or Q closes. |
-| Detail | Panel | Center Map [Node Detail](../system/center-map-ui.md) adds a **Today** row with that Node's total when it is above zero. |
-| Clear | Panel → desktopd | **Clear history** asks for confirmation, then deletes every stored day and the in-memory history. The open segment restarts now. |
+| Open segment | desktopd | On an acknowledged selection of a named Node or the Default Node, open a segment with the Node name (or the Default Node flag) and the start time. A layout change in the same Node keeps the segment. |
+| Close segment | desktopd | Close it on the next acknowledged selection of another view (Home, Overview and the Map close it), an unknown outcome, WM disconnect or desktopd shutdown. Split a segment at local midnight. Drop segments under 5 s. Lock is not observed yet. |
+| Persist | desktopd | Append closed segments to `$XDG_STATE_HOME/mothership-wm/missions/YYYY-MM-DD.jsonl`. Checkpoint the open segment to `open.json` every 30 s; the next start closes it at that checkpoint. Delete days older than 30 days at start-up. A write failure keeps the segment in memory and is logged once. |
+| Read | Panel → desktopd | [`missions.get`](../../architecture/desktopd-client-ipc.md) returns a day as lanes and `[lane, start, end]` triples plus the open segment. A day too large for one packet joins short gaps within a lane. The overlay extends the live bar locally; it does not poll. Map Detail totals refresh when the acknowledged view changes. |
+| Show | Panel | **L** on focused blank Home or Slash `missions` opens the analog Mission Log above the dock. One lane per Node, longest total first: a diamond (hollow for the Default Node) and name, a 24-hour axis with ticks every three hours, cyan bars, a bright cap on the live segment and a total. Deleted Nodes keep their lane in muted ink as **Name (deleted)**. A/D or Left/Right changes day within 30 days; Esc, L or Q closes; a click outside dismisses it. The Home keyboard guide adds **L** and hides while the log is open. |
+| Detail | Panel | Center Map [Node Detail](../system/center-map-ui.md) adds a **Today** row with that Node's total, including the open visit, when it is above zero. |
+| Clear | Panel → desktopd | **Clear history** arms on the first press (**Press again to clear**, 4 s) and `missions.clear` on the second deletes every stored day. The open segment restarts now. |
 
 ### F-MISSION-1
 
@@ -41,11 +41,13 @@ Inspect the files: only Node names and Unix times. Set the clock 31 days
 ahead and restart: the old file is gone. Clear history: the log is empty
 and the files are deleted.
 
-## Proposed contract changes
+## Contract
 
-- New durable desktopd state and the read-only `missions.get` and
-  `missions.clear` methods.
+- New durable desktopd state under `missions/` (only Node names and Unix
+  times) and the `missions.get` and `missions.clear` methods.
 - Home keyboard guide gains **L**; Slash gains `missions`.
+- Stored as JSON Lines, one file per local day, without SQLite: a day is
+  the only query and the format keeps the module dependency-free.
 
 ## Decisions
 
@@ -54,4 +56,6 @@ and the files are deleted.
   pointer data. The first slice counts time in view.
 
 ## Open questions
-- Whether lock is observable from the shell's existing logind check.
+
+- Lock: desktopd does not observe the session lock yet. The Panel's
+  logind check could report a confirmed lock in a later slice.

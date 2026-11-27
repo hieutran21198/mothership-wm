@@ -106,12 +106,6 @@ func renderNodeAudio(node string, groups []audioGroup, muted bool, message strin
 	C.free(unsafe.Pointer(data))
 	C.free(unsafe.Pointer(notice))
 }
-func btoi(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
 
 //export panelNodeVolumeRequest
 func panelNodeVolumeRequest(kind C.int, node *C.char, pid, value C.int) {

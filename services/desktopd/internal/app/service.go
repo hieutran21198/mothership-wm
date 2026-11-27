@@ -25,6 +25,7 @@ type Service struct {
 	now               func() time.Time
 	reportPersistence func(error)
 	saveLoadout       func(string, []string) error
+	missions          MissionLog
 	active            *domain.Session
 	ready             bool
 	selection         Selection
@@ -105,6 +106,7 @@ func (s *Service) Disconnect(conn *domain.Session) {
 	if s.active == conn {
 		wasReady := s.ready
 		s.active, s.ready = nil, false
+		s.recordMission(Selection{Kind: SelectionUnknown})
 		if wasReady {
 			if s.selection.Kind == SelectionAcknowledged {
 				s.selection = Selection{Kind: SelectionUnknown}

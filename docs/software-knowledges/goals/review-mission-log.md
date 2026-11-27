@@ -1,6 +1,6 @@
 # See where the day went
 
-**Status:** design accepted 2026-11-27; not implemented.
+**Status:** implemented 2026-11-27 except lock detection; owner accepted in a native Mothership Dev session (candidate `build-jk5prr29`) on 2026-11-27.
 
 The desktop user needs to see how long they spent in each Node, today and on
 recent days, because Nodes map to projects and the shell already knows when
