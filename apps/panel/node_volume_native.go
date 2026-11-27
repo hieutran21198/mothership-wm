@@ -11,6 +11,7 @@ import "C"
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -27,6 +28,37 @@ type volumeRequest struct {
 }
 
 var nodeVolumeRequests = make(chan volumeRequest, 64)
+
+// audioHoldRequests carries the latest Silent running audio hold; a newer
+// value replaces one that has not been read yet, so a change is never lost.
+var audioHoldRequests = make(chan string, 1)
+
+func setAudioHold(node string) {
+	for {
+		select {
+		case audioHoldRequests <- node:
+			return
+		default:
+			select {
+			case <-audioHoldRequests:
+			default:
+			}
+		}
+	}
+}
+
+// markAudioHold keeps a marker while a hold is active, so a restarted Panel
+// can warn that it cannot know which streams a crashed Panel muted.
+func markAudioHold(active bool) {
+	if silentMarker == "" {
+		return
+	}
+	if active {
+		_ = os.WriteFile(silentMarker, nil, 0o600)
+	} else {
+		_ = os.Remove(silentMarker)
+	}
+}
 
 const (
 	volumeWatch = iota
@@ -105,7 +137,7 @@ func audioSelection(c *controller) domainipc.Snapshot {
 func runNodeVolume(ctx context.Context, c *controller) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	m := audioMuteState{map[string]bool{}, map[audioKey]string{}}
+	m := audioMuteState{nodes: map[string]bool{}, restore: map[audioKey]string{}}
 	defer func() {
 		if len(m.restore) == 0 {
 			return
@@ -113,6 +145,7 @@ func runNodeVolume(ctx context.Context, c *controller) {
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		m.nodes = map[string]bool{}
+		m.hold = ""
 		if all, err := captureAudio(cleanup); err == nil {
 			_ = m.reconcile(all, nil, func(key audioKey, muted bool) error {
 				return audioSet(cleanup, key, "set-sink-input-mute", muteValue(muted))
@@ -120,14 +153,21 @@ func runNodeVolume(ctx context.Context, c *controller) {
 		}
 	}()
 
+	defer markAudioHold(false)
 	var watching, session string
 	for {
 		var req volumeRequest
 		select {
 		case <-ctx.Done():
 			return
+		case hold := <-audioHoldRequests:
+			if hold == m.hold {
+				continue
+			}
+			m.hold = hold
+			markAudioHold(hold != "")
 		case <-ticker.C:
-			if watching == "" && len(m.nodes) == 0 && len(m.restore) == 0 {
+			if watching == "" && len(m.nodes) == 0 && len(m.restore) == 0 && m.hold == "" {
 				continue
 			}
 		case req = <-nodeVolumeRequests:

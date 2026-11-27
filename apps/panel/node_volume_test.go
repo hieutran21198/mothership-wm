@@ -44,7 +44,7 @@ func TestNodeMuteRestoresOnlyStreamsItMuted(t *testing.T) {
 	windows := []domainipc.Window{{PID: 10, Domain: "Dev", Mapped: true}, {PID: 11, Domain: "Review", Mapped: true}}
 	streams := []audioStream{testStream(1, "101", "10", false), testStream(2, "102", "10", true), testStream(3, "103", "11", false)}
 	route := func() []nodeAudioStream { return routeAudio(streams, windows, func(int) int { return 0 }) }
-	state := audioMuteState{map[string]bool{"Dev": true}, map[audioKey]string{}}
+	state := audioMuteState{nodes: map[string]bool{"Dev": true}, restore: map[audioKey]string{}}
 	type change struct {
 		k    audioKey
 		mute bool
@@ -74,7 +74,7 @@ func TestNodeMuteRestoresOnlyStreamsItMuted(t *testing.T) {
 
 func TestNodeMuteMovesBetweenMutedNodesWithoutUnmuting(t *testing.T) {
 	key := audioKey{1, 101}
-	state := audioMuteState{map[string]bool{"Dev": true, "Review": true}, map[audioKey]string{key: "Dev"}}
+	state := audioMuteState{nodes: map[string]bool{"Dev": true, "Review": true}, restore: map[audioKey]string{key: "Dev"}}
 	streams := []audioStream{testStream(1, "101", "10", true)}
 	windows := []domainipc.Window{{PID: 10, Domain: "Review", Mapped: true}}
 	routed := routeAudio(streams, windows, func(int) int { return 0 })

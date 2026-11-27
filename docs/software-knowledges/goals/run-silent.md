@@ -1,6 +1,6 @@
 # Work in a Node without interruptions
 
-**Status:** design accepted 2026-11-27; not implemented.
+**Status:** implemented 2026-11-27; owner accepted in a native Mothership Dev session (candidate `build-zvH5676i`) on 2026-11-27.
 
 The desktop user needs a Node where nothing interrupts deep work, so
 pop-ups and sound from elsewhere wait without being lost. The default

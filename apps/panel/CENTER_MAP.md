@@ -195,6 +195,11 @@ defaults in code. For example:
 }
 ```
 
+Per-Node [Silent running](../../docs/software-knowledges/flows/run-silent.md)
+is stored sparsely as `nodes.<name>.silent_running` and, for the Default
+Node, `default_node.silent_running` (`notices` or `notices_audio`; Off
+removes the key). Node Panel Settings and its left-wing toggle write it.
+
 Zero and false are valid where supported. Save in Map settings writes
 only to this file, including on first use. It does not alter other module
 fields. If the file is malformed or managed through a symlink, UI Save

@@ -309,6 +309,11 @@ Crossfade the markers between previews in 150 ms without changing their
 size or spacing. Clip markers to the same horizontal bounds as previews.
 If animations are disabled, the same state change is immediate.
 
+The left wing's fourth control, **Silent running**, latches with the
+toggled cyan edge while the current Node runs silent. Node Panel Settings
+adds a **Silent running: Off / Notices / Notices + audio** row. See
+[Run silent in a Node](../flows/run-silent.md).
+
 Node Panel Settings exposes the same **Flow / Stage** layout row in Default
 Node and in a named Node. The compositor applies the choice before desktopd
 confirms it. Each active projection retains its own choice for the live

@@ -86,8 +86,11 @@ func main() {
 	C.panel_set_video_enabled(cBool(preferences.wallpaper.allowsVideo()))
 	applyDefaultNodePreference(preferences.defaultNode)
 	applyAppPins(preferences.appPins)
+	silentMarker = filepath.Join(filepath.Dir(path), "mothership-silent-audio")
+	pushSilentState()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	active = &controller{ctx: ctx, path: path, show: showNative, showSwitch: showNativeNodeSwitch}
+	checkSilentMarker()
 	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
 	address, shared := os.LookupEnv(appbus.AddressEnv)
 	if address == "" {
@@ -365,6 +368,7 @@ func panelReloadConfig() C.int {
 	C.panel_set_video_enabled(cBool(next.wallpaper.allowsVideo()))
 	applyDefaultNodePreference(next.defaultNode)
 	applyAppPins(next.appPins)
+	refreshSilentRunning()
 	configWarning("reloaded user configuration")
 	return 1
 }

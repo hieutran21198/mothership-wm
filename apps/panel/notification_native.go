@@ -153,7 +153,8 @@ func receiveNotification(n notification, state domainipc.Snapshot) {
 	if mapNoticeSource(n.Source) {
 		cNoticeStrings([]string{n.Source}, func(s []*C.char) { C.map_hud_notice_received(s[0]) })
 	}
-	if showToast(preferences.toastMode, n.Source, notificationSelectionSource(state)) {
+	// Silent running keeps every entry and Map pulse but holds the toast.
+	if !silent.hold() && showToast(preferences.toastMode, n.Source, notificationSelectionSource(state)) {
 		displayedBusNotice = n.BusID
 		cNoticeStrings([]string{n.Source, sourceLabel(n.Source), n.App, n.Title, n.Body}, func(s []*C.char) {
 			C.notice_show(s[0], s[1], s[2], s[3], s[4])

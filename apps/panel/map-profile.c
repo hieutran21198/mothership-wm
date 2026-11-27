@@ -225,7 +225,21 @@ void profile_draw_chrome(cairo_t *cr,struct profile_rect r,gboolean flat) {
 	rim(cr,r);
 }
 
-static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d,GtkStateFlags button_state) {
+// Silent running: a crescent, filled while the Node runs silent.
+static void stealth_glyph(cairo_t *cr,struct profile_rect b,gboolean on) {
+	double cx=b.x+b.w*.5,cy=b.y+b.h*.5;
+	cairo_new_path(cr);
+	cairo_arc(cr,cx-1,cy,8.5,G_PI*.30,G_PI*1.70);
+	cairo_arc_negative(cr,cx+2.9,cy,6.6,G_PI*1.62,G_PI*.38);
+	cairo_close_path(cr);
+	cairo_set_source_rgb(cr,.69,.90,.94);
+	if(on) cairo_fill_preserve(cr);
+	cairo_set_line_width(cr,1.5);
+	cairo_set_line_join(cr,CAIRO_LINE_JOIN_ROUND);
+	cairo_stroke(cr);
+}
+
+static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d,GtkStateFlags button_state,GtkStateFlags stealth_state) {
 	struct profile_rect r=layout.card,b=layout.fly;
 	double extent=PROFILE_RIM_GAP+2;
 	graphene_rect_t bounds=GRAPHENE_RECT_INIT(r.x-extent,r.y-extent,r.w+2*extent,r.h+2*extent);
@@ -237,7 +251,7 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 	gint64 now=g_get_real_time()/G_USEC_PER_SEC;
 	if(d && (d->created_at>0 || d->last_active>0)) profile_stats(cr,d,x,y,w,now);
 	double row=b.y+(b.h-29)*.5;
-	double available=b.x-x-12;
+	double available=layout.stealth.x-x-12;
 	if(d && d->empty) label(cr,"No windows open",x,row+6,MAX(1,available),12,FALSE);
 	int shown=0;
 	if(widget) icons_resolve(widget,d);
@@ -258,6 +272,9 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 		cairo_set_source_rgb(cr,.085,.163,.217);cairo_fill_preserve(cr);
 		cairo_set_source_rgb(cr,.25,.40,.49);cairo_stroke(cr);
 	}
+	struct profile_rect st=layout.stealth;
+	analog_button_paint(cr,st.x,st.y,st.w,st.h,stealth_state);
+	stealth_glyph(cr,st,(stealth_state&GTK_STATE_FLAG_CHECKED)!=0);
 	analog_button_paint(cr,b.x,b.y,b.w,b.h,button_state);
 	cairo_save(cr);cairo_translate(cr,b.x+b.w*.5,b.y+b.h*.5);cairo_rotate(cr,.60);
 	cairo_set_source_rgb(cr,.69,.90,.94);
@@ -277,8 +294,8 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 }
 
 
-void profile_snapshot(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d,GtkStateFlags button_state) {
-	if(!d) { draw_profile(snap,widget,layout,name,NULL,button_state); return; }
+void profile_snapshot(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout layout,const char *name,struct profile_data *d,GtkStateFlags button_state,GtkStateFlags stealth_state) {
+	if(!d) { draw_profile(snap,widget,layout,name,NULL,button_state,stealth_state); return; }
 	gint64 now=g_get_real_time()/G_USEC_PER_SEC;
 	gint64 age=d->created_at>0?MAX((gint64)0,now-d->created_at)/60:-1;
 	gint64 active=d->last_active>0?MAX((gint64)0,now-d->last_active)/60:-1;
@@ -286,13 +303,15 @@ void profile_snapshot(GtkSnapshot *snap,GtkWidget *widget,struct profile_layout 
 	if(d->paint_scale!=scale) g_clear_pointer(&d->icons,g_ptr_array_unref);
 	struct profile_rect r=layout.card;
 	if(!d->paint || d->paint_width!=r.w || d->paint_height!=r.h ||
-			d->paint_scale!=scale || d->button_state!=button_state || d->age_min!=age || d->activity_min!=active) {
+			d->paint_scale!=scale || d->button_state!=button_state || d->stealth_state!=stealth_state ||
+			d->age_min!=age || d->activity_min!=active) {
 		g_clear_pointer(&d->paint,gsk_render_node_unref);
 		layout.card.x=layout.card.y=0;
 		layout.fly.x-=r.x;layout.fly.y-=r.y;
+		layout.stealth.x-=r.x;layout.stealth.y-=r.y;
 		GtkSnapshot *cache=gtk_snapshot_new();
-		draw_profile(cache,widget,layout,name,d,button_state);
-		d->button_state=button_state;
+		draw_profile(cache,widget,layout,name,d,button_state,stealth_state);
+		d->button_state=button_state;d->stealth_state=stealth_state;
 		d->paint=gtk_snapshot_free_to_node(cache);
 		d->paint_width=r.w;d->paint_height=r.h;d->paint_scale=scale;
 		d->age_min=age;d->activity_min=active;

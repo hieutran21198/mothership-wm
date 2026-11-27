@@ -190,7 +190,16 @@ func audioGroups(streams []nodeAudioStream, node string) []audioGroup {
 
 type audioMuteState struct {
 	nodes   map[string]bool
-	restore map[audioKey]string // Streams changed by the Node toggle, never pre-muted inputs.
+	restore map[audioKey]string // Streams muted here, never pre-muted inputs.
+	// hold is the Node whose audio keeps playing during Silent running with
+	// audio; every other identifiable Node is muted. Empty means no hold.
+	hold string
+}
+
+// muted reports whether the Node toggle or a Silent running hold wants a
+// Node's streams muted. Unrouted streams have no Node and are never muted.
+func (m *audioMuteState) muted(node string) bool {
+	return node != "" && (m.nodes[node] || (m.hold != "" && node != m.hold))
 }
 
 func (m *audioMuteState) reconcile(all []audioStream, routed []nodeAudioStream, setMute func(audioKey, bool) error) error {
@@ -211,7 +220,7 @@ func (m *audioMuteState) reconcile(all []audioStream, routed []nodeAudioStream, 
 			delete(m.restore, key)
 			continue
 		}
-		if target := owner[key]; m.nodes[target] {
+		if target := owner[key]; m.muted(target) {
 			// Transfer ownership without unmuting during a move.
 			if target != node {
 				m.restore[key] = target
@@ -227,7 +236,7 @@ func (m *audioMuteState) reconcile(all []audioStream, routed []nodeAudioStream, 
 		delete(m.restore, key)
 	}
 	for _, s := range routed {
-		if !m.nodes[s.node] || s.stream.Mute {
+		if !m.muted(s.node) || s.stream.Mute {
 			continue
 		}
 		if err := setMute(s.key, true); err != nil {

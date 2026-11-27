@@ -96,7 +96,9 @@ static void sync_route_motion(void);
 static gboolean route_source_visible(void);
 static void map_origin_point(double *x,double *y);
 static void sync_detail(void);
-static gboolean detail_button_pressed;
+// Pressed Detail action: 0 none, 1 Connect, 2 Silent running.
+static int detail_pressed;
+static void (*stealth_toggle)(const char *);
 
 
 static void clear_intro_labels(void) {
@@ -226,6 +228,29 @@ static int outer_margin = 24, inner_padding = 12;
 static struct map_camera camera;
 static struct map_zoom map_zoom={.scale=1};
 static GHashTable *notice_counts,*notice_pending;
+// silent_nodes is the saved Silent running set; cloak_shown is what the Map
+// paints. They differ only while a Mothership command packet is pending.
+static GHashTable *silent_nodes,*cloak_shown;
+static gboolean cloak_ready;
+// One packet flies at a time: outbound cloak commands first, then notices.
+enum transit_kind { TRANSIT_NOTICE, TRANSIT_CLOAK, TRANSIT_DECLOAK };
+struct transit { char *node; enum transit_kind kind; };
+static void transit_free(gpointer data) {
+	struct transit *t=data;
+	g_free(t->node);g_free(t);
+}
+static gboolean silent_target(const char *name) {
+	return silent_nodes && g_hash_table_contains(silent_nodes,name);
+}
+static gboolean cloak_painted(const char *name) {
+	return cloak_shown && g_hash_table_contains(cloak_shown,name);
+}
+static void cloak_set_shown(const char *name,gboolean on) {
+	if(!cloak_shown) cloak_shown=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	if(on) g_hash_table_add(cloak_shown,g_strdup(name));
+	else g_hash_table_remove(cloak_shown,name);
+}
+static double cloak_level(const char *name);
 static GQueue notice_transit=G_QUEUE_INIT;
 static guint notice_tick;
 static gint64 notice_started;
@@ -494,8 +519,11 @@ static void fleet_part(cairo_t *cr,const struct fleet_point *p,unsigned n,
 	cairo_fill(cr);
 }
 
-static void draw_fleet_ship(cairo_t *cr,double x,double y,double scale,
-	gboolean mothership,gboolean active,gboolean selected,gboolean miniature) {
+// A cloaked ship (Silent running) dashes its hull edge and draws its planes
+// at half opacity. Its label, badge and focus treatment keep full contrast.
+// cloak is 0 (normal) to 1 (cloaked); between them the hull morphs.
+static void draw_fleet_ship_as(cairo_t *cr,double x,double y,double scale,
+	gboolean mothership,gboolean active,gboolean selected,gboolean miniature,double cloak) {
 	const struct fleet_point *p=mothership?fleet_mothership:fleet_node;
 	unsigned n=mothership?FLEET_COUNT(fleet_mothership):FLEET_COUNT(fleet_node);
 	const GdkRGBA idle_edge={.61,.77,.81,1},ship_edge={.56,.85,.89,1};
@@ -512,6 +540,8 @@ static void draw_fleet_ship(cairo_t *cr,double x,double y,double scale,
 		cairo_stroke(cr);
 		cairo_restore(cr);
 	}
+	gboolean cloaked=cloak>0 && !miniature;
+	if(cloaked) cairo_push_group(cr);
 	fleet_outline(cr,p,n);
 	cairo_set_source_rgb(cr,.080,.168,.216);
 	cairo_fill_preserve(cr);
@@ -555,11 +585,25 @@ static void draw_fleet_ship(cairo_t *cr,double x,double y,double scale,
 		fleet_part(cr,engine,FLEET_COUNT(engine),.36,.64,.71);
 	}
 	cairo_restore(cr);
+	if(cloaked) {
+		cairo_pop_group_to_source(cr);
+		cairo_paint_with_alpha(cr,1-.5*cloak);
+	}
 	fleet_outline(cr,p,n);
 	source(cr,mothership?ship_edge:selected?selected_outline:active?amber:idle_edge,1);
 	cairo_set_line_width(cr,FLEET_SHIP_EDGE/scale);
+	if(cloaked && cloak>.04) {
+		const double dash[]={2.4,1.6*cloak};
+		cairo_set_dash(cr,dash,2,0);
+	}
 	cairo_stroke(cr);
 	cairo_restore(cr);
+}
+
+// Keeps the painter signature that Fleet Arcade receives.
+static void draw_fleet_ship(cairo_t *cr,double x,double y,double scale,
+	gboolean mothership,gboolean active,gboolean selected,gboolean miniature) {
+	draw_fleet_ship_as(cr,x,y,scale,mothership,active,selected,miniature,0);
 }
 
 static double symbol_half(void) {
@@ -582,10 +626,10 @@ static void draw_symbol(cairo_t *cr, const char *name, double x, double y) {
 		cairo_translate(cr, x - half, y - half);
 		cairo_scale(cr, 2*half/icon->pixels, 2*half/icon->pixels);
 		cairo_set_source_surface(cr, icon->surface, 0, 0);
-		cairo_paint(cr);
+		cairo_paint_with_alpha(cr, 1-.5*cloak_level(name));
 		cairo_restore(cr);
 	} else {
-		draw_fleet_ship(cr,x,y,map_zoom.scale,FALSE,active,selected,FALSE);
+		draw_fleet_ship_as(cr,x,y,map_zoom.scale,FALSE,active,selected,FALSE,cloak_level(name));
 		return;
 	}
 	if (active && !selected) {
@@ -946,7 +990,7 @@ static void sync_detail(void) {
 		!intro_tick && !intro_suppressed && !arcade_playing && !relay_node && !retract_tick;
 	gtk_widget_set_visible(detail_layer,visible);
 	if (!visible) {
-		detail_button_pressed=FALSE;
+		detail_pressed=0;
 		g_clear_handle_id(&detail_age_refresh,g_source_remove);
 	}
 	else if (!detail_age_refresh) detail_age_refresh=g_timeout_add_seconds(60,refresh_detail_age,NULL);
@@ -960,13 +1004,17 @@ static gboolean detail_at(int w,int h,double x,double y,struct profile_layout *l
 
 void map_hud_press_connect(gboolean down,double x,double y) {
 	struct profile_layout card;
-	gboolean pressed=down && annotations &&
-		detail_at(gtk_widget_get_width(annotations),gtk_widget_get_height(annotations),x,y,&card) &&
-		profile_contains(card.fly,PROFILE_FLY_CORNER,x,y);
-	if(pressed==detail_button_pressed) return;
-	detail_button_pressed=pressed;
+	int pressed=0;
+	if(down && annotations &&
+		detail_at(gtk_widget_get_width(annotations),gtk_widget_get_height(annotations),x,y,&card))
+		pressed=profile_contains(card.fly,PROFILE_FLY_CORNER,x,y)?1:
+			profile_contains(card.stealth,PROFILE_FLY_CORNER,x,y)?2:0;
+	if(pressed==detail_pressed) return;
+	detail_pressed=pressed;
 	gtk_widget_queue_draw(detail_layer);
 }
+
+void map_hud_set_stealth_handler(void (*toggle)(const char *)) { stealth_toggle=toggle; }
 
 void map_hud_pause_route(void) {
 	if(route_tick) gtk_widget_remove_tick_callback(route_layer,route_tick);
@@ -1092,6 +1140,10 @@ void map_hud_click(double px,double py,void (*connect)(const char *)) {
 	struct profile_layout card;
 	if (detail_at(w,h,px,py,&card)) {
 		if (connect && profile_contains(card.fly,PROFILE_FLY_CORNER,px,py)) connect(selected_node);
+		else if (stealth_toggle && profile_contains(card.stealth,PROFILE_FLY_CORNER,px,py)) {
+			g_autofree char *node=g_strdup(selected_node);
+			stealth_toggle(node);
+		}
 		return;
 	}
 	double unused;
@@ -1502,6 +1554,52 @@ void map_hud_notice_count(const char *node,unsigned count) {
 		gtk_widget_queue_draw(detail_layer);
 }
 
+static void cloak_sync_all(void) {
+	if(!cloak_shown) cloak_shown=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	g_hash_table_remove_all(cloak_shown);
+	GHashTableIter it;gpointer key;
+	if(silent_nodes) {
+		g_hash_table_iter_init(&it,silent_nodes);
+		while(g_hash_table_iter_next(&it,&key,NULL)) g_hash_table_add(cloak_shown,g_strdup(key));
+	}
+}
+// Changes made while the Map is closed wait for the next Map open, where a
+// command packet carries them from Mothership. The first list at startup,
+// or a change while the Map is showing, applies without a packet.
+static void queue_cloak_commands(void);
+static gboolean transit_motion(void);
+static gboolean notice_frame(GtkWidget *,GdkFrameClock *,gpointer);
+void map_hud_set_silent(const char *names) {
+	if(!silent_nodes) silent_nodes=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	g_auto(GStrv) list=g_strsplit(names?names:"","\n",-1);
+	// The same list is pushed on every view change; only a real change counts,
+	// so a pending command is not dropped when the Map opens.
+	guint count=0;
+	gboolean changed=FALSE;
+	for(int i=0;list[i];i++) if(*list[i]) {
+		count++;
+		changed|=!g_hash_table_contains(silent_nodes,list[i]);
+	}
+	changed|=count!=g_hash_table_size(silent_nodes);
+	if(!changed && cloak_ready) return;
+	g_hash_table_remove_all(silent_nodes);
+	for(int i=0;list[i];i++) if(*list[i]) g_hash_table_add(silent_nodes,g_strdup(list[i]));
+	if(!cloak_ready) {
+		cloak_ready=TRUE;
+		cloak_sync_all();
+	} else if(notice_layer && gtk_widget_get_mapped(notice_layer)) {
+		// A change made in the open Map (Node Detail) flies at once.
+		if(!transit_motion()) cloak_sync_all();
+		else {
+			queue_cloak_commands();
+			if(!g_queue_is_empty(&notice_transit) && !notice_tick)
+				notice_tick=gtk_widget_add_tick_callback(notice_layer,notice_frame,NULL,NULL);
+		}
+	}
+	if(annotations) gtk_widget_queue_draw(annotations);
+	if(detail_layer && gtk_widget_get_visible(detail_layer)) gtk_widget_queue_draw(detail_layer);
+}
+
 void map_hud_notice_received(const char *node) {
 	if(!notice_pending) notice_pending=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
 	g_hash_table_add(notice_pending,g_strdup(node));
@@ -1529,10 +1627,31 @@ static void draw_notice_count(cairo_t *cr,const char *name,double x,double y) {
 	cairo_move_to(cr,x+4,y-th*.5);pango_cairo_show_layout(cr,layout);g_object_unref(layout);
 }
 
+// Arrival is the last 21% of a packet's phase: a ring at the target, and
+// for a command, the hull morph from its painted state to the saved one.
+#define TRANSIT_ARRIVAL .79
+static double cloak_level(const char *name) {
+	double shown=cloak_painted(name)?1:0;
+	const struct transit *t=g_queue_peek_head(&notice_transit);
+	if(!t || t->kind==TRANSIT_NOTICE || !notice_started || notice_phase<TRANSIT_ARRIVAL ||
+		g_strcmp0(t->node,name)!=0) return shown;
+	double k=(notice_phase-TRANSIT_ARRIVAL)/(1-TRANSIT_ARRIVAL);
+	k=k*k*(3-2*k);
+	return t->kind==TRANSIT_CLOAK?k:1-k;
+}
+static void finish_transit(struct transit *t) {
+	if(t->kind!=TRANSIT_NOTICE) {
+		cloak_set_shown(t->node,t->kind==TRANSIT_CLOAK);
+		if(annotations) gtk_widget_queue_draw(annotations);
+	}
+	transit_free(t);
+}
 static void end_notice_transit(void) {
 	if(notice_tick) gtk_widget_remove_tick_callback(notice_layer,notice_tick);
 	notice_tick=0;notice_started=0;notice_phase=0;
-	g_queue_clear_full(&notice_transit,g_free);
+	// An interrupted command still lands: the ship shows its saved state.
+	struct transit *t;
+	while((t=g_queue_pop_head(&notice_transit))) finish_transit(t);
 	if(notice_layer) gtk_widget_queue_draw(notice_layer);
 }
 
@@ -1541,32 +1660,85 @@ static gboolean notice_frame(GtkWidget *widget,GdkFrameClock *clock,gpointer unu
 	if(intro_tick) return G_SOURCE_CONTINUE;
 	gint64 now=gdk_frame_clock_get_frame_time(clock);
 	while (!g_queue_is_empty(&notice_transit)) {
-		const char *node=g_queue_peek_head(&notice_transit);
+		const struct transit *t=g_queue_peek_head(&notice_transit);
 		double inset,x,y,hx,hy;
 		struct plane frame=border_plane(view_w,view_h,&inset);
 		map_origin_point(&hx,&hy);
-		if (notice_count(node) && route_endpoint(node_plane(view_w,view_h),frame,inset,node,&x,&y) &&
+		// A packet needs both ends in view; otherwise it lands at once.
+		if ((t->kind!=TRANSIT_NOTICE || notice_count(t->node)) &&
+			route_endpoint(node_plane(view_w,view_h),frame,inset,t->node,&x,&y) &&
 			content_contains(frame,inset+3,hx,hy) && hypot(x-hx,y-hy)>35) {
 			if(!notice_started) notice_started=now;
 			notice_phase=(now-notice_started)/700000.;
-			if(notice_phase<1) break;
+			if(notice_phase<1) {
+				if(t->kind!=TRANSIT_NOTICE && notice_phase>=TRANSIT_ARRIVAL && annotations)
+					gtk_widget_queue_draw(annotations);
+				break;
+			}
 		}
-		notice_phase=0;notice_started=0;g_free(g_queue_pop_head(&notice_transit));
+		notice_phase=0;notice_started=0;
+		struct transit *done=g_queue_pop_head(&notice_transit);
+		gboolean command=done->kind!=TRANSIT_NOTICE;
+		finish_transit(done);
+		if(command) queue_cloak_commands();
 	}
 	gtk_widget_queue_draw(widget);
 	if(!g_queue_is_empty(&notice_transit)) return G_SOURCE_CONTINUE;
 	notice_tick=0;return G_SOURCE_REMOVE;
 }
 
+static void push_transit(const char *node,enum transit_kind kind) {
+	struct transit *t=g_new(struct transit,1);
+	*t=(struct transit){g_strdup(node),kind};
+	g_queue_push_tail(&notice_transit,t);
+}
+static gboolean command_queued(const char *node) {
+	for(GList *l=notice_transit.head;l;l=l->next) {
+		const struct transit *t=l->data;
+		if(t->kind!=TRANSIT_NOTICE && g_str_equal(t->node,node)) return TRUE;
+	}
+	return FALSE;
+}
+// Send a command to each Map ship whose painted state differs from its saved
+// state and has none in flight. A command that lands stale is followed by
+// another, so the ship always ends on the saved state.
+static void queue_cloak_commands(void) {
+	for(char **n=names;n&&*n;++n)
+		if(**n && silent_target(*n)!=cloak_painted(*n) && !command_queued(*n))
+			push_transit(*n,silent_target(*n)?TRANSIT_CLOAK:TRANSIT_DECLOAK);
+}
+static int transit_animation=MAP_ANIMATION_OFF;
+static gboolean transit_motion(void) {
+	gboolean gtk_motion=TRUE;
+	if(notice_layer) g_object_get(gtk_widget_get_settings(notice_layer),"gtk-enable-animations",&gtk_motion,NULL);
+	return transit_animation!=MAP_ANIMATION_OFF && gtk_motion;
+}
 static void start_notice_transit(int animation) {
 	end_notice_transit();
-	if(!notice_pending || !notice_layer) return;
-	gboolean gtk_motion=TRUE;
-	g_object_get(gtk_widget_get_settings(notice_layer),"gtk-enable-animations",&gtk_motion,NULL);
-	if(animation!=MAP_ANIMATION_OFF && gtk_motion) {
+	transit_animation=animation;
+	if(!notice_layer) return;
+	gboolean motion=transit_motion();
+	// Mothership sends queued Silent running changes before notices return.
+	if(motion) queue_cloak_commands();
+	// Without motion, and for Nodes not on the Map, show the saved state now.
+	if(!motion) cloak_sync_all();
+	else {
+		GHashTableIter it;gpointer key;
+		GPtrArray *stale=g_ptr_array_new_with_free_func(g_free);
+		GHashTable *sets[]={silent_nodes,cloak_shown};
+		for(int i=0;i<2;i++) if(sets[i]) {
+			g_hash_table_iter_init(&it,sets[i]);
+			while(g_hash_table_iter_next(&it,&key,NULL))
+				if(!names || !g_strv_contains((const char *const *)names,key)) g_ptr_array_add(stale,g_strdup(key));
+		}
+		for(guint i=0;i<stale->len;i++) cloak_set_shown(g_ptr_array_index(stale,i),silent_target(g_ptr_array_index(stale,i)));
+		g_ptr_array_unref(stale);
+	}
+	if(!notice_pending) notice_pending=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	if(motion) {
 		for(char **n=names;n&&*n;++n)
 			if(notice_count(*n) && g_hash_table_contains(notice_pending,*n))
-				g_queue_push_tail(&notice_transit,g_strdup(*n));
+				push_transit(*n,TRANSIT_NOTICE);
 	}
 	g_hash_table_remove_all(notice_pending);
 	if(!g_queue_is_empty(&notice_transit))
@@ -1576,9 +1748,12 @@ static void start_notice_transit(int animation) {
 typedef GtkWidget MapNotice;
 typedef GtkWidgetClass MapNoticeClass;
 G_DEFINE_TYPE(MapNotice,map_notice_layer,GTK_TYPE_WIDGET)
+static void command_snapshot(GtkWidget *widget,GtkSnapshot *snap,const struct transit *t);
 static void notice_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
-	const char *node=g_queue_peek_head(&notice_transit);
-	if(!node||!notice_started||intro_tick) return;
+	const struct transit *t=g_queue_peek_head(&notice_transit);
+	if(!t||!notice_started||intro_tick) return;
+	if(t->kind!=TRANSIT_NOTICE) {command_snapshot(widget,snap,t);return;}
+	const char *node=t->node;
 	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
 	double inset,x,y,hx,hy;
 	struct plane frame=border_plane(w,h,&inset);
@@ -1618,6 +1793,57 @@ static void notice_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 		double flash=(notice_phase-.79)/.21;
 		cairo_set_source_rgba(cr,.77,.65,1,.85*(1-flash));
 		cairo_arc(cr,hx,hy,11+10*flash,0,2*G_PI);cairo_stroke(cr);
+	}
+	cairo_destroy(cr);gtk_snapshot_pop(snap);
+}
+// A Mothership command is a straight cyan signal with a bright head, unlike
+// the bent lavender notice tail flying home. On arrival a ring closes on the
+// ship while its hull morphs.
+static void command_snapshot(GtkWidget *widget,GtkSnapshot *snap,const struct transit *t) {
+	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
+	double inset,x,y,hx,hy,sx,sy;
+	struct plane frame=border_plane(w,h,&inset);
+	map_origin_point(&hx,&hy);
+	struct route_span span;
+	if(!route_endpoint(node_plane(w,h),frame,inset,t->node,&x,&y) ||
+		!route_visible_span(t->node,hx,hy,x,y,&span) ||
+		!marker(node_plane(w,h),t->node,&sx,&sy)) return;
+	project_map_point(&sx,&sy);
+	double dist=hypot(x-hx,y-hy),dx=(x-hx)/dist,dy=(y-hy)/dist;
+	double run=MAX(0,span.last-span.first);
+	double travel=MIN(notice_phase/TRANSIT_ARRIVAL,1);
+	travel=1-(1-travel)*(1-travel);
+	double head=span.first+travel*run;
+	double tail=MAX(span.first,head-MIN(64,run*.5));
+	graphene_rect_t area=GRAPHENE_RECT_INIT(
+		MIN(hx+dx*head,hx+dx*tail)-12,MIN(hy+dy*head,hy+dy*tail)-12,
+		fabs(dx*(head-tail))+24,fabs(dy*(head-tail))+24);
+	if(notice_phase>=TRANSIT_ARRIVAL) area=GRAPHENE_RECT_INIT(sx-30,sy-30,60,60);
+	push_route_clip(snap,frame,inset);
+	cairo_t *cr=gtk_snapshot_append_cairo(snap,&area);
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
+	if(notice_phase<TRANSIT_ARRIVAL) {
+		cairo_pattern_t *fade=cairo_pattern_create_linear(hx+dx*tail,hy+dy*tail,hx+dx*head,hy+dy*head);
+		cairo_pattern_add_color_stop_rgba(fade,0,.56,.85,.89,0);
+		cairo_pattern_add_color_stop_rgba(fade,1,.56,.85,.89,.9);
+		cairo_set_source(cr,fade);
+		cairo_set_line_width(cr,1.6);
+		cairo_move_to(cr,hx+dx*tail,hy+dy*tail);cairo_line_to(cr,hx+dx*head,hy+dy*head);
+		cairo_stroke(cr);
+		cairo_pattern_destroy(fade);
+		// A small chevron points the signal at the ship.
+		double px=hx+dx*head,py=hy+dy*head;
+		cairo_set_source_rgba(cr,.80,.97,.98,MIN(1,travel*8));
+		cairo_set_line_width(cr,1.4);
+		cairo_move_to(cr,px-dx*5-dy*3.5,py-dy*5+dx*3.5);
+		cairo_line_to(cr,px,py);
+		cairo_line_to(cr,px-dx*5+dy*3.5,py-dy*5-dx*3.5);
+		cairo_stroke(cr);
+	} else {
+		double k=(notice_phase-TRANSIT_ARRIVAL)/(1-TRANSIT_ARRIVAL);
+		cairo_set_source_rgba(cr,.56,.85,.89,.8*(1-k));
+		cairo_set_line_width(cr,1.2);
+		cairo_arc(cr,sx,sy,26-12*k,0,2*G_PI);cairo_stroke(cr);
 	}
 	cairo_destroy(cr);gtk_snapshot_pop(snap);
 }
@@ -1770,7 +1996,9 @@ static void detail_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	struct profile_data *record;
 	if (profile_layout_at(gtk_widget_get_width(widget),gtk_widget_get_height(widget),
 			&profile,&record)) profile_snapshot(snap,widget,profile,selected_node,record,
-			detail_button_pressed?GTK_STATE_FLAG_ACTIVE:GTK_STATE_FLAG_NORMAL);
+			detail_pressed==1?GTK_STATE_FLAG_ACTIVE:GTK_STATE_FLAG_NORMAL,
+			// The button shows the saved mode at once; the ship waits for the packet.
+			(detail_pressed==2?GTK_STATE_FLAG_ACTIVE:0)|(silent_target(selected_node)?GTK_STATE_FLAG_CHECKED:0));
 }
 
 static void map_detail_class_init(MapDetailClass *c) { GTK_WIDGET_CLASS(c)->snapshot=detail_snapshot; }

@@ -40,6 +40,10 @@ extern void panelAction(int, char *, char *);
 extern void panelDeleteNode(char *, int);
 extern void panelSlashEnterNode(char *,int,uint64_t);
 extern char *panelSaveNodePreferences(int,int,int,int);
+extern void panelSilentView(char *);
+extern char *panelSaveSilentRunning(int);
+extern char *panelToggleSilentRunning(void);
+extern char *panelToggleSilentNode(char *);
 extern int panelReloadConfig(void);
 extern char *panelSaveHomeSettings(int,int,int,int,int);
 extern void panelShellNotification(char *);
@@ -58,7 +62,12 @@ static GtkWidget *dock, *home_settings, *width_input, *cursor_size_input, *width
 static GtkWidget *home_guide;
 static GtkWidget *node_dock,*node_rail,*node_hover,*node_keys,*node_settings,*node_guide_off,*node_guide_on,*node_guide_error;
 static GtkWindow *node_telemetry_layer;
-static GtkWidget *node_actions[3],*node_bell,*node_bell_ink,*node_speaker,*node_tray_button,*node_readout,*node_telemetry_off,*node_telemetry_on;
+// Silent running: the left-wing toggle is node_actions[3]; the Settings row
+// chooses Off / Notices / Notices + audio for the current Node.
+static GtkWidget *silent_input[3];
+static int saved_silent_mode;
+static gboolean silent_syncing;
+static GtkWidget *node_actions[4],*node_bell,*node_bell_ink,*node_speaker,*node_tray_button,*node_readout,*node_telemetry_off,*node_telemetry_on;
 static GtkWidget *window_picker,*picker_grid,*picker_button,*picker_button_label;
 enum { PICKER_TILE_CAP=8, PICKER_GAP=8, PICKER_INSET=12 };
 static GtkWidget *picker_tiles[PICKER_TILE_CAP];
@@ -686,6 +695,12 @@ void panel_post_node_switcher(char *const *names,char *const *descriptions,const
 }
 
 static void connect_to_node(const char *name) {connect_node(name,TRUE);}
+// Node Detail's Silent running button saves that Node's mode; the Map then
+// sends the command packet from Mothership.
+static void stealth_node(const char *name) {
+	char *err=panelToggleSilentNode((char *)name);
+	if(err) {panel_home_notice(err);free(err);}
+}
 
 void panel_map_click(double x,double y) {
 	if (!map_hud_arcade_active() && !relay_target && enabled && navigating && map_visible) map_hud_click(x,y,connect_to_node);
@@ -1221,6 +1236,7 @@ static gboolean apply_update(gpointer data) {
 	if(node_log_keys && g_strcmp0(u->node,"")==0 && !default_node)notice_log_dismiss(TRUE);
 	if(entered_node)notice_log_dismiss(TRUE);
 	notice_context(*current_node?current_node:default_node?"@default":"@home",saved_toast_mode);
+	panelSilentView(*current_node?current_node:default_node?"@default":"@home");
 	panel_redraw_node_bell();
 	current_mode = g_strdup(u->mode);
 	if(*u->node) {
@@ -2143,6 +2159,7 @@ void panel_open_node_settings(void) {
 	gtk_spin_button_set_value(GTK_SPIN_BUTTON(node_preview_zoom),saved_node_preview_zoom);
 	gtk_spin_button_set_value(GTK_SPIN_BUTTON(node_hover_zoom),saved_node_hover_zoom);
 	gtk_widget_set_visible(node_guide_error,FALSE);
+	if(silent_input[0]) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(silent_input[saved_silent_mode]),TRUE);
 	node_stage_settings_sync();
 	gtk_widget_set_visible(node_settings,TRUE);
 	gtk_layer_set_keyboard_mode(window,KEYS_ON_DEMAND);
@@ -2150,9 +2167,35 @@ void panel_open_node_settings(void) {
 	update_dock();
 }
 
+static void silent_sync_toggle(void) {
+	if(!node_actions[3]) return;
+	silent_syncing=TRUE;
+	gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(node_actions[3]),saved_silent_mode!=0);
+	silent_syncing=FALSE;
+	gtk_widget_queue_draw(node_actions[3]);
+}
+// Go owns the saved modes; it pushes the Map list and the current view's mode.
+void panel_silent_modes(const char *names,int current,int audio) {
+	map_hud_set_silent(names);
+	saved_silent_mode=CLAMP(current,0,2);
+	silent_sync_toggle();
+	if(silent_input[2]) {
+		gtk_widget_set_sensitive(silent_input[2],audio!=0);
+		gtk_accessible_update_property(GTK_ACCESSIBLE(silent_input[2]),GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+			audio?"Also mute apps in other Nodes":"Audio control needs pactl",-1);
+	}
+}
 static void node_button(gpointer unused,gpointer data) {
 	(void)unused;
 	int action=GPOINTER_TO_INT(data);
+	if(action==3) {
+		if(silent_syncing) return;
+		char *err=panelToggleSilentRunning();
+		// Always show the saved mode; a failed save leaves it unchanged.
+		silent_sync_toggle();
+		if(err) {panel_home_notice(err);free(err);}
+		return;
+	}
 	if(action==1) {
 		node_settings_close();
 		close_app_grid();
@@ -2193,6 +2236,18 @@ static void node_save(GtkButton *unused,gpointer data) {
 	saved_node_hover_zoom=hover;
 	panel_set_picker_scale(zoom);
 	panel_set_strip_hover_scale(hover);
+	int silent_mode=saved_silent_mode;
+	for(int i=0;i<3;i++)
+		if(silent_input[i] && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(silent_input[i]))) silent_mode=i;
+	if(silent_mode!=saved_silent_mode) {
+		err=panelSaveSilentRunning(silent_mode);
+		if(err) {
+			gtk_label_set_text(GTK_LABEL(node_guide_error),err);
+			gtk_widget_set_visible(node_guide_error,TRUE);
+			free(err);
+			return;
+		}
+	}
 	node_settings_close();
 }
 static void node_cancel(GtkButton *unused,gpointer data) {(void)unused;(void)data;node_settings_close();}
@@ -2203,6 +2258,14 @@ static void node_glyph(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer data) 
 	cairo_set_line_width(cr,1.5);cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
 	int id=GPOINTER_TO_INT(data);
 	if(id==0){home_apps_glyph(cr);cairo_stroke(cr);return;}
+	if(id==3){
+		// Crescent for Silent running; the latched face carries the state.
+		cairo_arc(cr,12,12,7,G_PI*.30,G_PI*1.70);
+		cairo_arc_negative(cr,15.2,12,5.4,G_PI*1.62,G_PI*.38);
+		cairo_close_path(cr);
+		cairo_stroke(cr);
+		return;
+	}
 	if(id==1){
 		cairo_move_to(cr,5,17);cairo_line_to(cr,12,5);cairo_line_to(cr,19,17);
 		cairo_line_to(cr,12,14);cairo_close_path(cr);
@@ -2491,8 +2554,8 @@ static void node_panel_update(void) {
 		gtk_widget_set_size_request(node_dock,w,HOME_HEIGHT);
 		gtk_widget_set_size_request(node_rail,w,HOME_HEIGHT);
 		gtk_widget_queue_draw(node_rail);
-		int pad=CLAMP(wing/10,6,13),cell=CLAMP((wing-2*pad-10)/3,10,44);
-		for(int i=0;i<3;i++){
+		int pad=CLAMP(wing/10,6,13),cell=CLAMP((wing-2*pad-15)/4,10,44);
+		for(int i=0;i<4;i++){
 			gtk_fixed_move(GTK_FIXED(node_dock),node_actions[i],pad+i*(cell+5),18);
 			gtk_widget_set_size_request(node_actions[i],cell,36);
 		}
@@ -2780,9 +2843,9 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(secondary),GDK_BUTTON_SECONDARY);
 	g_signal_connect(secondary,"released",G_CALLBACK(node_group_menu),NULL);
 	gtk_widget_add_controller(node_hover,GTK_EVENT_CONTROLLER(secondary));
-	const char *names[]={"App Grid","Return to Home","Node Panel Settings"};
-	for(int i=0;i<3;i++){
-		GtkWidget *icon=gtk_drawing_area_new(),*button=gtk_button_new();
+	const char *names[]={"App Grid","Return to Home","Node Panel Settings","Silent running"};
+	for(int i=0;i<4;i++){
+		GtkWidget *icon=gtk_drawing_area_new(),*button=i==3?gtk_toggle_button_new():gtk_button_new();
 		gtk_widget_set_size_request(icon,12,22);
 		gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(icon),node_glyph,GINT_TO_POINTER(i),NULL);
 		gtk_button_set_child(GTK_BUTTON(button),icon);
@@ -2934,6 +2997,20 @@ static void node_panel_init(GtkOverlay *overlay) {
 	g_signal_connect(node_layout_flow,"clicked",G_CALLBACK(node_stage_choice),GINT_TO_POINTER(0));
 	g_signal_connect(node_layout_stage,"clicked",G_CALLBACK(node_stage_choice),GINT_TO_POINTER(1));
 	gtk_box_append(GTK_BOX(body),node_layout_row);
+	row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+	label=gtk_label_new("Silent running");
+	gtk_label_set_xalign(GTK_LABEL(label),0);gtk_widget_set_hexpand(label,TRUE);
+	gtk_box_append(GTK_BOX(row),label);
+	const char *silent_labels[]={"Off","Notices","Notices + audio"};
+	for(int i=0;i<3;i++) {
+		silent_input[i]=gtk_toggle_button_new_with_label(silent_labels[i]);
+		home_mechanical_button(silent_input[i],FALSE);
+		if(i) gtk_toggle_button_set_group(GTK_TOGGLE_BUTTON(silent_input[i]),GTK_TOGGLE_BUTTON(silent_input[0]));
+		g_autofree char *name=g_strdup_printf("Silent running: %s",silent_labels[i]);
+		gtk_accessible_update_property(GTK_ACCESSIBLE(silent_input[i]),GTK_ACCESSIBLE_PROPERTY_LABEL,name,-1);
+		gtk_box_append(GTK_BOX(row),silent_input[i]);
+	}
+	gtk_box_append(GTK_BOX(body),row);
 	node_guide_error=gtk_label_new("");
 	gtk_label_set_wrap(GTK_LABEL(node_guide_error),TRUE);
 	gtk_widget_set_visible(node_guide_error,FALSE);
@@ -3276,6 +3353,7 @@ int panel_init(void) {
 	g_object_unref(skin);
 	gtk_widget_add_css_class(GTK_WIDGET(window), "mothership-shell");
 	map_hud_init();
+	map_hud_set_stealth_handler(stealth_node);
 	map_pointer_init(window);
 	GtkWidget *overlay = gtk_overlay_new();
 	gtk_window_set_child(window, overlay);

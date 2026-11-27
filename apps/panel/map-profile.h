@@ -3,7 +3,8 @@
 #include <gtk/gtk.h>
 
 struct profile_rect { double x,y,w,h; };
-struct profile_layout { struct profile_rect card,fly; };
+// stealth is the Silent running button, left of fly (Connect).
+struct profile_layout { struct profile_rect card,fly,stealth; };
 
 enum { PROFILE_CORNER=10, PROFILE_FLY_CORNER=8, PROFILE_RIM_GAP=6, PROFILE_PADDING=16, PROFILE_ACTION=40 };
 
@@ -17,7 +18,7 @@ struct profile_data {
 	GskRenderNode *paint;
 	double paint_width, paint_height;
 	int paint_scale;
-	GtkStateFlags button_state;
+	GtkStateFlags button_state,stealth_state;
 	gint64 age_min, activity_min;
 };
 
@@ -25,7 +26,7 @@ void profile_data_free(gpointer);
 GHashTable *profile_parse(const char *);
 void profile_draw_chrome(cairo_t *, struct profile_rect, gboolean flat);
 double profile_height(const struct profile_data *);
-void profile_snapshot(GtkSnapshot *, GtkWidget *, struct profile_layout, const char *, struct profile_data *, GtkStateFlags);
+void profile_snapshot(GtkSnapshot *, GtkWidget *, struct profile_layout, const char *, struct profile_data *, GtkStateFlags, GtkStateFlags);
 
 static inline gboolean profile_contains(struct profile_rect r,double cut,double x,double y) {
 	return x>=r.x && x<=r.x+r.w && y>=r.y && y<=r.y+r.h &&
@@ -55,6 +56,8 @@ static inline gboolean profile_place_on(struct profile_layout *out,struct profil
 	out->card=(struct profile_rect){left,top,width,height};
 	out->fly=(struct profile_rect){left+width-PROFILE_PADDING-PROFILE_ACTION,
 		top+height-PROFILE_PADDING-PROFILE_ACTION,PROFILE_ACTION,PROFILE_ACTION};
+	out->stealth=out->fly;
+	out->stealth.x-=PROFILE_ACTION+8;
 	return TRUE;
 }
 

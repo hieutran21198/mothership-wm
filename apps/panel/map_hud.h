@@ -34,6 +34,8 @@ gboolean map_hud_drag_inside(double x,double y);
 gboolean map_hud_drag_can_start(double x,double y);
 void map_hud_press_connect(gboolean down,double x,double y);
 void map_hud_click(double x,double y,void (*connect)(const char *));
+// The Node Detail Silent running button asks the shell to toggle that Node.
+void map_hud_set_stealth_handler(void (*toggle)(const char *));
 void map_hud_configure(const char *, double, const char *, const char *, const char *, const char *);
 void map_hud_set_spacing(const char *, int outer, int inner, gboolean frosted);
 int map_hud_set_font(const char *, double);
@@ -49,6 +51,7 @@ void map_hud_translate(double x, double y);
 void map_hud_center_mothership(void);
 
 void map_hud_notice_count(const char *,unsigned);
+void map_hud_set_silent(const char *names);
 void map_hud_notice_received(const char *);
 
 #endif

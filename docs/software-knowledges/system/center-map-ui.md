@@ -76,7 +76,13 @@ For visual changes, compare the [original approved assets and review checklist](
   card with paired chamfered contours. Running time and Last active share one
   row with clock and pulse icons. Show “No windows open” only when live
   membership is known empty. Do not show dummy fields, agent slots, or
-  notification and volume controls in the card.
+  notification and volume controls in the card. The one exception
+  (owner-approved 2026-11-27) is the **Silent running** action: an analog
+  Open Corners button with a crescent, 8 logical px left of Connect and the
+  same size. On keeps the persistent tint and fills the crescent. Clicking
+  it toggles that Node between Off and its last enabled mode and sends the
+  command packet at once; see [Show ship status](../flows/show-ship-status.md).
+  It has no Map key binding.
 - Anchor Detail to the right of the selected marker and its label. Fall back
   to the left, below, or above if the card does not fit. Keep its painted rim
   inside the Map and clear of the minimap. Pan/zoom reprojects the anchor.
@@ -112,7 +118,11 @@ For visual changes, compare the [original approved assets and review checklist](
   running dashes the hull outline and draws the planes at about 50%
   opacity. Neither adds an idle ring or glow, hit target or size change.
   Labels, the unread badge and the selected silhouette keep full contrast.
-  Not yet implemented.
+  A custom Node SVG is painted at half opacity when cloaked. A change
+  made while the Map is closed arrives as a cyan command packet from
+  Mothership on the next Map open; see
+  [Show ship status](../flows/show-ship-status.md). Cloaked is
+  implemented; Comms is not yet.
 - Use the same [shell typeface and role weights](../../../internal/shellfonts/fonts/chakra-petch/README.md)
   across Mothership-owned text; external applications keep their own fonts.
   Mothership, numbered Node names and unnumbered Node names share the

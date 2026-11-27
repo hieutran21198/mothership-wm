@@ -1,6 +1,6 @@
 # Run silent in a Node
 
-**Status:** design accepted 2026-11-27; not implemented.
+**Status:** implemented 2026-11-27; owner accepted in a native Mothership Dev session (candidate `build-zvH5676i`) on 2026-11-27.
 Supports [Work in a Node without interruptions](../goals/run-silent.md).
 Design: [Fleet Ops preview, scenes 1 and 2](../system/fleet-ops-preview.html).
 
@@ -11,16 +11,19 @@ membership, focus or view selection, and desktopd receives no notice text
 
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
-| Set | Panel | **Node Panel Settings → Silent running: Off / Notices / Notices + audio**. Save writes `nodes.<name>.silent_running` to the shared user config, or `default_node.silent_running` for the Default Node (a Node may be named `default`). The left-wing **Silent running** button toggles between Off and the last non-Off choice and saves immediately. A toggled button keeps the cyan edge from the [mechanical button rules](../system/shell-design.md#foundations). |
+| Set | Panel | **Node Panel Settings → Silent running: Off / Notices / Notices + audio**. Save writes `nodes.<name>.silent_running` to the shared user config, or `default_node.silent_running` for the Default Node (a Node may be named `default`). The Map's [Node Detail](../system/center-map-ui.md) has the same crescent toggle for the selected Node. The fourth left-wing button, **Silent running** (crescent glyph), toggles between Off and the last enabled choice in this Panel session (Notices at first) and saves immediately. A toggled button keeps the cyan edge from the [mechanical button rules](../system/shell-design.md#foundations). |
 | Enter | Panel | When desktopd publishes an acknowledged selection of that Node, start holding. Record the hold start time. |
 | Hold | Panel notification service | Store every arriving notice as usual with its own source. Suppress toasts from all sources, including the current Node and Home · System. The Map pulse queue keeps new entries for the next Map open. |
 | Mute | Panel → PulseAudio | For **Notices + audio**, mute identifiable playback streams of apps in other Nodes and Inbox, using the [Node Volume](../system/home-panel.md#node-volume) scope rules. Remember exactly which streams this action muted. New streams from other Nodes that start during the hold are muted too. Shared or unidentifiable streams are left alone. |
-| Leave | Panel | On any acknowledged selection of another view, or on session end, restore only streams this hold muted and still exist. Then post one digest toast **Silent running ended · N notices held** under the destination's toast setting if N > 0. The digest is not stored as a separate log entry. |
+| Leave | Panel | On any acknowledged selection of another view, or on session end, restore only streams this hold muted and still exist. Then post one digest toast **Silent running ended · N notices held** under the destination's toast setting if N > 0. The digest is not stored as a separate log entry. Turning the mode Off inside the Node ends the hold the same way. |
 
 Failure and recovery: if `pactl` is unavailable, Notices still applies and
-the Settings row shows audio as unavailable. If the Panel restarts during a
-hold, it cannot know which streams it muted; it logs one System notice
-asking the user to check app audio rather than unmuting guesses.
+the Settings row disables **Notices + audio**. While an audio hold is
+active the Panel keeps a `mothership-silent-audio` marker in the session's
+runtime directory. If the Panel restarts and finds it, it cannot know which
+streams it muted; it logs one **Check app audio** System notice instead
+of unmuting guesses. The Node Volume toggle and the hold share one record
+of muted streams, so neither unmutes a stream the other still wants muted.
 
 ### F-SILENT-1
 
