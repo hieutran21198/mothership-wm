@@ -158,6 +158,21 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			return
 		}
 		sendSuccess(c, req.ID)
+	case domainipc.FocusWindowMethod, domainipc.UnassignMethod:
+		b, err := domainipc.Decode[domainipc.WindowRef](req.Body)
+		if err != nil || !validSession(b.Session) || b.WindowID == 0 {
+			badBody()
+			return
+		}
+		apply := d.focusWindow
+		if req.Method == domainipc.UnassignMethod {
+			apply = d.unassign
+		}
+		if err := apply(b.Session, b.WindowID); err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		sendSuccess(c, req.ID)
 	case domainipc.AssignMethod:
 		b, err := domainipc.Decode[domainipc.AssignBody](req.Body)
 		if err != nil || !validSession(b.Session) || b.WindowID == 0 || !validWord(b.Domain) {

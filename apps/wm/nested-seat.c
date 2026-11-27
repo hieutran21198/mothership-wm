@@ -60,6 +60,7 @@ struct nested_seat {
 	nested_node_switch node_switch;
 	bool (*close_window)(void *,struct wlr_surface *);
 	bool (*reorder_window)(void *,struct wlr_surface *,uint32_t);
+	bool (*move_window)(void *,struct wlr_surface *,uint32_t);
 	bool (*render_capture)(void *);
 	bool (*screenshot_open)(void *);
 	void (*screenshot_abort)(void *);
@@ -636,6 +637,9 @@ static bool valid_shortcut_key(uint64_t key) {
 	return (key>=KEY_Q && key<=KEY_P) || (key>=KEY_A && key<=KEY_L) ||
 		(key>=KEY_Z && key<=KEY_M) || key==KEY_COMMA;
 }
+void nested_seat_move_bind(struct nested_seat *seat,bool (*move)(void *,struct wlr_surface *,uint32_t)) {
+	if(seat) seat->move_window=move;
+}
 bool nested_seat_set_shortcuts(struct nested_seat *seat,uint64_t close,uint64_t apps,uint64_t settings,uint64_t node) {
 	if(!seat || !valid_shortcut_key(close) || !valid_shortcut_key(apps) || !valid_shortcut_key(settings) ||
 		close==apps || close==settings || apps==settings || (node!=KEY_1 && node!=KEY_F1))return false;
@@ -786,6 +790,17 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 			seat->blocked_count++;
 			return;
 		}
+	}
+	// Meta+Shift with a Node number moves the focused app window there.
+	bool move_number=key>=seat->node_first_key && key<=seat->node_first_key+8;
+	if(move_number && seat->move_window && seat->keys_held[key] && !was_held &&
+			meta_shift_chord(seat,key) && seat->selected && !seat->panel_focus &&
+			!seat->moving && !seat->cycle_active && !seat->blocked_count &&
+			seat->child->keyboard_state.focused_surface==seat->selected &&
+			seat->move_window(seat->data,seat->selected,key-seat->node_first_key+1)) {
+		seat->keys_blocked[key]=true;
+		seat->blocked_count++;
+		return;
 	}
 	// A Node jump is shell-wide. Close only an app that has keyboard
 	// focus; a panel overlay must not close the remembered app beneath it.

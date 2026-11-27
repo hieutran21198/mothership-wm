@@ -2198,6 +2198,7 @@ static void map_pointer_scene_glass(struct wl_client *client,struct wl_resource 
 }
 
 static void map_pointer_group_query(struct wl_client *,struct wl_resource *,wl_fixed_t,wl_fixed_t);
+static void map_pointer_window_list(struct wl_client *,struct wl_resource *,uint32_t);
 static void map_pointer_group_action(struct wl_client *,struct wl_resource *,
 	uint32_t,uint32_t,uint32_t,int32_t,int32_t,int32_t);
 static const struct mothership_map_pointer_v1_interface map_pointer_requests={
@@ -2220,6 +2221,7 @@ static const struct mothership_map_pointer_v1_interface map_pointer_requests={
 	.screenshot_auth=screenshot_auth,.screenshot_begin=screenshot_begin,
 	.screenshot_cancel=screenshot_cancel,.screenshot_window=screenshot_window,
 	.set_strip_hover_scale=map_pointer_set_strip_hover_scale,
+	.window_list=map_pointer_window_list,
 };
 
 static void map_pointer_gone(struct wl_resource *resource) {
@@ -3113,6 +3115,39 @@ static void project_named(struct nested *wm, const struct domain_member members[
 	present_node(wm,recenter,previous && previous->slot<0?group:0);
 }
 
+// Rank one requested window first before a view is projected, so the
+// projection centers and focuses it directly. A named target must be in the
+// member list (desktopd resolved it); an Inbox target must be unassigned.
+// Anything else keeps the normal focus restore.
+static struct xdg_view *prefer_window(struct nested *wm,uint64_t target,
+		const struct domain_member members[NODE_WINDOWS]) {
+	struct xdg_view *view=find_view(wm,target);
+	if(!view || !view->mapped || !view->tree) return NULL;
+	if(!members) {
+		if(view->assigned) return NULL;
+		view->home_focused_at=++wm->focus_order;
+		return view;
+	}
+	for(int i=0;i<NODE_WINDOWS && members[i].id;i++) {
+		if(members[i].id!=target) continue;
+		if(view->epoch!=members[i].epoch) {
+			// Match project_named's reset for a new membership epoch.
+			view->epoch=members[i].epoch;
+			view->node_order=0;
+			reset_node_geometry(view);
+		}
+		view->focused_at=++wm->focus_order;
+		return view;
+	}
+	return NULL;
+}
+
+// A minimized target is not eligible for the projection's best view;
+// restore it through the normal preview-focus path once it has a slot.
+static void focus_preferred(struct nested *wm,struct xdg_view *view) {
+	if(view && view->slot>=0 && view!=wm->focused) strip_focus_view(wm,view);
+}
+
 static void refresh_named(struct nested *wm, const struct domain_member members[NODE_WINDOWS]) {
 	struct xdg_view *old[NODE_WINDOWS],*previous=wm->focused;
 	memcpy(old, wm->slots, sizeof(old));
@@ -3694,6 +3729,33 @@ static bool reorder_focused_window(void *data,struct wlr_surface *surface,uint32
 	return true;
 }
 
+// The shell owns Node numbers and the assignment request; the WM only
+// reports which focused app window the chord addressed.
+static bool move_focused_window(void *data,struct wlr_surface *surface,uint32_t slot) {
+	struct nested *wm=data;
+	struct xdg_view *view=wm->focused;
+	if(!node_view(wm) || wm->revealing || !view || view->slot<0 ||
+		view->toplevel->base->surface!=surface || !wm->map_pointer ||
+		wl_resource_get_version(wm->map_pointer)<MOTHERSHIP_MAP_POINTER_V1_NODE_MOVE_SINCE_VERSION ||
+		(wm->panel && wm->panel->wants_keyboard)) return false;
+	mothership_map_pointer_v1_send_node_move(wm->map_pointer,slot,view->id>>32,(uint32_t)view->id);
+	return true;
+}
+
+static void map_pointer_window_list(struct wl_client *client,struct wl_resource *resource,uint32_t serial) {
+	(void)client;
+	struct nested *wm=wl_resource_get_user_data(resource);
+	if(resource!=wm->map_pointer) return;
+	struct xdg_view *v;
+	wl_list_for_each(v,&wm->views,link) {
+		if(!v->mapped || !v->tree) continue;
+		const char *title=v->toplevel->title?v->toplevel->title:"";
+		const char *app=v->toplevel->app_id?v->toplevel->app_id:"";
+		mothership_map_pointer_v1_send_window_list_row(resource,serial,v->id>>32,(uint32_t)v->id,title,app);
+	}
+	mothership_map_pointer_v1_send_window_list_end(resource,serial);
+}
+
 static void request_view_minimize(struct xdg_view *,bool);
 static void group_show_settings(struct nested *,struct xdg_view *,bool);
 static void set_view_maximized(struct xdg_view *v,bool maximized) {
@@ -3893,22 +3955,28 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		wlr_output_schedule_frame(wm->output);
 		return 0;
 	}
+	struct xdg_view *preferred=NULL;
+	uint64_t preferred_id=0;
 	if(wm->revealing && strcmp(op,"assigned")!=0 && strcmp(op,"inbox")!=0) {
 		wm->revealing=false;
 		for(int i=0;i<wm->visible_count;i++) apply_view_clip(wm->slots[i]);
 	}
-	if (strcmp(op, "home") == 0 || strcmp(op, "home_node") == 0) {
+	if (strcmp(op, "home") == 0 || strcmp(op, "home_node") == 0 || strcmp(op, "home_node_window") == 0) {
 		wm->strip_offset=0;
 		wm->cycle_count=0;picker_hide(wm);
-		bool default_node=strcmp(op,"home_node")==0;
+		bool with_target=strcmp(op,"home_node_window")==0;
+		bool default_node=with_target || strcmp(op,"home_node")==0;
 		enum node_layout mode=FLOW;
 		char *layout=strtok_r(NULL," ",&tail);
+		uint64_t target=with_target?domain_number(strtok_r(NULL," ",&tail)):0;
 		// An earlier desktopd sends only the Home projection ID.
 		if ((layout && (!default_node || !read_layout(layout,&mode) ||
-				(!flow_layout(mode) && mode!=STAGE))) || strtok_r(NULL," ",&tail)) {
+				(!flow_layout(mode) && mode!=STAGE))) || (with_target && (!layout || !target)) ||
+				strtok_r(NULL," ",&tail)) {
 			domain_disconnect(wm);
 			return 0;
 		}
+		preferred=target?prefer_window(wm,target,NULL):NULL;
 		clear_slots(wm);
 		wm->default_node_active=default_node;
 		wm->home_active = true;
@@ -3916,13 +3984,22 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		wm->layout=mode;
 		project_home(wm,true);
 		select_projection(wm, false);
+		focus_preferred(wm,preferred);
 		domain_send(wm, "applied", serial);
 		return 0;
 	}
 	if (strcmp(op, "inbox") == 0) {
 		struct xdg_view *views[NODE_WINDOWS];
+		struct domain_member members[NODE_WINDOWS]={0};
+		bool project=false;
 		int count=0;
 		for(char *token; (token=strtok_r(NULL," ",&tail))!=NULL;) {
+			// A single move out of the shown Node carries its remaining members.
+			if(strcmp(token,"project")==0) {
+				if(count!=1 || !named_view(wm) || !read_members(&tail,members)) { domain_disconnect(wm); return 0; }
+				project=true;
+				break;
+			}
 			uint64_t id=domain_number(token);
 			if(!id || count==NODE_WINDOWS) { domain_disconnect(wm); return 0; }
 			views[count++]=find_view(wm,id);
@@ -3933,6 +4010,7 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 			views[i]->assigned=false;
 			reset_node_geometry(views[i]);
 		}
+		if(project) refresh_named(wm,members);
 		if(wm->home_active) refresh_home(wm);
 		domain_send(wm,"applied",serial);
 		return 0;
@@ -3994,14 +4072,17 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 			int next = top != NULL ? (top->slot + 1) % wm->visible_count : 1 % wm->visible_count;
 			strip_focus_view(wm,wm->slots[next]);
 		}
-	} else if (strcmp(op, "node") == 0 || strcmp(op, "focus") == 0) {
+	} else if (strcmp(op, "node") == 0 || strcmp(op, "focus") == 0 || strcmp(op, "node_window") == 0) {
 		struct domain_member members[NODE_WINDOWS] = {0};
 		enum node_layout mode = TILING;
-		if ((strcmp(op, "node") == 0 && !read_layout(strtok_r(NULL, " ", &tail), &mode)) ||
+		bool with_target=strcmp(op,"node_window")==0;
+		if ((strcmp(op, "focus") != 0 && !read_layout(strtok_r(NULL, " ", &tail), &mode)) ||
+				(with_target && !(preferred_id=domain_number(strtok_r(NULL," ",&tail)))) ||
 				!read_members(&tail, members)) {
 			domain_disconnect(wm);
 			return 0;
 		}
+		preferred=preferred_id?prefer_window(wm,preferred_id,members):NULL;
 		wm->strip_offset=0;
 		wm->cycle_count=0;picker_hide(wm);
 		wm->default_node_active=wm->home_active = false;
@@ -4014,6 +4095,7 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 		return 0;
 	}
 	select_projection(wm, wm->map_zoom_enabled && strcmp(op, "overview") == 0);
+	focus_preferred(wm,preferred);
 	domain_send(wm, "applied", serial);
 	return 0;
 }
@@ -4381,6 +4463,7 @@ static bool create_input_seat(struct nested *wm,struct wl_display *parent) {
 		node_switch,close_focused_window,reorder_focused_window,render_capture_key,wm);
 	if (!wm->seat) return false;
 	nested_seat_screenshot_bind(wm->seat, screenshot_key, screenshot_abort, wm);
+	nested_seat_move_bind(wm->seat, move_focused_window);
 	return true;
 }
 
@@ -4790,7 +4873,7 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 			WL_EVENT_READABLE, on_domain_fd, &wm);
 		wm.domain_active = wm.home_active = true;
 		nested_seat_switch(wm.seat, NULL, false);
-		if (wm.domain_source == NULL || !domain_send(&wm, "ready_node_parity", 0)) {
+		if (wm.domain_source == NULL || !domain_send(&wm, "ready_window_focus", 0)) {
 			goto done;
 		}
 	}

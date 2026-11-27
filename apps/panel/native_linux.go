@@ -413,6 +413,54 @@ func panelSlashEnterNode(name *C.char, create C.int, request C.uint64_t) {
 	active.submitCommand(domainipc.FocusMethod, domainipc.DomainBody{Domain: node}, false, 0, "", finish)
 }
 
+//export panelSlashWindowRows
+func panelSlashWindowRows(text *C.char, includeDefault C.int) *C.char {
+	if active == nil {
+		return C.CString("")
+	}
+	rows := active.windowSearch(parseWindowList(C.GoString(text)), includeDefault != 0)
+	return C.CString(encodeWindowSearch(rows))
+}
+
+//export panelSlashFocusWindow
+func panelSlashFocusWindow(id C.uint64_t, request C.uint64_t) {
+	active.mu.Lock()
+	session := active.state.Session
+	active.mu.Unlock()
+	ref := domainipc.WindowRef{Session: session, WindowID: uint64(id)}
+	active.submitCommand(domainipc.FocusWindowMethod, ref, false, 0, "", func(err error) {
+		if err = windowCommandError(err); err == nil {
+			C.slash_ui_window_done(C.guint64(request))
+			return
+		}
+		text := C.CString(err.Error())
+		C.slash_ui_node_error(C.guint64(request), text)
+		C.free(unsafe.Pointer(text))
+	})
+}
+
+// panelMoveWindow assigns one window to a named Node, or returns it to
+// Inbox for an empty name. It does not change the current view.
+//
+//export panelMoveWindow
+func panelMoveWindow(name *C.char, id C.uint64_t) {
+	node := C.GoString(name)
+	active.mu.Lock()
+	session := active.state.Session
+	active.mu.Unlock()
+	method, body := domainipc.UnassignMethod, any(domainipc.WindowRef{Session: session, WindowID: uint64(id)})
+	target := "Default Node"
+	if node != "" {
+		method, target = domainipc.AssignMethod, node
+		body = domainipc.AssignBody{Session: session, WindowID: uint64(id), Domain: node}
+	}
+	active.submitCommand(method, body, false, 0, "", func(err error) {
+		if err = windowCommandError(err); err != nil {
+			systemNotice("Window not moved", fmt.Sprintf("Could not move the window to %s: %v", target, err))
+		}
+	})
+}
+
 //export panelDeleteNode
 func panelDeleteNode(name *C.char, force C.int) {
 	node := C.GoString(name)

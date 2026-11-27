@@ -226,6 +226,13 @@ func registerNotificationBus(address string) error {
 	return nil
 }
 
+// systemNotice logs one System notification for the current view.
+func systemNotice(title, body string) {
+	state := notificationSnapshot()
+	receiveNotification(notification{Source: notificationSelectionSource(state), App: "System",
+		Title: title, Body: body}, state)
+}
+
 //export panelNodeNotFound
 func panelNodeNotFound(slot C.uint) {
 	state := notificationSnapshot()

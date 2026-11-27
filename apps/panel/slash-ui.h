@@ -8,6 +8,9 @@ GtkWidget *slash_ui_new(void (*close)(void),void (*enter_node)(const char *,gboo
 	void (*open_view)(enum slash_view),void (*layout_changed)(void),void (*delete)(const char *,int));
 void slash_ui_delete_result(const char *);
 void slash_ui_node_error(guint64,const char *);
+void slash_ui_window_done(guint64);
+void slash_ui_window_row(guint32 serial,guint64 id,const char *title,const char *app_id);
+void slash_ui_window_end(guint32 serial);
 void slash_ui_show(gboolean in_node);
 void slash_ui_hide(void);
 void slash_ui_nodes(const char *);

@@ -15,7 +15,9 @@ const (
 	DeleteMethod       = "delete"
 	DomainDeletedEvent = "domain.deleted"
 	AssignMethod       = "assign"
+	UnassignMethod     = "unassign"
 	FocusMethod        = "focus"
+	FocusWindowMethod  = "focus.window"
 	PrepareFocusMethod = "focus.prepare"
 	RevealFocusMethod  = "focus.reveal"
 	HomeMethod         = "home"
@@ -104,6 +106,12 @@ type AssignBody struct {
 	Session  string `json:"session"`
 	WindowID uint64 `json:"window_id"`
 	Domain   string `json:"domain"`
+}
+
+// WindowRef names one live window in the current WM session.
+type WindowRef struct {
+	Session  string `json:"session"`
+	WindowID uint64 `json:"window_id"`
 }
 
 type Selection struct {

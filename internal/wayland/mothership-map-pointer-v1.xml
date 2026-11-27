@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="26">
+  <interface name="mothership_map_pointer_v1" version="27">
     <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
       inside the frame and left-button sequences in the mapped, focused Map View.
@@ -277,6 +277,31 @@
         on commit.
       </description>
       <arg name="commit" type="uint"/>
+    </event>
+    <request name="window_list" since="27">
+      <description summary="list every live mapped toplevel for Slash window search">
+        The compositor answers with window_list_row events and one
+        window_list_end carrying the same serial. Titles and app IDs stay on
+        this shell connection; no pixels are sent.
+      </description>
+      <arg name="serial" type="uint"/>
+    </request>
+    <event name="window_list_row" since="27">
+      <arg name="serial" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="title" type="string"/><arg name="app_id" type="string"/>
+    </event>
+    <event name="window_list_end" since="27">
+      <arg name="serial" type="uint"/>
+    </event>
+    <event name="node_move" since="27">
+      <description summary="move a focused window to this displayed Node number">
+        Sent after the nested seat handled Meta+Shift plus a Node number key
+        on a focused app window. The shell resolves the number and submits
+        the assignment; slot 1 returns the window to Inbox.
+      </description>
+      <arg name="slot" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
     </event>
   </interface>
 </protocol>

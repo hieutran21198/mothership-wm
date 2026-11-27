@@ -222,6 +222,7 @@ static void text_changed(GtkEditable *editable, gpointer data) {
 	refresh_actions();
 }
 
+int panel_default_node_enabled(void) { return default_node_enabled; }
 void panel_set_default_node_enabled(int enabled) {
 	default_node_enabled=enabled!=0;
 	update_dock();
@@ -603,6 +604,19 @@ static gboolean enter_numbered_node(uint32_t slot) {
 		connect_node(name,FALSE);
 	}
 	return TRUE;
+}
+
+extern void panelMoveWindow(char *,uint64_t);
+// Meta+Shift+number on a focused app window. The view does not change.
+void panel_node_move(uint32_t slot,uint64_t id) {
+	if(!enabled || slot<1 || slot>9 || !id) return;
+	if(slot==1) {
+		if(!default_node) panelMoveWindow("",id);
+		return;
+	}
+	const char *name=map_hud_shortcut((int)slot);
+	if(!name) {panelNodeNotFound(slot);return;}
+	if(g_strcmp0(current_node,name)!=0) panelMoveWindow((char *)name,id);
 }
 
 void panel_node_number(uint32_t slot) {
@@ -3235,6 +3249,7 @@ int panel_init(void) {
 		".slash-row, .slash-row:hover, .slash-row:active { background: transparent; border: 0; box-shadow: none; padding: 0; margin: 0; transform: none; transition: none; }"
 		".slash-row label { color: #dcebf4; }"
 		".slash-row-line { padding: 0 11px; }"
+		".slash-row label.slash-row-detail { color: #a2bfce; font-size: 0.86em; }"
 		".slash-empty { padding: 10px; color: #a2bfce; }"
 		".home-slash entry { color: #e1edf8; caret-color: #aaf1f4; background: transparent; border: 0; border-radius: 0; box-shadow: none; outline: none; margin: 0; padding: 0 4px; min-height: 25px; }"
 		".home-slash entry:focus-within { outline: none; box-shadow: none; }"

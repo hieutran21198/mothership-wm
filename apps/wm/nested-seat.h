@@ -57,6 +57,7 @@ void nested_seat_local_extent(struct nested_seat *,int width,int height);
 void nested_seat_local_active(struct nested_seat *,bool active);
 void nested_seat_set_render_debug(struct nested_seat *,struct render_debug *);
 bool nested_seat_set_shortcuts(struct nested_seat *,uint64_t,uint64_t,uint64_t,uint64_t);
+void nested_seat_move_bind(struct nested_seat *,bool (*move)(void *,struct wlr_surface *,uint32_t));
 void nested_seat_shortcut_panel(struct nested_seat *,struct wlr_surface *);
 void nested_seat_screenshot_bind(struct nested_seat *,bool (*open)(void *),void (*abort)(void *),void *);
 void nested_seat_screenshot_modal(struct nested_seat *,struct wlr_surface *);

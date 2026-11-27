@@ -6,6 +6,7 @@
 #include "map-pointer.h"
 #include "display-settings.h"
 #include "screenshot.h"
+#include "slash-ui.h"
 
 static GtkWindow *command;
 static struct wl_registry *registry;
@@ -61,6 +62,22 @@ static void node_settings(void *data,struct mothership_map_pointer_v1 *p) {
 }
 static void node_number(void *data,struct mothership_map_pointer_v1 *p,uint32_t slot) {
 	(void)data;(void)p;panel_node_number(slot);
+}
+static void node_move(void *d,struct mothership_map_pointer_v1 *p,uint32_t slot,uint32_t hi,uint32_t lo) {
+	(void)d;(void)p;panel_node_move(slot,((uint64_t)hi<<32)|lo);
+}
+static void window_list_row(void *d,struct mothership_map_pointer_v1 *p,uint32_t serial,uint32_t hi,uint32_t lo,
+		const char *title,const char *app) {
+	(void)d;(void)p;slash_ui_window_row(serial,((uint64_t)hi<<32)|lo,title,app);
+}
+static void window_list_end(void *d,struct mothership_map_pointer_v1 *p,uint32_t serial) {
+	(void)d;(void)p;slash_ui_window_end(serial);
+}
+gboolean panel_request_window_list(uint32_t serial) {
+	if(!pointer || mothership_map_pointer_v1_get_version(pointer)<MOTHERSHIP_MAP_POINTER_V1_WINDOW_LIST_SINCE_VERSION)
+		return FALSE;
+	mothership_map_pointer_v1_window_list(pointer,serial);
+	return TRUE;
 }
 static void node_switch_step(void *d,struct mothership_map_pointer_v1 *p,int32_t direction) {
 	(void)d;(void)p;panel_node_switch_step(direction);
@@ -207,6 +224,7 @@ static const struct mothership_map_pointer_v1_listener events={
 	.screenshot_available=screenshot_available,.screenshot_open=screenshot_open,.screenshot_frame=screenshot_frame,
 	.screenshot_target=screenshot_target,.screenshot_image=screenshot_image,.screenshot_problem=screenshot_problem,
 	.node_switch_step=node_switch_step,.node_switch_finish=node_switch_finish,
+	.window_list_row=window_list_row,.window_list_end=window_list_end,.node_move=node_move,
 };
 
 static void apply_aim(void) {

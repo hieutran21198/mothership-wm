@@ -22,7 +22,9 @@ has either a `body` or an `error` with `code` and `message`.
 | `create` | `{"domain":"Dev","description":"Backend Platform"}` (description optional) | `{}` |
 | `delete` | `{"domain":"Dev","force":true}` (`force` optional; false by default) | `{}` after removal; Force waits for WM to return live members to Inbox |
 | `assign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7,"domain":"Dev"}` | `{}` |
+| `unassign` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7}` | `{}` after the WM applies the return to Inbox; already in Inbox is a no-op. The view does not change. |
 | `focus` | `{"domain":"Dev"}` | `{}` after WM acknowledgement |
+| `focus.window` | `{"session":"0123456789abcdef0123456789abcdef","window_id":7}` | `{}` after the WM applies the window's current Node (or the Default Node for Inbox) with that window as the keyboard target. See [Connect to a window](../software-knowledges/flows/search-windows.md#connect-to-a-window). |
 | `focus.prepare` | `{"domain":"Dev"}` | `{"ticket":42}` after WM preparation; no selection change |
 | `focus.reveal` | `{"ticket":42}` | `{}` after the first clipped WM output state |
 | `home` | `{}` | `{}` after WM acknowledgement of blank Home |

@@ -1,5 +1,6 @@
 //go:build linux && cgo && panel
 
+#include <stdlib.h>
 #include "slash-ui.h"
 #include "analog-glass.h"
 #include "app-grid.h"
@@ -9,10 +10,10 @@
 #include "screenshot.h"
 
 enum slash_kind {
-	MODULE_APPS,MODULE_NODES,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
+	MODULE_APPS,MODULE_NODES,MODULE_WINDOWS,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
 	COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,
 	COMMAND_DISPLAY,COMMAND_SHORTCUTS,
-	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE
+	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE,RESULT_WINDOW
 };
 static const struct {
 	enum slash_kind module,kind;
@@ -31,13 +32,17 @@ static const struct {
 } modules[]={
 	{MODULE_APPS,"apps","apps "},
 	{MODULE_NODES,"nodes","nodes "},
+	{MODULE_WINDOWS,"windows","windows "},
 	{MODULE_MAPS,"maps","maps "},
 	{MODULE_NOTIFICATIONS,"notifications","notifications "},
 	{MODULE_SETTINGS,"settings","settings "},
 	{MODULE_SCREENSHOT,"screenshot","screenshot "}
 };
 enum { ROW_COUNT=5, ROW_HEIGHT=48, WIDTH_CAP=480 };
-struct suggestion { enum slash_kind kind; char *name; GDesktopAppInfo *app; GtkWidget *item; };
+struct suggestion { enum slash_kind kind; char *name; GDesktopAppInfo *app; GtkWidget *item; guint64 id; char *detail; };
+// One live window from the WM, joined with its Node by the Shell service.
+// Titles stay in this process and are never logged or saved.
+struct window_row { guint64 id; int key; char *node,*title,*app; GDesktopAppInfo *info; };
 static GtkWidget *root,*entry,*list,*empty;
 static GPtrArray *catalog,*results;
 static char **node_names;
@@ -53,11 +58,49 @@ static char *new_name,*node_error;
 static guint64 node_serial,node_request;
 static char *filled_app,*delete_confirmation,*delete_status;
 static gboolean delete_force,delete_pending;
+static GPtrArray *window_rows;
+static GString *window_buffer;
+static guint32 window_serial,window_waiting;
+static gboolean window_unavailable;
+extern char *panelSlashWindowRows(char *,int);
+extern void panelSlashFocusWindow(uint64_t,uint64_t);
+extern int panel_default_node_enabled(void);
+gboolean panel_request_window_list(uint32_t serial);
 static void refresh(void);
 
 static void suggestion_free(gpointer p) {
 	struct suggestion *s=p;
-	g_free(s->name);g_free(s);
+	g_free(s->name);g_free(s->detail);g_free(s);
+}
+static void window_row_free(gpointer p) {
+	struct window_row *w=p;
+	g_free(w->node);g_free(w->title);g_free(w->app);g_free(w);
+}
+// Forget any earlier list; a late answer to an older serial is ignored.
+static void windows_reset(void) {
+	g_clear_pointer(&window_rows,g_ptr_array_unref);
+	if(window_buffer) g_string_truncate(window_buffer,0);
+	window_waiting=0;
+	window_unavailable=FALSE;
+	if(++window_serial==0) ++window_serial;
+}
+static void windows_request(void) {
+	if(window_rows || window_waiting || window_unavailable) return;
+	if(!window_buffer) window_buffer=g_string_new(NULL);
+	g_string_truncate(window_buffer,0);
+	if(panel_request_window_list(window_serial)) window_waiting=window_serial;
+	else window_unavailable=TRUE;
+}
+static GDesktopAppInfo *catalog_app(const char *app_id) {
+	if(!app_id || !*app_id || !catalog) return NULL;
+	g_autofree char *desktop=g_strconcat(app_id,".desktop",NULL);
+	for(guint i=0;i<catalog->len;i++) {
+		GDesktopAppInfo *a=g_ptr_array_index(catalog,i);
+		const char *id=g_app_info_get_id(G_APP_INFO(a));
+		const char *wm_class=g_desktop_app_info_get_startup_wm_class(a);
+		if(g_strcmp0(id,desktop)==0 || g_strcmp0(wm_class,app_id)==0) return a;
+	}
+	return NULL;
 }
 
 static void add(enum slash_kind kind,const char *name,GDesktopAppInfo *app) {
@@ -85,7 +128,9 @@ static gboolean take_token(char **text,const char *token) {
 
 static gboolean module_available(enum slash_kind module) {
 	if(module==MODULE_SCREENSHOT) return panel_screenshot_enabled();
-	return !node_scope || module==MODULE_APPS || module==MODULE_NOTIFICATIONS || module==MODULE_SETTINGS;
+	// Window search covers the whole session, also from inside a Node.
+	return !node_scope || module==MODULE_APPS || module==MODULE_WINDOWS ||
+		module==MODULE_NOTIFICATIONS || module==MODULE_SETTINGS;
 }
 
 static void add_commands(enum slash_kind module,const char *term) {
@@ -122,6 +167,10 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 		cairo_move_to(cr,fleet_node[0].x,fleet_node[0].y);
 		for(unsigned i=1;i<FLEET_COUNT(fleet_node);i++) cairo_line_to(cr,fleet_node[i].x,fleet_node[i].y);
 		cairo_close_path(cr);cairo_move_to(cr,0,-4);cairo_line_to(cr,0,3);
+	} else if(kind==MODULE_WINDOWS) {
+		cairo_rectangle(cr,-7,-4,10,8);
+		cairo_move_to(cr,-3,-4);cairo_line_to(cr,-3,-7);cairo_line_to(cr,7,-7);
+		cairo_line_to(cr,7,1);cairo_line_to(cr,3,1);
 	} else if(kind==MODULE_NOTIFICATIONS) {
 		cairo_move_to(cr,-7,4);cairo_curve_to(cr,-4,2,-5,-1,-4,-4);
 		cairo_curve_to(cr,-3,-8,3,-8,4,-4);cairo_curve_to(cr,5,-1,4,2,7,4);
@@ -178,6 +227,9 @@ static void complete(void) {
 		// Keep names that start with "new" or "connect" unambiguous.
 		value=g_strdup_printf("nodes connect %s",s->name);
 		break;
+	case RESULT_WINDOW:
+		value=g_strdup_printf("windows %s",s->name);
+		break;
 	default: return;
 	}
 	fill_text(value);
@@ -223,6 +275,13 @@ static void activation(GtkEntry *input,gpointer data) {
 		break;
 	case RESULT_NODE:
 		submit_node(s->name,FALSE);break;
+	case RESULT_WINDOW:
+		g_clear_pointer(&node_error,g_free);
+		node_request=++node_serial;
+		gtk_editable_set_editable(GTK_EDITABLE(entry),FALSE);
+		refresh();
+		panelSlashFocusWindow(s->id,node_request);
+		break;
 	case RESULT_DELETE: case RESULT_FORCE: {
 		const gboolean force=s->kind==RESULT_FORCE;
 		g_autofree char *name=g_strdup(s->name);
@@ -255,7 +314,7 @@ static void draw_rows(void) {
 		gtk_widget_add_css_class(line,"slash-row-line");
 		gtk_widget_set_can_target(line,FALSE);
 		GtkWidget *icon;
-		if(s->kind==RESULT_APP) {
+		if(s->kind==RESULT_APP || (s->kind==RESULT_WINDOW && s->app)) {
 			GIcon *art=g_app_info_get_icon(G_APP_INFO(s->app));
 			GtkIconTheme *theme=gtk_icon_theme_get_for_display(gtk_widget_get_display(root));
 			if(art && G_IS_THEMED_ICON(art) && gtk_icon_theme_has_gicon(theme,art))
@@ -277,10 +336,17 @@ static void draw_rows(void) {
 		gtk_label_set_xalign(GTK_LABEL(name),0);
 		gtk_widget_set_hexpand(name,TRUE);
 		gtk_box_append(GTK_BOX(line),name);
+		if(s->detail) {
+			GtkWidget *detail=gtk_label_new(s->detail);
+			gtk_widget_add_css_class(detail,"slash-row-detail");
+			gtk_label_set_single_line_mode(GTK_LABEL(detail),TRUE);
+			gtk_box_append(GTK_BOX(line),detail);
+		}
 		s->item=analog_item_new(line);
 		analog_item_select(s->item,i==chosen);
 		gtk_button_set_child(GTK_BUTTON(button),s->item);
-		gtk_accessible_update_property(GTK_ACCESSIBLE(button),GTK_ACCESSIBLE_PROPERTY_LABEL,s->name,-1);
+		g_autofree char *accessible=s->detail?g_strdup_printf("%s, %s",s->name,s->detail):g_strdup(s->name);
+		gtk_accessible_update_property(GTK_ACCESSIBLE(button),GTK_ACCESSIBLE_PROPERTY_LABEL,accessible,-1);
 		gtk_accessible_update_state(GTK_ACCESSIBLE(button),GTK_ACCESSIBLE_STATE_SELECTED,i==chosen,-1);
 		g_signal_connect(button,"clicked",G_CALLBACK(clicked),GINT_TO_POINTER(i));
 		gtk_box_append(GTK_BOX(list),button);
@@ -369,6 +435,25 @@ static void refresh(void) {
 				add(force_delete?RESULT_FORCE:ordinary_delete?RESULT_DELETE:RESULT_NODE,node_names[i],NULL);
 			}
 		}
+	} else if(module_available(MODULE_WINDOWS) && take_token(&query,"windows")) {
+		windows_request();
+		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
+		hint=window_unavailable?"Window search needs a newer Mothership WM.":
+			window_waiting?"Scanning windows…":*term?"No matching windows.":"No open windows.";
+		// Prefix matches first, then other substring matches, in Node order.
+		for(int pass=0;window_rows && pass<2;pass++)
+			for(guint i=0;i<window_rows->len;i++) {
+				struct window_row *w=g_ptr_array_index(window_rows,i);
+				const char *app_name=w->info?g_app_info_get_display_name(G_APP_INFO(w->info)):"";
+				gboolean prefix=match(w->title,term,TRUE) || match(w->app,term,TRUE) || match(app_name,term,TRUE);
+				gboolean any=prefix || match(w->title,term,FALSE) || match(w->app,term,FALSE) || match(app_name,term,FALSE);
+				if(!any || prefix!=(pass==0)) continue;
+				const char *title=*w->title?w->title:*app_name?app_name:*w->app?w->app:"Window";
+				struct suggestion *row=g_new0(struct suggestion,1);
+				*row=(struct suggestion){.kind=RESULT_WINDOW,.name=g_strdup(title),.app=w->info,.id=w->id,
+					.detail=w->key?g_strdup_printf("%s · %d",w->node,w->key):g_strdup(w->node)};
+				g_ptr_array_add(results,row);
+			}
 	} else if(module_available(MODULE_MAPS) && take_token(&query,"maps")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		if(!*term) add(MODULE_MAPS,"maps",NULL);
@@ -499,6 +584,7 @@ void slash_ui_show(gboolean in_node) {
 	node_scope=in_node;
 	g_clear_pointer(&catalog,g_ptr_array_unref);
 	catalog=app_catalog_snapshot();
+	windows_reset();
 	g_clear_pointer(&filled_app,g_free);
 	composing=tab_held=enter_held=FALSE;
 	gtk_widget_set_visible(root,TRUE);
@@ -506,6 +592,7 @@ void slash_ui_show(gboolean in_node) {
 }
 void slash_ui_hide(void) {
 	composing=tab_held=enter_held=FALSE;
+	windows_reset();
 	g_clear_pointer(&delete_confirmation,g_free);
 	g_clear_pointer(&delete_status,g_free);
 	g_clear_pointer(&node_error,g_free);
@@ -532,6 +619,51 @@ void slash_ui_node_error(guint64 request,const char *message) {
 	struct node_result *result=g_new(struct node_result,1);
 	*result=(struct node_result){request,g_strdup(message)};
 	g_idle_add_full(G_PRIORITY_DEFAULT,show_node_error,result,free_node_result);
+}
+static gboolean finish_window(gpointer data) {
+	guint64 request=GPOINTER_TO_SIZE(data);
+	// The acknowledged selection may already have closed Slash.
+	if(request!=node_request || !gtk_widget_get_visible(root)) return G_SOURCE_REMOVE;
+	node_request=0;
+	gtk_editable_set_editable(GTK_EDITABLE(entry),TRUE);
+	close_slash();
+	return G_SOURCE_REMOVE;
+}
+void slash_ui_window_done(guint64 request) {
+	g_idle_add(finish_window,GSIZE_TO_POINTER(request));
+}
+static char *row_field(const char *text) {
+	// Tabs and line breaks separate rows on the way to the Shell service.
+	char *copy=g_strdup(text?text:"");
+	for(char *c=copy;*c;c++) if(*c=='\t' || *c=='\n' || *c=='\r') *c=' ';
+	return copy;
+}
+void slash_ui_window_row(guint32 serial,guint64 id,const char *title,const char *app_id) {
+	if(!window_waiting || serial!=window_waiting || !id) return;
+	g_autofree char *t=row_field(title),*a=row_field(app_id);
+	g_string_append_printf(window_buffer,"%" G_GUINT64_FORMAT "\t%s\t%s\n",id,t,a);
+}
+void slash_ui_window_end(guint32 serial) {
+	if(!window_waiting || serial!=window_waiting) return;
+	window_waiting=0;
+	char *joined=panelSlashWindowRows(window_buffer->str,panel_default_node_enabled());
+	g_string_truncate(window_buffer,0);
+	window_rows=g_ptr_array_new_with_free_func(window_row_free);
+	g_auto(GStrv) lines=g_strsplit(joined?joined:"","\n",-1);
+	free(joined);
+	for(int i=0;lines[i];i++) {
+		g_auto(GStrv) f=g_strsplit(lines[i],"\t",5);
+		if(g_strv_length(f)!=5) continue;
+		struct window_row *w=g_new0(struct window_row,1);
+		w->id=g_ascii_strtoull(f[0],NULL,10);
+		w->node=g_strdup(f[1]);
+		w->key=atoi(f[2]);
+		w->title=g_strdup(f[3]);
+		w->app=g_strdup(f[4]);
+		w->info=catalog_app(w->app);
+		g_ptr_array_add(window_rows,w);
+	}
+	if(root && gtk_widget_get_visible(root)) refresh();
 }
 static gboolean show_delete_result(gpointer data) {
 	delete_pending=FALSE;

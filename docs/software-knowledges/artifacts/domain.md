@@ -71,7 +71,9 @@ subscribes again for a fresh snapshot. A slow or stalled subscriber cannot
 block WM or desktopd commands: keep its queue bounded and disconnect it
 rather than silently dropping an update.
 
-Reuse the existing create, assign and select commands. Validate the same
+Reuse the existing create, assign and select commands. `unassign` returns
+one window to Inbox and `focus.window` selects the Node that currently
+holds one window; neither infers membership from app ID. Validate the same
 live session and Window ID for all clients. Publish a new selection as
 acknowledged only after WM applies it.
 

@@ -35,6 +35,7 @@ type wmPeer struct {
 	defaultLayout bool
 	returnInbox   bool
 	shortcuts     bool
+	windowFocus   bool
 	done          chan struct{}
 	applied       chan struct{}
 	pending       uint64
@@ -154,11 +155,12 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if !w.ready {
-		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views" && a[0] != "ready_handoff" && a[0] != "ready_default_node" && a[0] != "ready_return_inbox" && a[0] != "ready_shortcuts" && a[0] != "ready_node_parity") {
+		if len(a) != 1 || (a[0] != "ready" && a[0] != "ready_home" && a[0] != "ready_views" && a[0] != "ready_handoff" && a[0] != "ready_default_node" && a[0] != "ready_return_inbox" && a[0] != "ready_shortcuts" && a[0] != "ready_node_parity" && a[0] != "ready_window_focus") {
 			return false
 		}
 		// WM registers before serving any Wayland clients: its initial snapshot is empty.
-		w.defaultLayout = a[0] == "ready_node_parity"
+		w.windowFocus = a[0] == "ready_window_focus"
+		w.defaultLayout = w.windowFocus || a[0] == "ready_node_parity"
 		w.shortcuts = w.defaultLayout || a[0] == "ready_shortcuts"
 		w.returnInbox = w.shortcuts || a[0] == "ready_return_inbox"
 		w.defaultNode = w.returnInbox || a[0] == "ready_default_node"
@@ -321,6 +323,37 @@ func (d *desktop) assign(session string, id uint64, name string) error {
 	return nil
 }
 
+// unassign returns one window to Inbox. The WM always learns about the move,
+// because it keeps its own Inbox projection, and refreshes a shown Node.
+func (d *desktop) unassign(session string, id uint64) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	w := d.wm
+	if w == nil || !w.ready || !w.windowFocus {
+		d.mu.Unlock()
+		return errors.New("WM does not support returning a window to Inbox")
+	}
+	change, moved, err := d.service.Unassign(session, id)
+	if err != nil || !moved {
+		d.mu.Unlock()
+		return err
+	}
+	ack := d.beginApply(w, nil)
+	packet := fmt.Sprintf("inbox %d %d", ack.serial, id)
+	if change.RefreshNamed {
+		packet += " project"
+		for _, member := range change.Members {
+			packet += fmt.Sprintf(" %d %d", member.ID, member.Epoch)
+		}
+	}
+	d.mu.Unlock()
+	if !d.awaitApply(w, ack, packet) {
+		return errAssignmentViewUnknown
+	}
+	return nil
+}
+
 func (d *desktop) prepareFocus(name string) (uint64, error) {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
@@ -354,6 +387,34 @@ func (d *desktop) focus(name string) error { return d.focusView(name, 0) }
 func (d *desktop) focusView(name string, ticket uint64) error {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
+	return d.focusViewLocked(name, ticket, 0)
+}
+
+// focusWindow selects the Node that holds one live window and asks the WM to
+// make that window the keyboard target. Membership is resolved under the
+// same control lock as the selection, so a concurrent move cannot interleave.
+func (d *desktop) focusWindow(session string, id uint64) error {
+	d.controlMu.Lock()
+	defer d.controlMu.Unlock()
+	d.mu.Lock()
+	name, err := d.service.WindowDomain(session, id)
+	w := d.wm
+	d.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if w == nil || !w.ready || !w.windowFocus {
+		return errors.New("WM does not support focusing a window")
+	}
+	if name == "" {
+		return d.defaultNodeLocked(id)
+	}
+	return d.focusViewLocked(name, 0, id)
+}
+
+// focusViewLocked runs under controlMu. A nonzero target asks the WM to
+// prefer that member as the keyboard target after it applies the view.
+func (d *desktop) focusViewLocked(name string, ticket, target uint64) error {
 	d.mu.Lock()
 	if ticket != 0 {
 		if d.prepared == nil || d.prepared.ticket != ticket || d.prepared.peer != d.wm || !d.service.MapOverview() {
@@ -398,6 +459,8 @@ func (d *desktop) focusView(name string, ticket uint64) error {
 		packet = fmt.Sprintf("home %d", ack.serial)
 	} else if ticket != 0 {
 		packet = fmt.Sprintf("reveal %d %s", ack.serial, selection.Mode)
+	} else if target != 0 {
+		packet = fmt.Sprintf("node_window %d %s %d", ack.serial, selection.Mode, target)
 	} else if w.views {
 		packet = fmt.Sprintf("node %d %s", ack.serial, selection.Mode)
 	}
@@ -415,6 +478,11 @@ func (d *desktop) focusView(name string, ticket uint64) error {
 func (d *desktop) defaultNode() error {
 	d.controlMu.Lock()
 	defer d.controlMu.Unlock()
+	return d.defaultNodeLocked(0)
+}
+
+// defaultNodeLocked runs under controlMu; see focusViewLocked for target.
+func (d *desktop) defaultNodeLocked(target uint64) error {
 	d.mu.Lock()
 	w := d.wm
 	state := d.service.Snapshot()
@@ -422,7 +490,7 @@ func (d *desktop) defaultNode() error {
 		d.mu.Unlock()
 		return errors.New("Default Node is unavailable")
 	}
-	if state.Selection.DefaultNode && !state.MapVisible {
+	if state.Selection.DefaultNode && !state.MapVisible && target == 0 {
 		d.mu.Unlock()
 		return nil
 	}
@@ -436,7 +504,9 @@ func (d *desktop) defaultNode() error {
 	ack := d.beginApply(w, &selection)
 	d.prepared = nil
 	packet := fmt.Sprintf("home_node %d", ack.serial)
-	if selection.Mode != "" {
+	if target != 0 {
+		packet = fmt.Sprintf("home_node_window %d %s %d", ack.serial, selection.Mode, target)
+	} else if selection.Mode != "" {
 		packet += " " + selection.Mode
 	}
 	d.mu.Unlock()

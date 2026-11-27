@@ -199,6 +199,35 @@ func (s *Service) Assign(sessionID string, id uint64, name string) (Assignment, 
 	return result, nil
 }
 
+// Unassign returns one live window to Inbox. A window already in Inbox is
+// unchanged. RefreshNamed reports the selected Node's remaining members when
+// the window leaves the projection that is currently shown.
+func (s *Service) Unassign(sessionID string, id uint64) (Assignment, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return Assignment{}, false, ErrUnavailable
+	}
+	if s.active.ID != sessionID {
+		return Assignment{}, false, domain.ErrStaleSession
+	}
+	before := s.active.Get(id)
+	if before.ID == 0 {
+		return Assignment{}, false, domain.ErrUnknownWindow
+	}
+	moved, ok := s.active.ReturnToInbox(id, before.Domain)
+	if !ok {
+		return Assignment{}, false, nil
+	}
+	s.publish(Update{Kind: WindowUpdated, Window: moved})
+	var result Assignment
+	if selected := s.selection; selected.Kind == SelectionAcknowledged && selected.Domain == before.Domain {
+		result.RefreshNamed = true
+		result.Members = s.members(selected.Domain)
+	}
+	return result, true, nil
+}
+
 func (s *Service) MapOverview() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -224,6 +253,25 @@ func (s *Service) ResolveDomain(name string) (string, []domain.Window, error) {
 		return "", nil, ErrUnavailable
 	}
 	return s.active.ID, s.members(name), nil
+}
+
+// WindowDomain resolves one live window's current named Domain at command
+// time, so a window moved after a client listed it selects its new Node.
+// An empty name means the window belongs to Inbox (the Default Node).
+func (s *Service) WindowDomain(sessionID string, id uint64) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return "", ErrUnavailable
+	}
+	if s.active.ID != sessionID {
+		return "", domain.ErrStaleSession
+	}
+	w := s.active.Get(id)
+	if w.ID == 0 {
+		return "", domain.ErrUnknownWindow
+	}
+	return w.Domain, nil
 }
 
 func (s *Service) members(name string) []domain.Window {

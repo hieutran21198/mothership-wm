@@ -762,3 +762,170 @@ func TestShortcutApplyWaitsForWMAndPersistsAcrossConnections(t *testing.T) {
 	}
 	send(t, next, "applied "+packet[1])
 }
+
+func TestFocusWindowSelectsItsCurrentNodeWithTarget(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	send(t, wm, "ready_window_focus")
+	var id uint64
+	request := func(method, body string) (*net.UnixConn, uint64) {
+		id++
+		return s.request(id, method, body), id
+	}
+	ref := func(window string) string {
+		return `{"session":"` + sessionID + `","window_id":` + window + `}`
+	}
+	// apply acknowledges the WM packet for one request and returns its fields.
+	apply := func(c *net.UnixConn, seq uint64) []string {
+		fields := strings.Fields(read(t, wm))
+		send(t, wm, "applied "+fields[1])
+		success(t, c, seq)
+		return fields
+	}
+	for _, name := range []string{"Dev", "Review"} {
+		c, seq := request(domainipc.CreateMethod, `{"domain":"`+name+`"}`)
+		success(t, c, seq)
+	}
+	for _, wi := range []string{"1", "2", "3"} {
+		send(t, wm, "new "+wi)
+		send(t, wm, "map "+wi)
+	}
+	for _, wi := range []string{"1", "2"} {
+		c, seq := request(domainipc.AssignMethod, `{"domain":"Dev","window_id":`+wi+`,"session":"`+sessionID+`"}`)
+		apply(c, seq)
+	}
+
+	c, seq := request(domainipc.FocusWindowMethod, ref("2"))
+	if got := apply(c, seq); len(got) != 8 || got[0] != "node_window" || got[2] != domainipc.Flow ||
+		got[3] != "2" || strings.Join(got[4:], " ") != "1 1 2 2" {
+		t.Fatalf("named target packet %v", got)
+	}
+	snap := func() domainipc.Snapshot {
+		c, seq := request(domainipc.SnapshotMethod, "{}")
+		return decode[domainipc.Snapshot](t, success(t, c, seq))
+	}
+	if ss := snap(); ss.Selection.Domain != "Dev" || ss.Selection.View != "" {
+		t.Fatalf("named target selection %+v", ss.Selection)
+	}
+
+	// An Inbox window opens the Default Node, even when it is already shown.
+	for i := 0; i < 2; i++ {
+		c, seq = request(domainipc.FocusWindowMethod, ref("3"))
+		if got := apply(c, seq); len(got) != 4 || got[0] != "home_node_window" || got[2] != domainipc.Flow || got[3] != "3" {
+			t.Fatalf("Inbox target packet %v", got)
+		}
+		if ss := snap(); ss.Selection.View != "home_node" {
+			t.Fatalf("Inbox target selection %+v", ss.Selection)
+		}
+	}
+
+	// A window moved after a client listed it selects its new Node.
+	// The Default Node is shown, so moving between hidden Nodes needs no WM apply.
+	c, seq = request(domainipc.AssignMethod, `{"domain":"Review","window_id":2,"session":"`+sessionID+`"}`)
+	success(t, c, seq)
+	c, seq = request(domainipc.FocusWindowMethod, ref("2"))
+	if got := apply(c, seq); got[0] != "node_window" || got[3] != "2" {
+		t.Fatalf("moved target packet %v", got)
+	}
+	if ss := snap(); ss.Selection.Domain != "Review" {
+		t.Fatalf("moved target selection %+v", ss.Selection)
+	}
+
+	send(t, wm, "close 2")
+	for body, code := range map[string]string{
+		ref("2"): "unknown_window",
+		`{"session":"fedcba9876543210fedcba9876543210","window_id":1}`: "stale_session",
+	} {
+		c, seq = request(domainipc.FocusWindowMethod, body)
+		if r := reply(t, c, seq); r.Error == nil || r.Error.Code != code {
+			t.Fatalf("%s: expected %s, got %+v", body, code, r.Error)
+		}
+	}
+	assertQuiet(t, wm)
+	if ss := snap(); ss.Selection.Domain != "Review" {
+		t.Fatalf("rejected target changed selection %+v", ss.Selection)
+	}
+	c, seq = request(domainipc.FocusWindowMethod, `{"session":"`+sessionID+`","window_id":0}`)
+	if r := reply(t, c, seq); r.Error == nil || r.Error.Code != "invalid_body" {
+		t.Fatalf("zero window accepted: %+v", r.Error)
+	}
+}
+
+func TestFocusWindowNeedsCapableWM(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	send(t, wm, "ready_node_parity")
+	send(t, wm, "new 1")
+	send(t, wm, "map 1")
+	c := s.request(1, domainipc.FocusWindowMethod, `{"session":"`+sessionID+`","window_id":1}`)
+	if r := reply(t, c, 1); r.Error == nil || r.Error.Code != "rejected" {
+		t.Fatalf("older WM accepted a window target: %+v", r.Error)
+	}
+	assertQuiet(t, wm)
+}
+
+func TestUnassignReturnsWindowToInboxAndRefreshesShownNode(t *testing.T) {
+	s := newTestServer(t)
+	wm := s.register()
+	send(t, wm, "ready_window_focus")
+	var id uint64
+	request := func(method, body string) (*net.UnixConn, uint64) {
+		id++
+		return s.request(id, method, body), id
+	}
+	ref := func(window string) string {
+		return `{"session":"` + sessionID + `","window_id":` + window + `}`
+	}
+	apply := func(c *net.UnixConn, seq uint64) []string {
+		fields := strings.Fields(read(t, wm))
+		send(t, wm, "applied "+fields[1])
+		success(t, c, seq)
+		return fields
+	}
+	for _, name := range []string{"Dev", "Review"} {
+		c, seq := request(domainipc.CreateMethod, `{"domain":"`+name+`"}`)
+		success(t, c, seq)
+	}
+	for _, wi := range []string{"1", "2", "3"} {
+		send(t, wm, "new "+wi)
+		send(t, wm, "map "+wi)
+		domain := "Dev"
+		if wi == "3" {
+			domain = "Review"
+		}
+		c, seq := request(domainipc.AssignMethod, `{"domain":"`+domain+`","window_id":`+wi+`,"session":"`+sessionID+`"}`)
+		apply(c, seq)
+	}
+	c, seq := request(domainipc.FocusMethod, `{"domain":"Dev"}`)
+	apply(c, seq)
+
+	// Leaving the shown Node carries its remaining members for the WM.
+	c, seq = request(domainipc.UnassignMethod, ref("2"))
+	if got := apply(c, seq); strings.Join(got[2:], " ") != "2 project 1 1" || got[0] != "inbox" {
+		t.Fatalf("shown Node unassign packet %v", got)
+	}
+	// A hidden Node only tells the WM which window joined Inbox.
+	c, seq = request(domainipc.UnassignMethod, ref("3"))
+	if got := apply(c, seq); strings.Join(got[2:], " ") != "3" || got[0] != "inbox" {
+		t.Fatalf("hidden Node unassign packet %v", got)
+	}
+	// Already in Inbox: no WM work and no change.
+	c, seq = request(domainipc.UnassignMethod, ref("3"))
+	success(t, c, seq)
+	assertQuiet(t, wm)
+
+	c, seq = request(domainipc.SnapshotMethod, "{}")
+	ss := decode[domainipc.Snapshot](t, success(t, c, seq))
+	if ss.Selection.Domain != "Dev" {
+		t.Fatalf("unassign changed the view: %+v", ss.Selection)
+	}
+	for _, w := range ss.Windows {
+		if want := map[uint64]string{1: "Dev", 2: "", 3: ""}[w.ID]; w.Domain != want {
+			t.Fatalf("window %d in %q, expected %q", w.ID, w.Domain, want)
+		}
+	}
+	c, seq = request(domainipc.UnassignMethod, ref("9"))
+	if r := reply(t, c, seq); r.Error == nil || r.Error.Code != "unknown_window" {
+		t.Fatalf("unknown window accepted: %+v", r.Error)
+	}
+}

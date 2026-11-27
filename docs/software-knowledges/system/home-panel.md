@@ -135,8 +135,10 @@ heading or redundant caption. Keep **↑**, **↓**, **Tab**, **Enter** and
 **Esc** as bare keycaps in a separate footer. Scroll the bounded list with
 the wheel or move the selection with the arrow keys.
 
-- An empty prompt lists `apps`, `nodes`, `maps`, `notifications` and
-  `settings`. Complete a module to show its available commands.
+- An empty prompt lists `apps`, `nodes`, `windows`, `maps`,
+  `notifications` and `settings`. Complete a module to show its available
+  commands. `windows <query>` searches live windows in every Node, also
+  from a Node; see [Search windows](../flows/search-windows.md).
 - `apps <query>` searches the installed catalog and launches with the App
   Grid's launch rules; `apps` alone lists the catalog. It never runs
   arbitrary shell text.

@@ -31,6 +31,8 @@ void panel_set_strip_hover_scale(int percent);
 void map_pointer_set_cursor_size(int);
 void panel_place_window_preview(uint32_t serial,uint64_t id,int x,int y,int width,int height);
 void panel_node_number(uint32_t slot);
+void panel_node_move(uint32_t slot,uint64_t id);
+gboolean panel_request_window_list(uint32_t serial);
 void panel_node_switch_step(int32_t direction);
 void panel_node_switch_finish(uint32_t commit);
 void panel_window_count(uint32_t count);
