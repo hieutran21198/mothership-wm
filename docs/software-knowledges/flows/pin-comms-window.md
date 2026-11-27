@@ -1,63 +1,94 @@
-# Pin a comms window
+# Pin windows across Nodes
 
-**Status:** implemented 2026-11-27; owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27. The **Window pinned** notice was added 2026-11-27 and awaits native acceptance.
-Supports [Keep one window in sight across Nodes](../goals/pin-comms-window.md).
-Design: [Fleet Ops preview, scene 3](../system/fleet-ops-preview.html).
+**Implemented** after design approval on 2026-11-27. Mothership Dev session
+acceptance is pending.
+The earlier single-pin behavior was accepted on candidate `build-F0Om9ovi`.
 
-The WM owns the pin: its state, pixels, input region and frame scheduling.
-Pin state is session-only, keyed by the session window ID. There is one
-pin per session in this slice; pinning another window replaces it.
+Supports [Keep windows in sight across Nodes](../goals/pin-comms-window.md).
+The WM owns the ordered stack, keyed by session window ID. The Panel paints
+the labels and logs new pins. Pin membership and the stack's corner last
+for the session.
 
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
-| Pin | WM | **Meta + P** in a Node or the Default Node toggles the pin for the focused app window. The chord is fixed in this slice. |
-| Announce | WM → Panel | The WM sends `pin_state` with the new window ID at once, even while the pin is hidden in its own Node. The Panel logs one Node · System **Window pinned** notice in the window's Node through the [notification log](show-notifications.md), naming the app and title and how to unpin. It toasts under the usual Show toasts and Silent running rules. Replacing a pin announces the new window; unpinning is silent. |
-| Show | WM | Whenever the window's projection is not the current view, draw a scene buffer from the window's existing top-level buffer, like the [preview tray](../system/home-panel.md#node-panel). Default to the bottom-right, 320 logical px wide at the source aspect (max 240 px high), 16 px above the rail and 18 px from the edge. The box includes a 22 px label strip above the thumbnail. Hide it in its own Node, Overview and the Center Map, and while the screenshot tool is open. Shell overlays (Slash, App Grid, Settings, Command Center, logs) are drawn above it rather than hiding it. |
-| Frame | WM | Keep sending frame callbacks to the pinned surface while its Node is hidden, at the output rate. This is the only hidden surface that receives them. Never configure a new size. A missing buffer shows a neutral placeholder. |
-| Label | Panel | `pin_state` (private shell protocol v28) carries the box, title and app ID. The Panel paints **Node · App — title** and an × in the label strip on a paint-only `mothership-pin-label` layer; it takes no input. Titles stay on the Wayland path. |
-| Activate | WM → Panel → desktopd → WM | A short click on the pin sends `pin_activate`; the Panel [connects to the window](search-windows.md#connect-to-a-window). The click is consumed and never reaches the app or moves focus. |
-| Move | WM | Dragging the pin past an 8 px threshold moves it. Release snaps to the nearest of four corners, keeping clear of the toast area (top-right) and rail. The corner is kept for the session. |
-| Release | WM | A short click on the × (right end of the label strip), **Meta + P** on the pinned window, close/destroy or session end removes the pin and stops extra frame callbacks. Unmap hides it until the window maps again. |
+| Pin | WM | **Meta + P** in a named Node or the Default Node toggles only the focused app window. A new pin goes at the growing end of the stack. |
+| Identify | WM | Each [window frame](../system/window-frame.md) keeps the amber pin mark while that window is pinned, including when another app has focus. |
+| Announce | WM → Panel | On each addition, the Panel logs one Node · System **Window pinned** notice that names the app and title and explains how to unpin. The notice follows [Show toasts and Silent running](show-notifications.md). It can arrive while the pin is hidden in its source Node. Layout changes, label replays and unpinning are silent. |
+| Show | WM | Stack up to three of the newest eligible previews that fit. Omit windows in the current Node and temporarily unmapped windows. Keep their order for when they return. With no eligible pins, the stack disappears. In Overview, Center Map and the screenshot tool, hide the stack. Draw ordinary shell overlays above it and give those overlays pointer priority. |
+| Frame | WM | Draw each visible preview from the app's existing buffer, as in the [preview tray](../system/home-panel.md#node-panel). Continue frame callbacks only for pinned windows with visible previews whose app surfaces are hidden. Preserve client size. A missing buffer shows a neutral placeholder. |
+| Label | Panel | Paint **Node · App — title** and **×** in each header or compact row. Keep the action visible and ellipsize the label as needed. The paint-only layer receives no input. |
+| Overflow | WM | Show **+N more** when eligible pins exceed the live preview capacity. Open a bounded list of eligible pins at the same anchor in place of the live previews. Scroll to reach additional rows. **Show previews**, **Esc** or clicking outside dismisses the list. |
+| Hover | WM | Fade a cyan contour in when the pointer enters a live card or compact row and out when it leaves. Use the preview tray's 165 ms easing and apply the contour immediately when system animations are disabled. Hover keeps the stack geometry and app focus fixed. |
+| Activate | WM → Panel → desktopd → WM | A short click on a preview or compact row starts [Connect to a window](search-windows.md#connect-to-a-window). Switch to the window's current Node and focus that exact window. The click is consumed by the stack. The pin stays in the stack. |
+| Move | WM | Drag a card header to move the whole stack. Movement starts past 8 logical px. Release snaps to the nearest of four corners. **Esc** cancels the drag. |
+| Release | WM | Click **×** or press **Meta + P** on the pinned window to remove that pin. Destroying a window removes its pin. Ending the session clears every pin. |
+
+Use the [shell's analog treatment and 45° chamfer recipe](../system/shell-design.md)
+for a cool dark surface and one thin contour. At the default bottom-right
+anchor, grow upward, 18 logical px from the side and 16 px above the rail.
+Grow inward from the selected corner and keep clear of the rail and top-right
+toast area. Target a 320 px column, 8 px gaps, 5 px cuts, 24 px preview headers
+and 32 px compact rows. Center each image in its preview at the source
+aspect with a maximum image height of 240 px. All dimensions are logical
+pixels.
 
 ### F-PIN-1
 
-Pin a video playing in Node Ops, then enter Research and go Home. The pin
-shows the moving video in both views, at the same client size as before.
-Check with `WAYLAND_DEBUG` that no configure with a new size is sent.
-Return to Ops: the pin disappears and the window is shown normally.
+Pin live windows in at least two Nodes, including a playing video. Work in
+another Node and then go to blank Home. Check that the eligible thumbnails
+are live, with the newest at the stack's growing end. Return to a source Node
+and verify that only its cards disappear and that they return in order on
+leaving. Compare client configure sizes and frame callbacks before pinning,
+while the previews are shown and while the stack is hidden.
 
 ### F-PIN-2
 
-From Research, click the pin. Ops opens and the pinned window receives the
-next key, even if another Ops window was last focused. Move the window to
-Node Review first and click again: Review opens.
+In a stack containing two windows with the same app ID, click one preview
+from another Node and type. The selected window receives the next key even
+if its sibling was last focused. Move it to a different Node and activate
+it from an overflow row. Verify that the destination follows the window
+and that the pin remains. Type in an unrelated app while the previews update
+to confirm that they leave keyboard focus with the current app.
 
 ### F-PIN-3
 
-Type in a Research app while the pin updates: keys still reach the app.
-Open Map, Slash and App Grid: the pin is hidden and reappears after each
-closes. Drag the pin to every corner at 100% and 150% scale: it snaps clear
-of the rail and toasts, and a short click without drag activates instead.
+At 100% and 150% output scale, capture the full viewport and a crop of the
+stack at the same zoom. With at least three eligible pins, add enough pins
+to overflow and repeat on a shorter output. Check the 45° cuts, label
+legibility, gaps and clearance from the rail and toast area. Scroll the
+compact list, dismiss it with **Esc** and by clicking outside, and check
+that windows listed only as metadata receive no extra frame callbacks.
+Hover across cards, compact rows and gaps. Check that only the item under
+the pointer lights up, that the contour fades on exit, and that the stack
+stays still and typing still reaches the current app. Scroll under a
+stationary pointer and check that the contour follows the visible row.
+Repeat with system animations disabled and check that the contour changes
+immediately.
+Drag a header to all four corners and cancel one drag. Check that an
+ordinary shell overlay above the stack receives its own clicks. Verify
+that Overview, Center Map and screenshot mode hide the stack.
 
 ### F-PIN-4
 
-Close the pinned window from its own Node: the pin is gone in every view.
-Pin a window, pin a second one: the first pin is replaced. Each pin logs
-one **Window pinned** notice in its Node; unpinning logs nothing. Restart the
-session: no pin is restored.
+Pin two framed windows in a Node and switch focus between them. The amber
+stripes stay on both windows while the cyan focus dashes follow focus.
+Check that each addition logs one **Window pinned** notice. Unpin one with
+**Meta + P**, then unpin another from outside its Node with **×**. Only the
+chosen pin disappears each time. The second action leaves the source
+window open and focus where it was. Unpinning is silent. Close one pinned window
+and verify that its card and overflow row are gone. Temporarily unmap and
+remap another and check that it returns in order. Restart the session and
+verify that the stack is empty.
 
 ## Contract
 
-- Private shell protocol v28: `pin_state` (box, title, app ID; width 0
-  when hidden; window ID 0 when unpinned, sent at once on pin) and
-  `pin_activate`. No desktopd change: activation uses
-  `focus.window`.
-- Approved exception (2026-11-27) to the Node Panel rule that hidden apps
-  are never repainted: exactly one pinned surface keeps frame callbacks.
-- **Esc** cancels a pin drag, like any other pointer drag.
-
-## Decisions
-
-- Pin only with **Meta + P** in this slice; no `+N` grid or Alt+Tab entry.
-  The chord is not yet in the Keyboard Shortcuts editor.
-- No frame-rate cap unless native power checks show a cost.
+- Private shell protocol v30. `pin_stack_label` carries a session window ID,
+  a label rectangle, title and app ID. A zero width removes its visible
+  label. `pin_stack_control` carries the disclosure rectangle, overflow
+  count and expanded state. A zero width hides the control.
+- `pin_stack_added` carries the new session window ID, title and app ID.
+  The WM emits it only when a window enters the stack. It can resend visible
+  labels and the control independently of notices. The Panel paints on
+  `mothership-pin-label`.
+- Activation uses `pin_activate` and the existing `focus.window` operation.
+  Window pixels and pointer handling stay in the WM.

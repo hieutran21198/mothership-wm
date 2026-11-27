@@ -13,6 +13,7 @@ windows belong to the Node. Membership still comes from the
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
 | Save | Panel → desktopd | **Node Panel Settings → Loadout → Save current apps** (named Nodes only) resolves each live mapped member, in the order the windows opened, and sends `loadout.set`. desktopd validates the Node and entry IDs, commits the file and publishes `node.loadout`. The row shows the saved count and a one-line result. **Clear** sends an empty list. |
+| Shortcut | WM → Panel | **Win + S** in a named Node runs the same save with a Node System notice showing the result. Keyboard focus stays where it is. An existing editable binding for Win + S takes precedence. |
 | Resolve | Panel | Use the entry recorded when a Mothership launch attached the window (App Grid, Slash or a loadout, this session). Otherwise accept the one installed entry whose ID or `StartupWMClass` equals the app ID. Anything else is named in the result as **Not relaunchable**. |
 | Offer | Panel | In a named Node whose loadout has missing entries, an analog button sits in free preview-lane space: **Launch sequence · N apps** at the lane start in an empty Node, **Launch missing · N** after the previews otherwise. It hides when the lane has no room; Slash still works. Map Node Detail shows **Loadout · N apps**. |
 | Launch | Panel → launcher | A click on the offer or Slash `nodes launch <name>` launches the missing entries in loadout order with the App Grid launch policy and a launch marker for that Node. Each launch waits up to 3 s for its window before the next starts. A second activation while a sequence runs is ignored; the offer reads **Launching…**. |
@@ -31,7 +32,10 @@ In a named Node with Ghostty and COSMIC Files launched from App Grid and
 one window started outside Mothership, choose **Save current apps**. The
 confirmation names the outside window as Not relaunchable. The saved record
 lists the two entry IDs in the order the windows opened and nothing else.
-Restart desktopd; the record loads unchanged.
+Restart desktopd and verify the record loads unchanged. Repeat with
+**Win + S** while an app has focus. The same app list is saved, the Node
+notice reports the result, and the app keeps focus. **Win + Shift + S**
+opens Screenshot.
 
 ### F-LOAD-2
 

@@ -5,6 +5,7 @@
 #include <math.h>
 #include <string.h>
 #include "map_hud.h"
+#include "native.h"
 #include "map-profile.h"
 #include "map-guide.h"
 #include "map-fleet.h"
@@ -21,7 +22,7 @@
 
 static GtkWindow *hud;
 static GtkWidget *notice_layer;
-static GtkWidget *canvas, *annotations, *gpu_grid, *intro_layer, *relay_layer, *origin_layer, *minimap_layer, *route_layer, *guide_layer, *detail_layer;
+static GtkWidget *canvas, *annotations, *gpu_grid, *intro_layer, *relay_layer, *origin_layer, *minimap_layer, *route_layer, *guide_layer, *detail_layer, *zone_layer;
 static GtkWidget *arcade_layer;
 static gboolean arcade_playing;
 static void sync_arcade_layout(void);
@@ -82,6 +83,7 @@ static double fps_x,fps_y;
 static GHashTable *icons, *slots, *intro_labels, *map_labels;
 static char **names;
 static char *listed_names;
+// NULL is no selection; an empty selection key denotes Default Node.
 static char *active_name, *selected_node, *profile_rows;
 static GHashTable *profile_data;
 static gboolean detail_open;
@@ -142,6 +144,7 @@ int map_hud_set_font(const char *family, double size) {
     clear_intro_labels();
     clear_marker_labels();
     if(origin_layer) gtk_widget_queue_draw(origin_layer);
+    if(zone_layer) gtk_widget_queue_draw(zone_layer);
     g_clear_pointer(&label_font, pango_font_description_free);
     const char *effective=known?family:shell_font_family();
     label_font=shell_font_description(effective,size,
@@ -256,6 +259,12 @@ static double cloak_level(const char *name);
 static GHashTable *comms_nodes;
 static guint comms_tick;
 static double comms_phase;
+// Music: named Nodes playing music (value 1), or with every music stream
+// muted (value 2). They show a music zone instead of comms arcs.
+static GHashTable *music_nodes;
+static guint zone_tick;
+static double zone_time;
+static void sync_zone_tick(void);
 static gboolean transit_motion(void);
 static void draw_comms(cairo_t *cr,const char *name,double x,double y,double bow);
 static GQueue notice_transit=G_QUEUE_INIT;
@@ -284,6 +293,7 @@ static void camera_redraw(void) {
 	if (!showing_map) return;
 	if (annotations) gtk_widget_queue_draw(annotations);
 	if (origin_layer) gtk_widget_queue_draw(origin_layer);
+	if (zone_layer && gtk_widget_get_visible(zone_layer)) gtk_widget_queue_draw(zone_layer);
 	if (notice_layer && gtk_widget_get_visible(notice_layer)) gtk_widget_queue_draw(notice_layer);
 	if (route_layer && gtk_widget_get_visible(route_layer)) gtk_widget_queue_draw(route_layer);
 	sync_route_motion();
@@ -390,6 +400,7 @@ void map_hud_set_spacing(const char *border, int outer, int inner, gboolean fros
 	wallpaper_update_frost(showing_map && frosted_map, outer_margin);
 	queue_grid();
 	if(origin_layer) gtk_widget_queue_draw(origin_layer);
+	if(zone_layer) gtk_widget_queue_draw(zone_layer);
 	if (canvas) gtk_widget_queue_draw(canvas);
 	if (annotations) gtk_widget_queue_draw(annotations);
 	if (route_layer) gtk_widget_queue_draw(route_layer);
@@ -792,6 +803,7 @@ static void sync_layers(void) {
 	gtk_widget_set_visible(route_layer,world && (!intro ||
 		(reveal && map_intro_beats_at(intro_elapsed-reveal_start).icon>=1)));
 	gtk_widget_set_visible(notice_layer,world && (!intro || reveal));
+	gtk_widget_set_visible(zone_layer,world && !intro);
 	gtk_widget_set_visible(origin_layer,world && (!intro ||
 		(reveal && map_intro_beats_at(intro_elapsed-reveal_start).icon>=1)));
 	// The fast scan has its own surface. Hide, rather than just stop
@@ -925,7 +937,18 @@ static void stop_intro(void) {
 	clear_intro_labels();
 }
 
+static gboolean content_contains(struct plane frame,double inset,double x,double y);
+
 void map_hud_open_effect(int animation) {
+	static gboolean camera_initialized;
+	if (!camera_initialized && map_frame_available(view_w,view_h)) {
+		double x,y,inset;
+		struct plane frame=border_plane(view_w,view_h,&inset);
+		map_origin_point(&x,&y);
+		if (!content_contains(frame,inset+FLEET_HULL_HALF_WIDTH,x,y))
+			map_hud_center_mothership();
+		camera_initialized=TRUE;
+	}
 	stop_intro();
 	start_notice_transit(animation);
 	intro_suppressed=FALSE;
@@ -959,25 +982,31 @@ static gboolean profile_layout_at(int w,int h,struct profile_layout *layout,stru
 	if (!selected_node || !detail_open) return FALSE;
 	double x,y,inset;
 	struct plane frame=border_plane(w,h,&inset), nodes=node_plane(w,h);
-	if (!marker(nodes,selected_node,&x,&y)) return FALSE;
-	project_map_point(&x,&y);
+	gboolean is_default=!*selected_node;
+	if (is_default) map_origin_point(&x,&y);
+	else {
+		if (!marker(nodes,selected_node,&x,&y)) return FALSE;
+		project_map_point(&x,&y);
+	}
 	if (!content_contains(frame,inset,x,y)) return FALSE;
 	double margin=inset+9+PROFILE_RIM_GAP;
 	struct profile_rect safe={frame.x+margin,frame.y+margin,frame.width-2*margin,frame.height-2*margin};
 	*record=profile_for(selected_node);
 	// Keep the card next to the selected Node on the right when it fits.
 	// Its painted rim must clear the visible name as well as the symbol.
-	double reach=annotation_reach(selected_node);
-	const struct map_label *label=map_label_for(selected_node);
+	double reach=is_default?FLEET_HULL_HALF_WIDTH*map_zoom.scale:annotation_reach(selected_node);
+	if (is_default && !mothership_label) mothership_label=new_marker_label("Mothership");
+	const struct map_label *label=is_default?mothership_label:map_label_for(selected_node);
 	int width=MAX(label->logical.width,label->ink.x+label->ink.width)+(notice_count(selected_node)?34:0);
 	graphene_rect_t mini;
 	gboolean has_mini=radar_occluder(frame,&mini)!=NULL;
 	// Prefer the approved width. Compact only when no side fits at that size.
 	for (int preferred=374; preferred>=226; preferred-=37)
 	for(enum profile_side side=PROFILE_RIGHT; side<PROFILE_SIDE_COUNT; ++side) {
-		double radius=painted_marker_radius(selected_node);
+		double radius=is_default?reach:painted_marker_radius(selected_node);
 		double reserve=side==PROFILE_RIGHT?MAX(radius,reach+6+width):radius;
 		if (!profile_place_on(layout,safe,x,y,reserve,profile_height(*record),preferred,side)) continue;
+		if (is_default) layout->stealth=(struct profile_rect){0};
 		struct profile_rect c=layout->card;
 		double e=PROFILE_RIM_GAP+2;
 		graphene_rect_t bounds=GRAPHENE_RECT_INIT(c.x-e,c.y-e,c.w+2*e,c.h+2*e);
@@ -1031,7 +1060,7 @@ void map_hud_pause_route(void) {
 }
 
 static gboolean route_can_move(void) {
-	return !arcade_playing && route_allowed && showing_map && selected_node && !relay_node &&
+	return !arcade_playing && route_allowed && showing_map && selected_node && *selected_node && !relay_node &&
 		route_layer && gtk_widget_get_mapped(route_layer) && route_source_visible();
 }
 
@@ -1063,6 +1092,7 @@ void map_hud_allow_route(gboolean enable) {
 	// Comms arcs pause with the route: focus loss or Motion Off. An
 	// occluded surface receives no frames, so its loop stops on its own.
 	sync_comms_tick();
+	sync_zone_tick();
 }
 
 static void reset_route(void) {
@@ -1122,6 +1152,21 @@ gboolean map_hud_drag_inside(double px,double py) {
 	return content_contains(frame,MAP_INNER_INSET+MAP_INNER_WIDTH*.5,px,py);
 }
 
+static gboolean mothership_at(struct plane frame,double inset,double px,double py) {
+	if (!content_contains(frame,inset,px,py)) return FALSE;
+	double hx,hy;
+	map_origin_point(&hx,&hy);
+	if (content_contains(frame,inset,hx,hy)) {
+		double half=FLEET_HULL_HALF_WIDTH*map_zoom.scale;
+		if (fabs(px-hx)<=half+1 && fabs(py-hy)<=FLEET_HULL_HALF_HEIGHT*map_zoom.scale+1) return TRUE;
+		if (!mothership_label) mothership_label=new_marker_label("Mothership");
+		const struct map_label *label=mothership_label;
+		double left=hx+half+6+label->ink.x, top=marker_label_top(label,hy)+label->ink.y;
+		if (px>=left && px<=left+label->ink.width && py>=top && py<=top+label->ink.height) return TRUE;
+	}
+	return FALSE;
+}
+
 gboolean map_hud_drag_can_start(double px,double py) {
 	if (!map_hud_drag_inside(px,py)) return FALSE;
 	int w=gtk_widget_get_width(annotations),h=gtk_widget_get_height(annotations);
@@ -1132,17 +1177,7 @@ gboolean map_hud_drag_can_start(double px,double py) {
 	graphene_rect_t mini;
 	if (radar_occluder(frame,&mini) &&
 		graphene_rect_contains_point(&mini,&GRAPHENE_POINT_INIT(px,py))) return FALSE;
-	double hx,hy;
-	map_origin_point(&hx,&hy);
-	if (content_contains(frame,inset,hx,hy)) {
-		double half=FLEET_HULL_HALF_WIDTH*map_zoom.scale;
-		if (fabs(px-hx)<=half+1 && fabs(py-hy)<=FLEET_HULL_HALF_HEIGHT*map_zoom.scale+1) return FALSE;
-		if (!mothership_label) mothership_label=new_marker_label("Mothership");
-		const struct map_label *label=mothership_label;
-		double left=hx+half+6+label->ink.x, top=marker_label_top(label,hy)+label->ink.y;
-		if (px>=left && px<=left+label->ink.width && py>=top && py<=top+label->ink.height) return FALSE;
-	}
-	return node_at(w,h,px,py)==NULL;
+	return !mothership_at(frame,inset,px,py) && node_at(w,h,px,py)==NULL;
 }
 
 const char *map_hud_selected(void) { return selected_node; }
@@ -1159,11 +1194,12 @@ void map_hud_click(double px,double py,void (*connect)(const char *)) {
 		}
 		return;
 	}
-	double unused;
+	double inset;
+	struct plane frame=border_plane(w,h,&inset);
 	graphene_rect_t mini;
-	if (radar_occluder(border_plane(w,h,&unused),&mini) &&
+	if (radar_occluder(frame,&mini) &&
 		graphene_rect_contains_point(&mini,&GRAPHENE_POINT_INIT(px,py))) return;
-	const char *selected=node_at(w,h,px,py);
+	const char *selected=mothership_at(frame,inset,px,py) && panel_default_node_enabled()?"" : node_at(w,h,px,py);
 	if (g_strcmp0(selected_node,selected)==0) {
 		if (!selected || detail_open) return;
 	} else {
@@ -1208,7 +1244,7 @@ G_DEFINE_TYPE(MapAnnotations,map_annotations,GTK_TYPE_WIDGET)
 static void map_hud_rendered(double x,double y);
 
 /* Two passes keep labels above every icon. */
-// Home is a virtual coordinate of the map, not a Node or a control.
+// Mothership is the fixed world coordinate shared by routes and Default Node detail.
 static void map_origin_point(double *x,double *y) {
 	*x=FLEET_ORIGIN_X;
 	*y=FLEET_ORIGIN_Y;
@@ -1216,7 +1252,7 @@ static void map_origin_point(double *x,double *y) {
 }
 
 static gboolean route_endpoint(struct plane map,struct plane frame,double inset,const char *name,double *x,double *y) {
-	if(!name || !marker(map,name,x,y)) return FALSE;
+	if(!name || !*name || !marker(map,name,x,y)) return FALSE;
 	project_map_point(x,y);
 	return content_contains(frame,inset+3,*x,*y);
 }
@@ -1635,15 +1671,21 @@ static void sync_comms_tick(void) {
 
 void map_hud_set_comms(const char *lines) {
 	if(!comms_nodes) comms_nodes=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	if(!music_nodes) music_nodes=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
 	g_hash_table_remove_all(comms_nodes);
+	g_hash_table_remove_all(music_nodes);
 	g_auto(GStrv) rows=g_strsplit(lines?lines:"","\n",-1);
 	for(int i=0;rows[i];i++) {
-		g_auto(GStrv) f=g_strsplit(rows[i],"\t",2);
-		if(g_strv_length(f)==2 && *f[0])
-			g_hash_table_replace(comms_nodes,g_strdup(f[0]),GINT_TO_POINTER(g_str_equal(f[1],"1")?2:1));
+		g_auto(GStrv) f=g_strsplit(rows[i],"\t",3);
+		if(g_strv_length(f)!=3 || !*f[0]) continue;
+		int comms=(int)g_ascii_strtoll(f[1],NULL,10),music=(int)g_ascii_strtoll(f[2],NULL,10);
+		if(comms>=1 && comms<=2) g_hash_table_replace(comms_nodes,g_strdup(f[0]),GINT_TO_POINTER(comms));
+		if(music>=1 && music<=2) g_hash_table_replace(music_nodes,g_strdup(f[0]),GINT_TO_POINTER(music));
 	}
 	sync_comms_tick();
+	sync_zone_tick();
 	if(annotations) gtk_widget_queue_draw(annotations);
+	if(zone_layer) gtk_widget_queue_draw(zone_layer);
 }
 
 static gboolean transit_motion(void);
@@ -1963,6 +2005,191 @@ static void map_route_layer_init(MapRoute *self) {
 	g_signal_connect(self,"unmap",G_CALLBACK(route_layer_unmapped),NULL);
 }
 
+/* Music zone (see the Show ship status flow). A fixed octagon around a
+ * music Node: a faint tint following the bass, a drifting dashed edge with
+ * static vertex marks, beat waves that fade out from the hull with a dim
+ * echo, and a 32-tick spectrum halo (lows at the stern, highs at the bow).
+ * The beat is procedural; no audio is read. Sizes are logical px at 1×
+ * and scale with icon zoom. It never covers the Node's own name. */
+#define ZONE_RADIUS 52.0
+#define ZONE_WAVE_START 19.0
+#define ZONE_WAVE_US 1.5
+#define ZONE_HALO_INNER 17.0
+#define ZONE_BANDS 16
+static const double zone_still_bands[ZONE_BANDS]={.86,.92,.8,.7,.6,.55,.62,.66,.56,.5,.46,.42,.46,.4,.32,.25};
+
+static void zone_octagon(cairo_t *cr,double x,double y,double r) {
+	double c=r*(2-G_SQRT2);
+	cairo_move_to(cr,x-r+c,y-r); cairo_line_to(cr,x+r-c,y-r);
+	cairo_line_to(cr,x+r,y-r+c); cairo_line_to(cr,x+r,y+r-c);
+	cairo_line_to(cr,x+r-c,y+r); cairo_line_to(cr,x-r+c,y+r);
+	cairo_line_to(cr,x-r,y+r-c); cairo_line_to(cr,x-r,y-r+c);
+	cairo_close_path(cr);
+}
+
+// Each Node gets its own tempo and phase so two zones never pulse as one.
+static double zone_beat(const char *name,double *t) {
+	guint h=g_str_hash(name);
+	double beat=60./(104+h%17);
+	*t=zone_time+(h%1000)/1000.*beat;
+	return beat;
+}
+
+static double zone_band(double t,double beat,int i) {
+	double kick=exp(-fmod(t,beat)/beat*5);
+	double snare=exp(-fmod(t+beat/2,beat)/beat*7)*(((long)floor(t/beat))%2?1:.35);
+	double hat=exp(-fmod(t,beat/4)/(beat/4)*9),mel=6+4*sin(t*.9);
+	double v=.1+.08*(1-i/15.)+.78*kick*exp(-i/2.2)+.5*snare*exp(-pow((i-7)/3.,2))+
+		.55*hat*exp(-pow((i-13)/2.2,2))+.45*exp(-pow((i-mel)/1.6,2))*(.7+.3*sin(t*6.1));
+	return CLAMP(v,0,1);
+}
+
+static void zone_wave(cairo_t *cr,double x,double y,double s,double age,double k) {
+	double r=(ZONE_WAVE_START+(ZONE_RADIUS-ZONE_WAVE_START)*age)*s;
+	double alpha=k*MIN(1,age/.12)*pow(1-age,1.4)*.85;
+	if(alpha<=.005) return;
+	zone_octagon(cr,x,y,r);
+	if(age<.25) cairo_set_source_rgba(cr,.66,.95,.96,alpha);
+	else cairo_set_source_rgba(cr,.34,.83,.87,alpha);
+	cairo_set_line_width(cr,MAX(.8,(1.6-.8*age)*s));
+	cairo_stroke(cr);
+	double echo=r-3.5*s;
+	if(echo<=ZONE_WAVE_START*s) return;
+	zone_octagon(cr,x,y,echo);
+	cairo_set_source_rgba(cr,.34,.83,.87,alpha*.4);
+	cairo_set_line_width(cr,MAX(.6,.7*s));
+	cairo_stroke(cr);
+}
+
+static void draw_zone(cairo_t *cr,const char *name,double x,double y) {
+	int state=GPOINTER_TO_INT(g_hash_table_lookup(music_nodes,name));
+	gboolean muted=state==2,moving=!muted && zone_tick;
+	double s=map_zoom.scale,R=ZONE_RADIUS*s,t,beat=zone_beat(name,&t);
+	double bass=moving?(zone_band(t,beat,0)+zone_band(t,beat,1)+zone_band(t,beat,2))/3:.6;
+	zone_octagon(cr,x,y,R);
+	cairo_set_source_rgba(cr,.34,.83,.87,muted?.025:moving?.03+.06*bass:.06);
+	cairo_fill_preserve(cr);
+	double dash[]={6*s,5*s};
+	cairo_set_dash(cr,dash,2,moving?fmod(-zone_time*6*s,11*s):0);
+	cairo_set_line_width(cr,MAX(1,s));
+	cairo_set_source_rgba(cr,.34,.83,.87,muted?.3:.45);
+	cairo_stroke(cr);
+	cairo_set_dash(cr,NULL,0,0);
+	double c=R*(2-G_SQRT2),m=1.1*s;
+	const double vx[]={-R+c,R-c,R,R,R-c,-R+c,-R,-R},vy[]={-R,-R,-R+c,R-c,R,R,R-c,-R+c};
+	cairo_set_source_rgba(cr,.66,.95,.96,muted?.3:.6);
+	for(int i=0;i<8;i++) cairo_rectangle(cr,x+vx[i]-m,y+vy[i]-m,2*m,2*m);
+	cairo_fill(cr);
+	if(moving) {
+		// Waves start on each half beat: downbeats bright, alternate off-beats faint.
+		double half=beat/2;
+		for(long h=(long)floor((t-ZONE_WAVE_US)/half)+1;h<=(long)floor(t/half);h++) {
+			double age=(t-h*half)/ZONE_WAVE_US,k=0;
+			long b=h>=0?h/2:(h-1)/2;
+			if(h%2==0) k=b%4==0?1:.75;
+			else if(b%2) k=.35;
+			if(k>0 && age>=0 && age<1) zone_wave(cr,x,y,s,age,k);
+		}
+	} else if(!muted) {
+		zone_wave(cr,x,y,s,.35,.8);
+		zone_wave(cr,x,y,s,.72,.6);
+	}
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_BUTT);
+	cairo_set_line_width(cr,MAX(1,1.2*s));
+	for(int k=0;k<32;k++) {
+		double a=k/32.*2*G_PI+G_PI/2,from_stern=MIN(k,32-k)/16.;
+		int band=(int)lround(from_stern*(ZONE_BANDS-1));
+		double v=muted?.05:moving?zone_band(t,beat,band):zone_still_bands[band];
+		double r0=ZONE_HALO_INNER*s,r1=r0+(.8+7*v)*s;
+		cairo_move_to(cr,x+cos(a)*r0,y+sin(a)*r0);
+		cairo_line_to(cr,x+cos(a)*r1,y+sin(a)*r1);
+		if(v>.75) cairo_set_source_rgba(cr,.66,.95,.96,muted?.35:.9);
+		else cairo_set_source_rgba(cr,.34,.83,.87,muted?.35:.9);
+		cairo_stroke(cr);
+	}
+	if(muted) {
+		cairo_set_source_rgba(cr,.80,.90,.93,.85);
+		cairo_set_line_width(cr,MAX(1,1.6*s));
+		cairo_move_to(cr,x+R*.62,y+R*.92);
+		cairo_line_to(cr,x+R*.92,y+R*.62);
+		cairo_stroke(cr);
+	}
+}
+
+typedef GtkWidget MapZone;
+typedef GtkWidgetClass MapZoneClass;
+G_DEFINE_TYPE(MapZone,map_zone,GTK_TYPE_WIDGET)
+
+static void zone_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
+	if(!music_nodes || !g_hash_table_size(music_nodes) || intro_tick || arcade_playing || relay_node) return;
+	int w=gtk_widget_get_width(widget),h=gtk_widget_get_height(widget);
+	if(!map_frame_available(w,h)) return;
+	double inset;
+	struct plane plane=node_plane(w,h),border=border_plane(w,h,&inset);
+	graphene_rect_t screen=GRAPHENE_RECT_INIT(0,0,w,h);
+	for(char **n=names;n&&*n;++n) {
+		double x,y;
+		if(!**n || !g_hash_table_contains(music_nodes,*n) || !marker(plane,*n,&x,&y)) continue;
+		project_map_point(&x,&y);
+		double R=ZONE_RADIUS*map_zoom.scale+2;
+		graphene_rect_t bounds=GRAPHENE_RECT_INIT(x-R,y-R,2*R,2*R),clipped;
+		if(!graphene_rect_intersection(&bounds,&screen,&clipped)) continue;
+		cairo_t *cr=gtk_snapshot_append_cairo(snap,&clipped);
+		plane_outline(cr,border,inset);
+		cairo_clip(cr);
+		// Keep 3 px clear around the Node's own name and unread badge.
+		const struct map_label *label=map_label_for(*n);
+		double reach=annotation_reach(*n),pad=3;
+		double lx=x+reach+6+label->ink.x-pad,ly=marker_label_top(label,y)+label->ink.y-pad;
+		double lw=label->ink.width+(notice_count(*n)?34:0)+2*pad,lh=label->ink.height+2*pad;
+		cairo_rectangle(cr,x-R,y-R,2*R,2*R);
+		cairo_rectangle(cr,lx,ly,lw,lh);
+		cairo_set_fill_rule(cr,CAIRO_FILL_RULE_EVEN_ODD);
+		cairo_clip(cr);
+		cairo_set_fill_rule(cr,CAIRO_FILL_RULE_WINDING);
+		draw_zone(cr,*n,x,y);
+		cairo_destroy(cr);
+	}
+}
+
+static gboolean zone_frame(GtkWidget *widget,GdkFrameClock *clock,gpointer unused) {
+	(void)unused;
+	zone_time=gdk_frame_clock_get_frame_time(clock)/1e6;
+	gtk_widget_queue_draw(widget);
+	return G_SOURCE_CONTINUE;
+}
+
+// Waves move only while a music Node is playing, the Map is shown with
+// motion, and the route may move (focus loss pauses both).
+static void sync_zone_tick(void) {
+	gboolean playing=FALSE;
+	if(music_nodes) {
+		GHashTableIter it;gpointer value;
+		g_hash_table_iter_init(&it,music_nodes);
+		while(g_hash_table_iter_next(&it,NULL,&value)) playing|=GPOINTER_TO_INT(value)==1;
+	}
+	gboolean want=playing && route_allowed && zone_layer && gtk_widget_get_mapped(zone_layer) && transit_motion();
+	if(want && !zone_tick) zone_tick=gtk_widget_add_tick_callback(zone_layer,zone_frame,NULL,NULL);
+	else if(!want && zone_tick) {
+		gtk_widget_remove_tick_callback(zone_layer,zone_tick);
+		zone_tick=0;
+		if(zone_layer) gtk_widget_queue_draw(zone_layer);
+	}
+}
+
+static void zone_layer_mapped(GtkWidget *widget,gpointer unused) {
+	(void)widget;(void)unused;
+	sync_zone_tick();
+}
+
+static void map_zone_class_init(MapZoneClass *c) { GTK_WIDGET_CLASS(c)->snapshot=zone_snapshot; }
+static void map_zone_init(MapZone *self) {
+	gtk_widget_set_can_target(GTK_WIDGET(self),FALSE);
+	gtk_widget_set_hexpand(GTK_WIDGET(self),TRUE);gtk_widget_set_vexpand(GTK_WIDGET(self),TRUE);
+	g_signal_connect(self,"map",G_CALLBACK(zone_layer_mapped),NULL);
+	g_signal_connect(self,"unmap",G_CALLBACK(zone_layer_mapped),NULL);
+}
+
 typedef GtkWidget MapOrigin;
 typedef GtkWidgetClass MapOriginClass;
 G_DEFINE_TYPE(MapOrigin,map_origin,GTK_TYPE_WIDGET)
@@ -1985,8 +2212,9 @@ static void origin_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	cairo_t *cr=gtk_snapshot_append_cairo(snap,&bounds);
 	plane_outline(cr,frame,inset);
 	cairo_clip(cr);
-	draw_fleet_ship(cr,hx,hy,map_zoom.scale,TRUE,FALSE,FALSE,FALSE);
-	cairo_set_source_rgba(cr,.56,.80,.87,.95);
+	gboolean selected=selected_node && !*selected_node;
+	draw_fleet_ship(cr,hx,hy,map_zoom.scale,TRUE,FALSE,selected,FALSE);
+	cairo_set_source_rgba(cr,selected?.78:.56,selected?.93:.80,selected?1:.87,.95);
 	cairo_move_to(cr,label_x,label_y);
 	pango_cairo_show_layout(cr,label->layout);
 	cairo_destroy(cr);
@@ -2075,10 +2303,10 @@ static void detail_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 	struct profile_layout profile;
 	struct profile_data *record;
 	if (profile_layout_at(gtk_widget_get_width(widget),gtk_widget_get_height(widget),
-			&profile,&record)) profile_snapshot(snap,widget,profile,selected_node,record,
+			&profile,&record)) profile_snapshot(snap,widget,profile,*selected_node?selected_node:"Mothership",record,
 			detail_pressed==1?GTK_STATE_FLAG_ACTIVE:GTK_STATE_FLAG_NORMAL,
 			// The button shows the saved mode at once; the ship waits for the packet.
-			(detail_pressed==2?GTK_STATE_FLAG_ACTIVE:0)|(silent_target(selected_node)?GTK_STATE_FLAG_CHECKED:0));
+			(detail_pressed==2?GTK_STATE_FLAG_ACTIVE:0)|((*selected_node && silent_target(selected_node))?GTK_STATE_FLAG_CHECKED:0));
 }
 
 static void map_detail_class_init(MapDetailClass *c) { GTK_WIDGET_CLASS(c)->snapshot=detail_snapshot; }
@@ -2179,6 +2407,10 @@ void map_hud_init(void) {
 	// Nodes/routes, relay), map guide/minimap, Detail. The fast radar is a native
 	// subsurface; it runs before world and shares the minimap
 	// exclusion with the GTK radar fallback.
+	// Music zones paint under every ship, label, route and badge.
+	zone_layer=g_object_new(map_zone_get_type(),NULL);
+	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),zone_layer);
+	gtk_widget_set_visible(zone_layer,FALSE);
 	origin_layer=g_object_new(map_origin_get_type(),NULL);
 	gtk_overlay_add_overlay(GTK_OVERLAY(overlay),origin_layer);
 	gtk_widget_set_visible(origin_layer,FALSE);
@@ -2220,7 +2452,7 @@ void map_hud_update(const char *node_names, GHashTable *positions, const char *n
 		listed_names = g_strdup(node_names);
 		g_strfreev(names);
 		names = g_strsplit(node_names, "\n", -1);
-		if(selected_node && !g_strv_contains((const char *const *)names,selected_node))
+		if(selected_node && *selected_node && !g_strv_contains((const char *const *)names,selected_node))
 			map_hud_deselect();
 	}
 	if (g_strcmp0(profile_rows,rows)!=0) {

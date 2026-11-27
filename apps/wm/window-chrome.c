@@ -33,7 +33,8 @@ struct window_chrome {
 	struct chrome_strip strips[STRIPS];
 	int w,h;
 	double scale;
-	bool focused,float_action,floating,maximized,clipped,small_actions,minimize;
+	bool focused,float_action,floating,maximized,clipped,small_actions,minimize,resizable;
+	bool pinned;
 	char *title,*hints;
 	struct wlr_box aperture;
 };
@@ -203,8 +204,7 @@ static int text_width(PangoLayout *layout,const char *text) {
 static void footer_hints(cairo_t *cr,const struct window_chrome *c) {
 	if(!c->hints || !*c->hints) return;
 	const int x0=CUT+8;
-	// Leave the floating resize corner clear of keycaps.
-	const int right=c->w-(c->floating&&!c->maximized?2*WINDOW_CHROME_EDGE:CUT+8);
+	const int right=c->w-(c->resizable?2*WINDOW_CHROME_EDGE:CUT+8);
 	if(right-x0<KEYCAP_MIN) return;
 	gchar *valid=g_utf8_make_valid(c->hints,-1);
 	gchar **items=g_strsplit(valid,"|",8);
@@ -328,24 +328,34 @@ static void render(cairo_t *cr,struct window_chrome *c,int strip) {
 	}
 	cairo_restore(cr);
 	draw_outline(cr,c);
-	if(strip==BOTTOM) footer_hints(cr,c);
+	if(strip==BOTTOM) {
+		footer_hints(cr,c);
+		if(c->resizable) {
+			cairo_set_source_rgba(cr,.45,.81,.86,c->focused?.82:.55);
+			cairo_set_line_width(cr,1.25);
+			cairo_move_to(cr,c->w-20,c->h-7);
+			cairo_line_to(cr,c->w-7,c->h-20);
+			cairo_move_to(cr,c->w-14,c->h-7);
+			cairo_line_to(cr,c->w-7,c->h-14);
+			cairo_stroke(cr);
+		}
+	}
 	if(strip!=TOP) return;
+	if(c->pinned) {
+		cairo_set_source_rgb(cr,1,.77,.46);
+		cairo_set_line_width(cr,1.5);
+		for(int x=24;x<60 && x+4<c->w-8;x+=6) {
+			cairo_move_to(cr,x,8.5);
+			cairo_line_to(cr,x+4,4.5);
+		}
+		cairo_stroke(cr);
+	}
 	for(int i=0;i<4;i++) button(cr,control(c,i),i,c->focused,
 		(i==0&&c->floating)||(i==1&&c->maximized));
 	title(cr,c);
 }
 
-static struct chrome_pixels *draw_strip(struct window_chrome *c,struct wlr_box box,int slot) {
-	int w=(int)ceil(box.width*c->scale),h=(int)ceil(box.height*c->scale);
-	cairo_surface_t *img=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);
-	if (cairo_surface_status(img)!=CAIRO_STATUS_SUCCESS) {
-		cairo_surface_destroy(img);
-		return NULL;
-	}
-	cairo_t *cr=cairo_create(img);
-	cairo_scale(cr,(double)w/box.width,(double)h/box.height);
-	cairo_translate(cr,-box.x,-box.y);
-	render(cr,c,slot);
+static struct chrome_pixels *finish_pixels(cairo_t *cr,cairo_surface_t *img,int w,int h) {
 	bool ok=cairo_status(cr)==CAIRO_STATUS_SUCCESS;
 	cairo_destroy(cr);
 	struct chrome_pixels *pixels=ok?calloc(1,sizeof(*pixels)):NULL;
@@ -357,6 +367,59 @@ static struct chrome_pixels *draw_strip(struct window_chrome *c,struct wlr_box b
 	cairo_surface_flush(img);
 	wlr_buffer_init(&pixels->buffer,&pixel_impl,w,h);
 	return pixels;
+}
+
+bool window_chrome_pin_face(struct wlr_scene_buffer *scene,int width,int height,
+		double scale,int header,int row,bool highlight) {
+	int w=(int)ceil(width*scale),h=(int)ceil(height*scale);
+	cairo_surface_t *image=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);
+	cairo_t *cr=cairo_create(image);
+	cairo_scale(cr,(double)w/width,(double)h/height);
+	// The 1px stroke sits inside the outer 5px cut, including its diagonal.
+	const double inset=.5,cut=5+inset*(sqrt(2.)-1.);
+	const struct point contour[]={
+		{cut,inset},{width-cut,inset},{width-inset,cut},{width-inset,height-cut},
+		{width-cut,height-inset},{cut,height-inset},{inset,height-cut},{inset,cut},
+	};
+	path(cr,contour,8);
+	cairo_save(cr);
+	cairo_clip_preserve(cr);
+	if(!highlight) {
+		cairo_set_source_rgb(cr,.047,.086,.118);
+		cairo_paint(cr);
+	}
+	if(header) {
+		cairo_set_source_rgb(cr,.071,.133,.176);
+		cairo_rectangle(cr,0,0,width,header);
+		cairo_fill(cr);
+	}
+	if(row) {
+		cairo_set_source_rgb(cr,.16,.25,.30);
+		for(int y=row;y<height;y+=row) cairo_rectangle(cr,1,y,width-2,1);
+		cairo_fill(cr);
+	}
+	cairo_restore(cr);
+	path(cr,contour,8);
+	if(highlight) cairo_set_source_rgb(cr,.55,.81,.86);
+	else cairo_set_source_rgb(cr,.35,.51,.56);
+	cairo_set_line_width(cr,1);
+	cairo_stroke(cr);
+	struct chrome_pixels *pixels=finish_pixels(cr,image,w,h);
+	if(!pixels) return false;
+	wlr_scene_buffer_set_buffer(scene,&pixels->buffer);
+	wlr_buffer_drop(&pixels->buffer);
+	wlr_scene_buffer_set_dest_size(scene,width,height);
+	return true;
+}
+
+static struct chrome_pixels *draw_strip(struct window_chrome *c,struct wlr_box box,int slot) {
+	int w=(int)ceil(box.width*c->scale),h=(int)ceil(box.height*c->scale);
+	cairo_surface_t *img=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,w,h);
+	cairo_t *cr=cairo_create(img);
+	cairo_scale(cr,(double)w/box.width,(double)h/box.height);
+	cairo_translate(cr,-box.x,-box.y);
+	render(cr,c,slot);
+	return finish_pixels(cr,img,w,h);
 }
 
 static bool inside(struct wlr_box b,double x,double y) {
@@ -431,21 +494,23 @@ void window_chrome_clip(struct window_chrome *c,const struct wlr_box *clip) {
 }
 
 void window_chrome_update(struct window_chrome *c,int w,int h,double scale,
-		const char *name,bool focused,bool float_action,bool floating,bool maximized,bool small_actions,bool minimize,
-		const char *hints) {
+		const char *name,bool focused,bool pinned,bool float_action,bool floating,bool maximized,bool small_actions,bool minimize,
+		bool resizable,const char *hints) {
 	if (!c || w<2*CUT+26 || h<WINDOW_CONTENT_TOP+WINDOW_CONTENT_BOTTOM+1 || w>16384 || h>16384) return;
 	scale=isfinite(scale)?fmax(1,fmin(4,scale)):1;
 	if (!name) name="";
 	if (!hints) hints="";
 	const bool same_hints=c->hints&&strncmp(c->hints,hints,1024)==0;
-	if (c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
+	if (c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&c->pinned==pinned&&
 			c->float_action==float_action&&c->floating==floating&&c->maximized==maximized&&
-			c->small_actions==small_actions&&c->minimize==minimize&&c->title&&strncmp(c->title,name,4096)==0&&
+			c->small_actions==small_actions&&c->minimize==minimize&&c->resizable==resizable&&
+			c->title&&strncmp(c->title,name,4096)==0&&
 			same_hints) return;
 	struct window_chrome next=*c;
 	next.w=w;next.h=h;next.scale=scale;next.title=strndup(name,4096);next.hints=strndup(hints,1024);
 	next.focused=focused;next.float_action=float_action;next.floating=floating;next.maximized=maximized;
-	next.small_actions=small_actions;next.minimize=minimize;
+	next.pinned=pinned;
+	next.small_actions=small_actions;next.minimize=minimize;next.resizable=resizable;
 	if (!next.title || !next.hints) {
 		free(next.title);
 		free(next.hints);
@@ -455,10 +520,10 @@ void window_chrome_update(struct window_chrome *c,int w,int h,double scale,
 	struct wlr_box boxes[STRIPS]={{0,0,w,top},{0,h-bottom,w,bottom},
 		{0,top,edge,h-top-bottom},{w-edge,top,edge,h-top-bottom}};
 	// Focus changes the outline on every strip. Title and controls affect
-	// the header; hints and the floating resize corner affect the footer.
+	// the header; hints and the resize corner affect the footer.
 	int dirty=c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
 		group_member(c)==group_member(&next)?
-		(same_hints&&c->floating==floating&&c->maximized==maximized?1:2):STRIPS;
+		(same_hints&&c->resizable==resizable?1:2):STRIPS;
 	struct chrome_pixels *pixels[STRIPS]={0};
 	for (int i=0;i<dirty;i++) {
 		pixels[i]=draw_strip(&next,boxes[i],i);
@@ -491,11 +556,146 @@ enum window_chrome_hit window_chrome_hit_at(const struct window_chrome *c,double
 			(c->clipped&&!inside(c->aperture,x,y))) return WINDOW_CHROME_NONE;
 	for (int i=0;i<4;i++)
 		if (inside(control(c,i),x,y)) return (enum window_chrome_hit)(WINDOW_CHROME_FLOAT+i);
-	if (c->floating&&!c->maximized&&x>=c->w-2*WINDOW_CHROME_EDGE&&y>=c->h-2*WINDOW_CHROME_EDGE) return WINDOW_CHROME_RESIZE;
+	if (c->resizable&&x>=c->w-2*WINDOW_CHROME_EDGE&&y>=c->h-2*WINDOW_CHROME_EDGE) return WINDOW_CHROME_RESIZE;
 	if (y<WINDOW_CHROME_TOP && painted(c,x,y)) return WINDOW_CHROME_TITLE;
 	return WINDOW_CHROME_NONE;
 }
 
 struct wlr_box window_chrome_maximize_box(const struct window_chrome *c) {
 	return c?control(c,1):(struct wlr_box){0};
+}
+
+enum {
+	RESIZE_MARK=28, RESIZE_MARK_PIXELS=RESIZE_MARK*2,
+	RESIZE_STRIPE_PERIOD=12, RESIZE_TILE=240,
+	RESIZE_TILE_PIXELS=(RESIZE_TILE+RESIZE_STRIPE_PERIOD)*2,
+};
+
+struct window_resize_preview {
+	struct wlr_scene_tree *tree, *stripes;
+	struct wlr_scene_buffer *marks[4];
+	struct wlr_buffer *tile;
+};
+
+static struct wlr_buffer *resize_stripe_tile(void) {
+	cairo_surface_t *img=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+		RESIZE_TILE_PIXELS,RESIZE_TILE_PIXELS);
+	cairo_t *cr=cairo_create(img);
+	const int extent=RESIZE_TILE_PIXELS/2;
+	cairo_scale(cr,2,2);
+	cairo_set_source_rgba(cr,.023,.069,.104,.22);
+	cairo_paint(cr);
+	cairo_set_source_rgba(cr,.52,.87,.90,.26);
+	cairo_set_line_width(cr,1.5);
+	for (int p=0;p<=2*extent;p+=RESIZE_STRIPE_PERIOD) {
+		cairo_move_to(cr,p,0);
+		cairo_line_to(cr,p-extent,extent);
+	}
+	cairo_stroke(cr);
+	struct chrome_pixels *pixels=finish_pixels(cr,img,RESIZE_TILE_PIXELS,RESIZE_TILE_PIXELS);
+	return pixels ? &pixels->buffer : NULL;
+}
+
+void window_resize_preview_destroy(struct window_resize_preview *preview) {
+	if (!preview) return;
+	if (preview->tree) wlr_scene_node_destroy(&preview->tree->node);
+	if (preview->tile) wlr_buffer_drop(preview->tile);
+	free(preview);
+}
+
+struct window_resize_preview *window_resize_preview_create(struct wlr_scene_tree *parent) {
+	struct window_resize_preview *preview=calloc(1,sizeof(*preview));
+	if (!preview) return NULL;
+	preview->tree=wlr_scene_tree_create(parent);
+	if (!preview->tree) goto failed;
+	wlr_scene_node_set_enabled(&preview->tree->node,false);
+	preview->stripes=wlr_scene_tree_create(preview->tree);
+	preview->tile=resize_stripe_tile();
+	if (!preview->stripes || !preview->tile) goto failed;
+	for (int i=0;i<4;i++) {
+		cairo_surface_t *img=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
+			RESIZE_MARK_PIXELS,RESIZE_MARK_PIXELS);
+		cairo_t *cr=cairo_create(img);
+		cairo_scale(cr,2,2);
+		cairo_translate(cr,(i&1)?RESIZE_MARK:0,(i&2)?RESIZE_MARK:0);
+		cairo_scale(cr,(i&1)?-1:1,(i&2)?-1:1);
+		cairo_move_to(cr,1.25,RESIZE_MARK);
+		cairo_line_to(cr,1.25,CUT+1.25);
+		cairo_line_to(cr,CUT+1.25,1.25);
+		cairo_line_to(cr,RESIZE_MARK,1.25);
+		cairo_set_source_rgba(cr,.62,.94,.96,.96);
+		cairo_set_line_width(cr,2);
+		cairo_stroke(cr);
+		struct chrome_pixels *pixels=finish_pixels(cr,img,RESIZE_MARK_PIXELS,RESIZE_MARK_PIXELS);
+		if (!pixels) goto failed;
+		struct wlr_scene_buffer *mark=wlr_scene_buffer_create(preview->tree,&pixels->buffer);
+		wlr_buffer_drop(&pixels->buffer);
+		if (!mark) goto failed;
+		wlr_scene_buffer_set_dest_size(mark,RESIZE_MARK,RESIZE_MARK);
+		preview->marks[i]=mark;
+	}
+	return preview;
+
+failed:
+	window_resize_preview_destroy(preview);
+	return NULL;
+}
+
+void window_resize_preview_hide(struct window_resize_preview *preview) {
+	wlr_scene_node_set_enabled(&preview->tree->node,false);
+}
+
+static void place_resize_stripes(struct window_resize_preview *preview,const cairo_region_t *region) {
+	struct wl_list *children=&preview->stripes->children;
+	struct wl_list *unused=children->next;
+	for (int i=0;i<cairo_region_num_rectangles(region);i++) {
+		cairo_rectangle_int_t band;
+		cairo_region_get_rectangle(region,i,&band);
+		int right=band.x+band.width,bottom=band.y+band.height;
+		for (int y=band.y;y<bottom;y+=RESIZE_TILE) {
+			for (int x=band.x;x<right;x+=RESIZE_TILE) {
+				struct wlr_scene_buffer *tile;
+				if (unused==children) {
+					tile=wlr_scene_buffer_create(preview->stripes,preview->tile);
+					if (!tile) return;
+				} else {
+					struct wlr_scene_node *node=wl_container_of(unused,node,link);
+					unused=unused->next;
+					tile=wlr_scene_buffer_from_node(node);
+				}
+				int width=right-x<RESIZE_TILE ? right-x : RESIZE_TILE;
+				int height=bottom-y<RESIZE_TILE ? bottom-y : RESIZE_TILE;
+				// Anchor the pattern in output coordinates so it is continuous
+				// across bands and does not swim as their edges move.
+				struct wlr_fbox source={2*(x%RESIZE_STRIPE_PERIOD),2*(y%RESIZE_STRIPE_PERIOD),
+					2*width,2*height};
+				wlr_scene_buffer_set_source_box(tile,&source);
+				wlr_scene_buffer_set_dest_size(tile,width,height);
+				wlr_scene_node_set_position(&tile->node,x,y);
+				wlr_scene_node_set_enabled(&tile->node,true);
+			}
+		}
+	}
+	for (;unused!=children;unused=unused->next) {
+		struct wlr_scene_node *node=wl_container_of(unused,node,link);
+		wlr_scene_node_set_enabled(node,false);
+	}
+}
+
+void window_resize_preview_place(struct window_resize_preview *preview,
+		const struct wlr_box *original,const struct wlr_box *proposed,int width,int height) {
+	cairo_rectangle_int_t before={original->x,original->y,original->width,original->height};
+	cairo_rectangle_int_t after={proposed->x,proposed->y,proposed->width,proposed->height};
+	cairo_rectangle_int_t output={0,0,width,height};
+	cairo_region_t *changed=cairo_region_create_rectangle(&before);
+	cairo_region_xor_rectangle(changed,&after);
+	cairo_region_intersect_rectangle(changed,&output);
+	place_resize_stripes(preview,changed);
+	cairo_region_destroy(changed);
+	for (int i=0;i<4;i++) {
+		wlr_scene_node_set_position(&preview->marks[i]->node,
+			proposed->x+((i&1)?proposed->width-RESIZE_MARK:0),
+			proposed->y+((i&2)?proposed->height-RESIZE_MARK:0));
+	}
+	wlr_scene_node_set_enabled(&preview->tree->node,true);
 }

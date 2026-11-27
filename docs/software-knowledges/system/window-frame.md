@@ -12,6 +12,10 @@ for the analog material.
   straight edges. Center the dashes on each edge and leave a gap at each
   corner arm. Focus keeps the frame geometry and app size fixed. Group
   members use shorter, quieter marks so the group shell stays legible.
+- Mark each pinned window with short amber 45° stripes inset along the
+  upper-left header edge. Keep the mark visible across focus changes and
+  clear it when that window is unpinned. See the
+  [pin stack flow](../flows/pin-comms-window.md).
 - Left-align the title on the flat header. Ellipsize it before the action
   icons. Do not draw placeholder agent badges.
 - Reuse the existing **Float**, **Maximize/Restore**, **Minimize** and
@@ -33,7 +37,12 @@ for the analog material.
   Log guides. Center the caps between the footer separator and the outline
   with even clearance. Unfocused frames keep the same empty footer, so focus never resizes
   an app. When the footer is too narrow, drop whole instructions from the
-  end instead of truncating a key. Keep the floating resize corner clear.
+  end instead of truncating a key. Keep the resize corner clear.
+- Use the bottom-right bezel as the resize target for standalone Flow and
+  Stage windows. Draw four thin projected corners at the proposed bounds during
+  the [resize gesture](../flows/view-node-layouts.md#f-view-8). Use subtle,
+  translucent diagonal stripes across the area added or removed, measured
+  from the bounds at the start of the drag. Leave the shared area clear.
 - Keep four logical pixels of frame-owned padding between the chrome
   and client content on every edge. Use the resulting inner rectangle
   for the client's requested size, placement and clip, including during
@@ -68,7 +77,9 @@ for the analog material.
    close key appears without reopening the window.
 
 See [Node layouts](../flows/view-node-layouts.md#f-view-2) for input routing
-and compatibility behavior; record runtime evidence separately from the spec.
+and compatibility behavior. See the [resize scenario](../flows/view-node-layouts.md#f-view-8)
+for pointer and client configure checks. Record runtime evidence separately
+from the spec.
 
 
 ## App decorations

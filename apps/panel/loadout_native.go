@@ -113,19 +113,28 @@ func loadoutStatus(msg string) {
 }
 
 //export panelSaveLoadout
-func panelSaveLoadout(name *C.char) {
+func panelSaveLoadout(name *C.char, shortcut C.int) {
 	node := C.GoString(name)
+	report := func(message string) {
+		if shortcut == 0 {
+			loadoutStatus(message)
+			return
+		}
+		onGTK(func() {
+			receiveNotification(notification{Source: node, App: "System", Title: node, Body: message}, notificationSnapshot())
+		})
+	}
 	entries, skipped := loadoutFromMembers(currentMembers(notificationSnapshot(), node))
 	if len(entries) == 0 {
-		loadoutStatus(loadoutSaveMessage(entries, skipped))
+		report(loadoutSaveMessage(entries, skipped))
 		return
 	}
 	active.submitCommand(domainipc.LoadoutSetMethod, domainipc.LoadoutBody{Domain: node, Entries: entries}, false, 0, "", func(err error) {
 		if err != nil {
-			loadoutStatus("Could not save the loadout: " + err.Error())
+			report("Could not save the loadout: " + err.Error())
 			return
 		}
-		loadoutStatus(loadoutSaveMessage(entries, skipped))
+		report(loadoutSaveMessage(entries, skipped))
 	})
 }
 

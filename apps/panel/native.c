@@ -47,14 +47,26 @@ extern char *panelSaveSilentRunning(int);
 extern char *panelToggleSilentRunning(void);
 extern char *panelToggleSilentNode(char *);
 extern void panelCommsWatch(int);
-extern char *panelPinLabel(uint64_t,char *,char *);
+extern char *panelPinLabel(uint64_t,char *,char *,unsigned int *);
 extern void panelPinNotice(uint64_t,char *,char *);
 extern void panelPinActivate(uint64_t);
-// Comms pin label: the WM draws the thumbnail; this paints only its header.
-enum { PIN_HEADER=22 };
+// The WM supplies the boxes and owns all hits. A single transparent
+// layer covers the caption/control bounds without intercepting input.
+struct pin_box { int x,y,w,h; };
+struct pin_label {
+	uint64_t id;
+	struct pin_box box;
+	char *title,*app,*text;
+	unsigned int node_bytes;
+};
 static GtkWindow *pin_layer;
 static GtkWidget *pin_canvas;
-static char *pin_text;
+static GHashTable *pin_labels;
+static struct pin_box pin_layer_box,pin_control_box;
+static uint64_t legacy_pin_id;
+static uint32_t pin_more_count;
+static gboolean pin_control_expanded;
+static guint pin_layout_idle;
 extern int panelReloadConfig(void);
 extern char *panelSaveHomeSettings(int,int,int,int,int);
 extern void panelShellNotification(char *);
@@ -80,7 +92,7 @@ static int saved_silent_mode;
 static gboolean silent_syncing;
 // Loadout: offer button in the preview lane and the Node Panel Settings rows.
 extern void panelGtkCall(guint64);
-extern void panelSaveLoadout(char *);
+extern void panelSaveLoadout(char *,int);
 extern void panelClearLoadout(char *);
 extern char *panelLaunchLoadout(char *);
 extern void panelNodeEntered(char *);
@@ -259,6 +271,7 @@ static void text_changed(GtkEditable *editable, gpointer data) {
 int panel_default_node_enabled(void) { return default_node_enabled; }
 void panel_set_default_node_enabled(int enabled) {
 	default_node_enabled=enabled!=0;
+	if (!default_node_enabled && g_strcmp0(map_hud_selected(),"")==0) map_hud_deselect();
 	update_dock();
 }
 
@@ -726,6 +739,11 @@ void panel_post_node_switcher(char *const *names,char *const *descriptions,const
 }
 
 static void connect_to_node(const char *name) {connect_node(name,TRUE);}
+
+static void connect_map_selection(const char *name) {
+	if (name && !*name) enter_numbered_node(1);
+	else connect_to_node(name);
+}
 // Node Detail's Silent running button saves that Node's mode; the Map then
 // sends the command packet from Mothership.
 static void stealth_node(const char *name) {
@@ -733,52 +751,225 @@ static void stealth_node(const char *name) {
 	if(err) {panel_home_notice(err);free(err);}
 }
 
-static void draw_pin_label(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer unused) {
-	(void)area;(void)unused;
-	if(!pin_text) return;
-	PangoLayout *l=pango_cairo_create_layout(cr);
-	PangoFontDescription *f=shell_font_description(NULL,11,PANGO_WEIGHT_SEMIBOLD);
-	pango_layout_set_font_description(l,f);pango_font_description_free(f);
-	pango_layout_set_text(l,pin_text,-1);
-	pango_layout_set_single_paragraph_mode(l,TRUE);
-	pango_layout_set_width(l,MAX(1,w-38)*PANGO_SCALE);
-	pango_layout_set_ellipsize(l,PANGO_ELLIPSIZE_END);
-	int th;pango_layout_get_pixel_size(l,NULL,&th);
-	cairo_set_source_rgb(cr,.70,.88,.93);
-	cairo_move_to(cr,8,(h-th)*.5);
-	pango_cairo_show_layout(cr,l);
-	g_object_unref(l);
-	// Unpin mark; the WM owns the click on this corner.
-	double cx=w-12,cy=h*.5;
-	cairo_set_source_rgb(cr,.62,.76,.82);
-	cairo_set_line_width(cr,1.4);
-	cairo_move_to(cr,cx-4,cy-4);cairo_line_to(cr,cx+4,cy+4);
-	cairo_move_to(cr,cx+4,cy-4);cairo_line_to(cr,cx-4,cy+4);
-	cairo_stroke(cr);
-	cairo_set_source_rgba(cr,.36,.52,.60,.7);
-	cairo_rectangle(cr,0,h-1,w,1);cairo_fill(cr);
+static gboolean pin_box_visible(struct pin_box box) {
+	return box.w>0 && box.h>0;
 }
-void panel_pin_state(uint64_t id,int x,int y,int w,int h,const char *title,const char *app) {
-	static uint64_t known;
-	(void)h;
-	// A new non-zero ID is a new pin; 0 means unpinned.
-	if(id!=known) {
-		known=id;
-		if(id) panelPinNotice(id,(char *)(title?title:""),(char *)(app?app:""));
+
+static void draw_pin_caption(cairo_t *cr,PangoLayout *layout,const struct pin_label *label) {
+	int w=label->box.w,h=label->box.h;
+	cairo_save(cr);
+	cairo_translate(cr,label->box.x-pin_layer_box.x,label->box.y-pin_layer_box.y);
+	cairo_rectangle(cr,0,0,w,h);
+	cairo_clip(cr);
+	cairo_set_source_rgb(cr,.90,.69,.41);
+	cairo_set_line_width(cr,1.4);
+	double cy=h*.5;
+	for(int x=8;x<=13;x+=5) {
+		cairo_move_to(cr,x,cy+3);
+		cairo_line_to(cr,x+6,cy-3);
 	}
-	if(!pin_layer) return;
-	if(w<=0) {
+	cairo_stroke(cr);
+
+	PangoAttrList *attrs=pango_attr_list_new();
+	PangoAttribute *amber=pango_attr_foreground_new(0xe8e8,0xc4c4,0x8e8e);
+	amber->end_index=label->node_bytes;
+	pango_attr_list_insert(attrs,amber);
+	pango_layout_set_attributes(layout,attrs);
+	pango_attr_list_unref(attrs);
+	pango_layout_set_text(layout,label->text,-1);
+	pango_layout_set_width(layout,MAX(1,w-48)*PANGO_SCALE);
+	pango_layout_set_alignment(layout,PANGO_ALIGN_LEFT);
+	int text_height;
+	pango_layout_get_pixel_size(layout,NULL,&text_height);
+	cairo_set_source_rgb(cr,.88,.93,.95);
+	cairo_move_to(cr,24,(h-text_height)*.5);
+	pango_cairo_show_layout(cr,layout);
+
+	// The WM owns the separate click target at the right of each row.
+	double cx=w-12;
+	cairo_set_source_rgb(cr,.74,.82,.85);
+	cairo_move_to(cr,cx-3,cy-3);cairo_line_to(cr,cx+3,cy+3);
+	cairo_move_to(cr,cx+3,cy-3);cairo_line_to(cr,cx-3,cy+3);
+	cairo_stroke(cr);
+	if(legacy_pin_id) {
+		cairo_set_source_rgba(cr,.36,.52,.60,.7);
+		cairo_rectangle(cr,0,h-1,w,1);
+		cairo_fill(cr);
+	}
+	cairo_restore(cr);
+}
+
+static void draw_pin_control(cairo_t *cr,PangoLayout *layout) {
+	int w=pin_control_box.w,h=pin_control_box.h;
+	cairo_save(cr);
+	cairo_translate(cr,pin_control_box.x-pin_layer_box.x,pin_control_box.y-pin_layer_box.y);
+	cairo_rectangle(cr,0,0,w,h);
+	cairo_clip(cr);
+	char text[32];
+	if(pin_control_expanded) g_strlcpy(text,"Show previews",sizeof(text));
+	else g_snprintf(text,sizeof(text),"+%u more",pin_more_count);
+	pango_layout_set_text(layout,text,-1);
+	pango_layout_set_attributes(layout,NULL);
+	pango_layout_set_width(layout,MAX(1,w-30)*PANGO_SCALE);
+	int tw,th;
+	pango_layout_get_pixel_size(layout,&tw,&th);
+	double x=(w-tw-16)*.5,cy=h*.5;
+	cairo_set_source_rgb(cr,.77,.88,.92);
+	cairo_move_to(cr,x,(h-th)*.5);
+	pango_cairo_show_layout(cr,layout);
+	double gx=x+tw+12,dir=pin_control_expanded?1:-1;
+	cairo_set_line_width(cr,1.2);
+	cairo_move_to(cr,gx-3,cy-dir*1.5);
+	cairo_line_to(cr,gx,cy+dir*1.5);
+	cairo_line_to(cr,gx+3,cy-dir*1.5);
+	cairo_stroke(cr);
+	cairo_restore(cr);
+}
+
+static void draw_pin_labels(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer unused) {
+	(void)area;(void)w;(void)h;(void)unused;
+	PangoLayout *layout=pango_cairo_create_layout(cr);
+	PangoFontDescription *font=shell_font_description(NULL,13,PANGO_WEIGHT_SEMIBOLD);
+	pango_layout_set_font_description(layout,font);
+	pango_font_description_free(font);
+	pango_layout_set_single_paragraph_mode(layout,TRUE);
+	pango_layout_set_ellipsize(layout,PANGO_ELLIPSIZE_END);
+	GHashTableIter iter;
+	gpointer value;
+	if(pin_labels) {
+		g_hash_table_iter_init(&iter,pin_labels);
+		while(g_hash_table_iter_next(&iter,NULL,&value)) draw_pin_caption(cr,layout,value);
+	}
+	if(pin_box_visible(pin_control_box)) draw_pin_control(cr,layout);
+	g_object_unref(layout);
+}
+
+static struct pin_box union_pin_boxes(struct pin_box a,struct pin_box b) {
+	if(!pin_box_visible(a)) return b;
+	int x=MIN(a.x,b.x),y=MIN(a.y,b.y);
+	return (struct pin_box){x,y,MAX(a.x+a.w,b.x+b.w)-x,MAX(a.y+a.h,b.y+b.h)-y};
+}
+
+static gboolean flush_pin_layout(gpointer unused) {
+	(void)unused;
+	pin_layout_idle=0;
+	if(!pin_layer) return G_SOURCE_REMOVE;
+	struct pin_box box=pin_control_box;
+	if(pin_labels) {
+		GHashTableIter iter;
+		gpointer value;
+		g_hash_table_iter_init(&iter,pin_labels);
+		while(g_hash_table_iter_next(&iter,NULL,&value))
+			box=union_pin_boxes(box,((const struct pin_label *)value)->box);
+	}
+	if(!pin_box_visible(box)) {
 		gtk_widget_set_visible(GTK_WIDGET(pin_layer),FALSE);
-		return;
+		return G_SOURCE_REMOVE;
 	}
-	char *label=panelPinLabel(id,(char *)(title?title:""),(char *)(app?app:""));
-	g_free(pin_text);pin_text=g_strdup(label?label:"");
-	free(label);
-	gtk_layer_set_margin(pin_layer,LEFT_EDGE,x);
-	gtk_layer_set_margin(pin_layer,TOP_EDGE,y);
-	gtk_widget_set_size_request(pin_canvas,w,PIN_HEADER);
+	if(box.x!=pin_layer_box.x) gtk_layer_set_margin(pin_layer,LEFT_EDGE,box.x);
+	if(box.y!=pin_layer_box.y) gtk_layer_set_margin(pin_layer,TOP_EDGE,box.y);
+	if(box.w!=pin_layer_box.w || box.h!=pin_layer_box.h) {
+		gtk_widget_set_size_request(pin_canvas,box.w,box.h);
+		gtk_window_set_default_size(pin_layer,box.w,box.h);
+	}
+	pin_layer_box=box;
 	gtk_widget_set_visible(GTK_WIDGET(pin_layer),TRUE);
 	gtk_widget_queue_draw(pin_canvas);
+	return G_SOURCE_REMOVE;
+}
+
+static void schedule_pin_layout(void) {
+	// Wayland dispatch can update every caption in one frame.
+	if(!pin_layout_idle) pin_layout_idle=g_idle_add_full(G_PRIORITY_HIGH_IDLE,flush_pin_layout,NULL,NULL);
+}
+
+static void free_pin_label(gpointer data) {
+	struct pin_label *label=data;
+	g_free(label->title);
+	g_free(label->app);
+	free(label->text);
+	g_free(label);
+}
+
+static gboolean resolve_pin_label(struct pin_label *label) {
+	unsigned int node_bytes;
+	char *text=panelPinLabel(label->id,label->title,label->app,&node_bytes);
+	if(node_bytes==label->node_bytes && g_strcmp0(text,label->text)==0) {
+		free(text);
+		return FALSE;
+	}
+	free(label->text);
+	label->text=text;
+	label->node_bytes=node_bytes;
+	return TRUE;
+}
+
+static void refresh_pin_labels(void) {
+	if(!pin_labels) return;
+	GHashTableIter iter;
+	gpointer value;
+	gboolean changed=FALSE;
+	g_hash_table_iter_init(&iter,pin_labels);
+	while(g_hash_table_iter_next(&iter,NULL,&value))
+		changed=resolve_pin_label(value) || changed;
+	if(changed) schedule_pin_layout();
+}
+
+void panel_pin_stack_label(uint64_t id,int x,int y,int w,int h,const char *title,const char *app) {
+	if(!id) return;
+	if(w<=0 || h<=0) {
+		if(pin_labels && g_hash_table_remove(pin_labels,&id)) schedule_pin_layout();
+		return;
+	}
+	if(!pin_labels) pin_labels=g_hash_table_new_full(g_int64_hash,g_int64_equal,NULL,free_pin_label);
+	struct pin_label *label=g_hash_table_lookup(pin_labels,&id);
+	if(!label) {
+		label=g_new0(struct pin_label,1);
+		label->id=id;
+		g_hash_table_insert(pin_labels,&label->id,label);
+	}
+	title=title?title:"";
+	app=app?app:"";
+	gboolean same_box=x==label->box.x && y==label->box.y && w==label->box.w && h==label->box.h;
+	gboolean metadata_changed=g_strcmp0(label->title,title)!=0 || g_strcmp0(label->app,app)!=0;
+	if(metadata_changed) {
+		g_free(label->title);
+		g_free(label->app);
+		label->title=g_strdup(title);
+		label->app=g_strdup(app);
+	}
+	if(metadata_changed || same_box) resolve_pin_label(label);
+	label->box=(struct pin_box){x,y,w,h};
+	schedule_pin_layout();
+}
+
+void panel_pin_stack_control(int x,int y,int w,int h,uint32_t count,gboolean expanded) {
+	pin_control_box=(struct pin_box){x,y,w,h};
+	pin_more_count=count;
+	pin_control_expanded=expanded;
+	schedule_pin_layout();
+}
+
+void panel_pin_stack_added(uint64_t id,const char *title,const char *app) {
+	if(id) panelPinNotice(id,(char *)(title?title:""),(char *)(app?app:""));
+}
+
+void panel_pin_reset(void) {
+	g_clear_pointer(&pin_labels,g_hash_table_unref);
+	pin_control_box=(struct pin_box){0};
+	legacy_pin_id=0;
+	schedule_pin_layout();
+}
+
+void panel_pin_state(uint64_t id,int x,int y,int w,int h,const char *title,const char *app) {
+	(void)h;
+	// On the v28 singleton path an ID change also signaled a new pin.
+	if(id!=legacy_pin_id) {
+		panel_pin_stack_label(legacy_pin_id,0,0,0,0,NULL,NULL);
+		legacy_pin_id=id;
+		panel_pin_stack_added(id,title,app);
+	}
+	panel_pin_stack_label(id,x,y,w,22,title,app);
 }
 void panel_pin_activate(uint64_t id) {panelPinActivate(id);}
 
@@ -851,16 +1042,20 @@ static void launch_loadout(GtkButton *button,gpointer unused) {
 	char *err=panelLaunchLoadout(current_node);
 	if(err) {panel_home_notice(err);free(err);}
 }
+void panel_node_save_loadout(void) {
+	if(!desktop_ready || overview || map_visible || !named_node_shown()) return;
+	panelSaveLoadout(current_node,1);
+}
 static void loadout_action(GtkButton *button,gpointer data) {
 	(void)button;
 	if(!named_node_shown()) return;
 	gtk_widget_set_visible(loadout_result,FALSE);
 	if(GPOINTER_TO_INT(data)) panelClearLoadout(current_node);
-	else panelSaveLoadout(current_node);
+	else panelSaveLoadout(current_node,0);
 }
 
 void panel_map_click(double x,double y) {
-	if (!map_hud_arcade_active() && !relay_target && enabled && navigating && map_visible) map_hud_click(x,y,connect_to_node);
+	if (!map_hud_arcade_active() && !relay_target && enabled && navigating && map_visible) map_hud_click(x,y,connect_map_selection);
 }
 
 void panel_map_contact(uint32_t phase,double x,double y) {
@@ -1249,7 +1444,7 @@ static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 	}
 	if (!navigating || map_menu || editing_input()) return FALSE;
 	if ((key==GDK_KEY_Return || key==GDK_KEY_KP_Enter) && !(mods & commands)) {
-		connect_node(map_hud_selected(),TRUE);
+		connect_map_selection(map_hud_selected());
 		return TRUE;
 	}
 	if (key>=GDK_KEY_1 && key<=GDK_KEY_9 &&
@@ -1481,6 +1676,7 @@ static gboolean apply_update(gpointer data) {
 	if(gtk_window_is_active(window)) navigation_focused();
 	if(!map_visible && navigating) stop_navigation();
 	map_hud_update(u->nodes, positions, u->node, u->profiles, overview, map_visible || keep_relay_paint);
+	refresh_pin_labels();
 	refresh_actions();
 	update_dock();
 	if (!showing && enabled) {
@@ -3189,7 +3385,7 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_overlay_add_overlay(overlay,node_dock);
 	// Leave all dock chrome/input on the original shell surface. A telemetry
 	// tick updates this small paint-only buffer, not the full-screen shell.
-	pin_layer=paint_only_layer("mothership-pin-label","Mothership Pin Label",draw_pin_label,&pin_canvas);
+	pin_layer=paint_only_layer("mothership-pin-label","Mothership Pin Label",draw_pin_labels,&pin_canvas);
 	gtk_layer_set_anchor(pin_layer,RIGHT_EDGE,FALSE);
 	gtk_layer_set_anchor(pin_layer,BOTTOM_EDGE,FALSE);
 	node_telemetry_layer=paint_only_layer("mothership-node-telemetry","Mothership Node Telemetry",NULL,NULL);

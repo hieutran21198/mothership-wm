@@ -71,10 +71,14 @@ func profileRows(s domainipc.Snapshot) []profileRow {
 	}
 	occupied := make(map[string]bool)
 	apps := make(map[string]map[string]bool)
+	inboxCount := 0
 	if s.WMReady {
 		for _, w := range s.Windows {
 			if w.Domain == "" {
-				continue
+				if !w.Mapped {
+					continue
+				}
+				inboxCount++
 			}
 			occupied[w.Domain] = true
 			if !w.Mapped || w.AppID == "" {
@@ -90,10 +94,19 @@ func profileRows(s domainipc.Snapshot) []profileRow {
 			apps[w.Domain][id] = true
 		}
 	}
-	rows := make([]profileRow, 0, len(s.Domains))
-	for _, name := range s.Domains {
+	rows := make([]profileRow, 0, len(s.Domains)+1)
+	for _, name := range slices.Concat(s.Domains, []string{""}) {
 		row := profileRow{NodeProfile: metadata[name], empty: s.WMReady && !occupied[name]}
 		row.Domain = name
+		if name == "" {
+			row.Description = "Default Node"
+			switch {
+			case inboxCount == 1:
+				row.Description += " · 1 window"
+			case inboxCount > 1:
+				row.Description += fmt.Sprintf(" · %d windows", inboxCount)
+			}
+		}
 		for id := range apps[name] {
 			row.apps = append(row.apps, id)
 		}
@@ -142,7 +155,7 @@ func (c *controller) render() {
 		v.domains = append([]string(nil), s.Domains...)
 		v.profiles = profileRows(s)
 		for _, row := range v.profiles {
-			if row.empty {
+			if row.Domain != "" && row.empty {
 				v.emptyDomains = append(v.emptyDomains, row.Domain)
 			}
 		}

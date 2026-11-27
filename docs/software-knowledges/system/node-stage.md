@@ -10,6 +10,9 @@ order, and window sizes.
   in the work area above the Node Panel. One member of the presenting group
   holds keyboard focus. Selecting another member keeps the group in place
   and moves focus directly to that window.
+- A standalone window initially fits the work area. Its
+  [resize gesture](../flows/view-node-layouts.md#f-view-8) keeps it within that
+  area and saves its Stage size for the session.
 - Use the same 1024 × 560 logical pixel minimum as Flow for tiled groups.
   Below either dimension, Stage presents the selected member on its own
   and retains the group for when the output fits it again.

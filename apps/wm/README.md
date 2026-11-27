@@ -83,6 +83,14 @@ Each command-center layer popup must receive `xdg_popup.configure`
 after its initial commit. A button event in the trace alone does not
 prove that GTK processed it.
 
+### App file chooser check
+
+The session launcher finds `xdg-desktop-portal` and its GTK backend through
+their installed D-Bus service files under `XDG_DATA_DIRS`. It uses `gdbus` to
+wait for them on the private application bus. Use the
+[file chooser scenarios](../../docs/software-knowledges/flows/open-app-file-dialog.md)
+to verify dialog placement and focus with real clients.
+
 ## Flow and window chrome
 
 Managed Nodes default to Flow. Check the [layout and frame behavior](../../docs/software-knowledges/flows/view-node-layouts.md#f-view-2)

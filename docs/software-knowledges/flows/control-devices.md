@@ -2,7 +2,8 @@
 
 **Status:** design approved by the owner 2026-11-27 (with the projector unfold, signal beam and radar scan, and a Systems glyph instead of the speaker); implemented the same day in candidate `build-5P0nY5Vw`, awaiting native acceptance.
 Supports [Control sound and Bluetooth devices from the shell](../goals/control-devices.md).
-Design: [Systems preview](../system/systems-preview.html).
+Original design: [Systems preview](../system/systems-preview.html). The
+transition below supersedes the preview's projector storyboard.
 
 The Panel owns the Systems board and talks to the device services
 directly, like [Node Volume](../system/home-panel.md#node-volume). desktopd
@@ -12,7 +13,7 @@ and nothing here changes membership, focus or the view.
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
 | Open | Panel | The Home dock **Audio** button becomes **Systems**, drawn with the Systems glyph (three control tracks with knobs at different levels) instead of the speaker, and opens an analog glass board above it, styled like the [Notification Log](show-notifications.md#reading). The button keeps the cyan latched edge while the board is open. **D** on focused blank Home opens it too. Slash `systems` opens it on the last module, `systems sound` and `systems bluetooth` on that module, `systems scan` opens Bluetooth and starts a scan, and `systems mute` toggles the default output's mute without opening it. The board is Mothership scope: devices are machine-wide, wider than any Node, so nothing in a Node opens it. Node Slash has no `systems` module, Node Volume keeps only its per-app rows, and entering a Node closes an open board. Esc, the close button, a click outside or a view change closes it. It replaces the Notification Log, Mission Log and System Tray while open. |
-| Unfold | Panel | With animations on, the board opens as a projection: a beam rises from the Systems button to the board's height (0–56 ms), the board unfolds sideways from it (56–175 ms) and one scan line settles it (175–280 ms), each with an ease-out. Progress follows elapsed time, so a slow frame skips ahead rather than stretching the motion, and the board's contents are drawn once and only clipped while it unfolds; row highlights start settled. Closing plays it backwards in 140 ms. Input works from the first frame and is released at the start of a close; Esc mid-unfold closes from the current state. Nothing redraws after it settles. With animations off it opens and closes at once. This replaces the log-style fade for this board only. |
+| Unfold | Panel | With animations on, the board unfolds sideways from the Systems button in 120 ms using an ease-out clip. Progress follows elapsed time and the board contents stay cached during the transition. Row highlights start settled. Closing reverses the clip in 140 ms. Input works from the first frame and is released at the start of a close. Esc mid-unfold closes from the current state. With animations off it opens and closes at once. |
 | Layout | Panel | A module rail on the left (**Sound**, **Bluetooth**), each with a one-line status. The module content is on the right. **Tab** changes module; **W / S** move between rows; **A / D** adjust the focused level by 5%; **Enter** chooses or acts; **Space** toggles mute or power. Pointer works on every control. The board remembers the last module for the session. |
 | Sound | Panel → PulseAudio | List sinks and sources with `pactl --format=json` (with `info` for the defaults). **Output** lists each sink by description with its kind (Built-in, Bluetooth, HDMI, USB). Choosing one runs `set-default-sink`; streams that follow the default move with it. Below it, one level (0–100%, no boost) and a mute button. **Input** does the same for sources, hiding monitor sources. Values update only from the server's next report. |
 | Beam | Panel | A thin cyan beam runs from a small Mothership mark beside **Output** down a left gutter into the active output's row, with one 45° bend; a second beam runs from the active microphone into the mark beside **Input**. Choosing another device draws a dashed beam to it and shows **Switching…** while the old beam dims to 30%. When `pactl` reports the new default, the new beam turns solid and, with animations on, one bright head runs along it in 200 ms; the old beam goes. A failure retracts the dashed beam and shows the error on the row. A muted device dims its beam to 30%. No idle animation. |
@@ -35,7 +36,9 @@ agent and the watchers.
 Open Systems from the Home dock. Choose an HDMI output while a video plays:
 the sound moves, and the row is marked only after `pactl` reports it.
 Press D on blank Home: the board unfolds from the Systems button and
-opens on Sound; with animations off it appears at once. Lower the level with A to
+opens on Sound. Check that the opening and closing clips have clean edges,
+with no bright line crossing the board. With animations off it appears at
+once. Lower the level with A to
 40%, mute with Space: the dock button shows the struck speaker mark. Choose another microphone and mute it: the dock shows
 the microphone mark. Enter Node Ops with the board open: it closes. In
 Ops, Slash shows no `systems` module and Node Volume has no Output row.
@@ -69,7 +72,7 @@ check with `bluetoothctl show` that discovery stopped.
 - Scope: Home only. A Node has no entry point; Node Volume is unchanged.
 - Panel: a GDBus client of `org.bluez` on the system bus while the board
   is open or pairing. No desktopd or WM protocol change.
-- Motion: the projector unfold, beam head and radar sweep follow the
+- Motion: the board unfold, audio signal beam head and radar sweep follow the
   GTK animation setting and stop when settled; no idle redraw.
 
 ## Decisions

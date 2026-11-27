@@ -69,6 +69,21 @@ func TestAppCommandsStayOnNestedWayland(t *testing.T) {
 	if _, _, err := appCommand(context.Background(), openBrave, child, nil); err == nil {
 		t.Fatal("Brave profile must not follow a symlink")
 	}
+	// The native session is the user's desktop: Brave keeps its normal
+	// profile and the user's Chromium profile settings.
+	cmd, _, err := appCommand(context.Background(), openBrave, child, []string{
+		"MOTHERSHIP_NATIVE_SESSION=1", "CHROME_USER_DATA_DIR=/user-choice",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"brave", "--ozone-platform=wayland", "--no-first-run", "--no-default-browser-check",
+		"--new-window", "about:blank"}; !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("native args: %v", cmd.Args)
+	}
+	if !slices.Contains(cmd.Env, "CHROME_USER_DATA_DIR=/user-choice") {
+		t.Fatalf("native env: %v", cmd.Env)
+	}
 	t.Setenv("PATH", t.TempDir())
 	if _, _, err := appCommand(context.Background(), openFiles, child, nil); err == nil || !strings.Contains(err.Error(), "cosmic-files on PATH") {
 		t.Fatalf("missing binary: %v", err)
@@ -78,7 +93,7 @@ func TestAppCommandsStayOnNestedWayland(t *testing.T) {
 	}
 }
 
-func TestBraveRouteRequiresExactNestedProfileAndNewWindow(t *testing.T) {
+func TestBraveRouteRequiresExactProfileAndNewWindow(t *testing.T) {
 	root := t.TempDir()
 	const profile = "/nested/brave-profile"
 	for pid, cmdline := range map[string]string{
@@ -87,6 +102,9 @@ func TestBraveRouteRequiresExactNestedProfileAndNewWindow(t *testing.T) {
 		"21": "/nix/opt/brave\x00--user-data-dir=" + profile + "\x00--ozone-platform=wayland\x00",
 		"22": "/nix/opt/brave\x00--user-data-dir=" + profile + "-other\x00",
 		"23": "other\x00--user-data-dir=" + profile + "\x00",
+		"26": "/nix/opt/brave --ozone-platform=wayland --new-window about:blank\x00",
+		"27": "/nix/opt/brave\x00--ozone-platform=wayland\x00",
+		"28": "other\x00--ozone-platform=wayland\x00",
 	} {
 		dir := filepath.Join(root, pid)
 		if err := os.Mkdir(dir, 0700); err != nil {
@@ -96,14 +114,20 @@ func TestBraveRouteRequiresExactNestedProfileAndNewWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, pid := range []string{"24", "25"} {
+	for _, pid := range []string{"24", "25", "26"} {
 		if err := os.Symlink("/nix/opt/brave", filepath.Join(root, pid, "exe")); err != nil {
 			t.Fatal(err)
 		}
 	}
-	owned := func(pid int) bool { return ownsNestedBraveProfile(root, pid, profile) }
-	if !owned(24) || owned(25) {
+	owned := func(pid int) bool { return ownsBraveProfile(root, pid, profile) }
+	if !owned(24) || owned(25) || owned(26) || owned(27) {
 		t.Fatal("flattened process title did not require an exact profile")
+	}
+	normal := func(pid int) bool { return ownsBraveProfile(root, pid, "") }
+	for pid, want := range map[int]bool{21: false, 22: false, 23: false, 24: false, 26: true, 27: true, 28: false} {
+		if normal(pid) != want {
+			t.Fatalf("normal profile match for %d: want %v", pid, want)
+		}
 	}
 	windows := []domainipc.Window{
 		{ID: 1, Mapped: true, AppID: "brave-browser", PID: 21},

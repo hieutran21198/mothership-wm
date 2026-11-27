@@ -16,7 +16,7 @@ extern void panelSystemsSound(int,char *,int);
 enum { OP_SINK, OP_SINK_VOLUME, OP_SINK_MUTE, OP_SOURCE, OP_SOURCE_VOLUME, OP_SOURCE_MUTE };
 enum { BOARD_WIDTH=560, BOARD_MIN_HEIGHT=480, HEADER=50, FOOTER=50, GUT=30, ROW=38, BT_ROW=44,
 	MAX_SINKS=6, MAX_SOURCES=5, MAX_PAIRED=5, RADAR_HEIGHT=200, MAX_ITEMS=96 };
-#define OPEN_MS 280.
+#define OPEN_MS 120.
 #define CLOSE_MS 140.
 #define FADE_IN_MS 150.
 #define FADE_OUT_MS 180.
@@ -29,9 +29,9 @@ G_DECLARE_FINAL_TYPE(SystemsFrame,systems_frame,SYSTEMS,FRAME,GtkWidget)
 struct _SystemsFrame { GtkWidget parent; GtkWidget *child; };
 G_DEFINE_TYPE(SystemsFrame,systems_frame,GTK_TYPE_WIDGET)
 
-static double unfold,unfold_target,unfold_from; // 0 folded into the beam, 1 open
+static double unfold,unfold_target,unfold_from; // 0 closed, 1 open
 static gint64 unfold_start; // frame time of the first frame of this run
-static int beam_x;
+static int unfold_anchor_x;
 
 static void frame_dispose(GObject *o) {
 	SystemsFrame *f=SYSTEMS_FRAME(o);
@@ -47,47 +47,18 @@ static void frame_allocate(GtkWidget *w,int width,int height,int baseline) {
 	if(f->child) gtk_widget_allocate(f->child,width,height,baseline,NULL);
 }
 static double ease(double t) {t=CLAMP(t,0,1);return t<.5?4*t*t*t:1-pow(-2*t+2,3)/2;}
-// Fast start, soft landing: reads as responsive rather than delayed.
-static double ease_out(double t) {t=CLAMP(t,0,1);return 1-pow(1-t,3);}
-static void glow_line(GtkSnapshot *s,double x,double y,double w,double h,double a) {
-	GdkRGBA glow={.34,.83,.87,.18*a},core={.66,.95,.97,a};
-	gboolean vertical=h>w;
-	graphene_rect_t wide=vertical?GRAPHENE_RECT_INIT(x-3,y,7,h):GRAPHENE_RECT_INIT(x,y-3,w,7);
-	graphene_rect_t thin=vertical?GRAPHENE_RECT_INIT(x-.8,y,1.6,h):GRAPHENE_RECT_INIT(x,y-.7,w,1.4);
-	gtk_snapshot_append_color(s,&glow,&wide);
-	gtk_snapshot_append_color(s,&core,&thin);
-}
-// The projection: a beam rises from the button (0–20%), the board unfolds
-// sideways from it (20–62%), then one scan line settles it.
+static double ease_out(double t) {t=CLAMP(t,0,1);return t*(2-t);}
 static void frame_snapshot(GtkWidget *w,GtkSnapshot *s) {
 	SystemsFrame *f=SYSTEMS_FRAME(w);
 	if(!f->child) return;
 	double W=gtk_widget_get_width(w),H=gtk_widget_get_height(w),u=unfold;
 	if(u>=1) {gtk_widget_snapshot_child(w,f->child,s);return;}
-	double bx=CLAMP(beam_x,1,W-1);
-	if(u<.2) {
-		double rise=H*ease_out(u/.2);
-		glow_line(s,bx,H-rise,0,rise,1);
-		return;
-	}
-	if(u<.62) {
-		double t=ease_out((u-.2)/.42),half=MAX(bx,W-bx)*t;
-		double l=MAX(0,bx-half),r=MIN(W,bx+half);
-		gtk_snapshot_push_clip(s,&GRAPHENE_RECT_INIT(l,0,r-l,H));
-		gtk_widget_snapshot_child(w,f->child,s);
-		gtk_snapshot_pop(s);
-		glow_line(s,bx,0,0,H,1-t);
-		if(l>0) glow_line(s,l,0,0,H,1);
-		if(r<W) glow_line(s,r,0,0,H,1);
-		return;
-	}
-	double t=ease_out((u-.62)/.38),y=H*t;
+	if(W<=0 || H<=0) return;
+	double anchor=CLAMP(unfold_anchor_x,0,W),t=ease_out(u);
+	double left=anchor*(1-t);
+	gtk_snapshot_push_clip(s,&GRAPHENE_RECT_INIT(left,0,W*t,H));
 	gtk_widget_snapshot_child(w,f->child,s);
-	GdkRGBA veil={.016,.027,.047,.38};
-	gtk_snapshot_append_color(s,&veil,&GRAPHENE_RECT_INIT(0,y,W,H-y));
-	GdkRGBA band={.34,.83,.87,.12};
-	gtk_snapshot_append_color(s,&band,&GRAPHENE_RECT_INIT(0,y-6,W,12));
-	glow_line(s,0,y,W,0,.9);
+	gtk_snapshot_pop(s);
 }
 static void systems_frame_class_init(SystemsFrameClass *k) {
 	G_OBJECT_CLASS(k)->dispose=frame_dispose;
@@ -810,8 +781,9 @@ static gboolean tick(GtkWidget *w,GdkFrameClock *clock,gpointer data) {
 		busy|=unfold!=unfold_target;
 		// Content animations wait: the board's pixels stay cached while
 		// only the projection clip changes.
-		if(open && unfold!=unfold_target) return G_SOURCE_CONTINUE;
+		if(unfold!=unfold_target) return G_SOURCE_CONTINUE;
 	}
+	if(!open) {tick_id=0;last_frame=0;return G_SOURCE_REMOVE;}
 	gboolean draw=FALSE;
 	if(content_fade<1) {content_fade=motion?MIN(1,content_fade+dt/FADE_IN_MS):1;draw=TRUE;busy|=content_fade<1;}
 	if(head_t<1) {head_t=motion?MIN(1,head_t+dt/HEAD_MS):1;draw=TRUE;busy|=head_t<1;}
@@ -1251,7 +1223,13 @@ gboolean systems_board_close(void) {
 	// Input is released at once; the fold-back plays without it.
 	gtk_widget_set_can_target(pane,FALSE);
 	unfold_from=unfold;unfold_target=0;unfold_start=0;
-	if(!motion) {unfold=0;gtk_widget_set_visible(pane,FALSE);}
+	if(!motion || unfold==0) {
+		unfold=0;
+		if(tick_id) gtk_widget_remove_tick_callback(pane,tick_id);
+		tick_id=0;
+		last_frame=0;
+		gtk_widget_set_visible(pane,FALSE);
+	}
 	ensure_tick();
 	if(on_region) on_region();
 	return TRUE;
@@ -1261,7 +1239,7 @@ void systems_board_layout(int w,int h,int anchor,int bottom) {
 	int board=MIN(BOARD_WIDTH,MAX(1,w-24));
 	avail_height=MAX(240,h-bottom-24);
 	int left=CLAMP(anchor-board/2,12,MAX(12,w-board-12));
-	beam_x=anchor-left;
+	unfold_anchor_x=anchor-left;
 	width=board;
 	gtk_widget_set_size_request(canvas,board,needed_height());
 	gtk_widget_set_margin_start(pane,left);

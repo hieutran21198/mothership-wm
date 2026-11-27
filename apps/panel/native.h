@@ -38,4 +38,6 @@ void map_hud_icons_free(void *);
 int map_hud_icon_add(void *,const char *,const unsigned char *,size_t);
 void map_hud_icons_replace(void *);
 
+int panel_default_node_enabled(void);
+
 #endif

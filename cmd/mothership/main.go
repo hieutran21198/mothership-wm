@@ -120,7 +120,8 @@ func runMode(ctx context.Context, bin string, original []string, out, stderr io.
 	} else {
 		env = append(env, "WAYLAND_DISPLAY="+parent)
 	}
-	if address, stopBus, err := appbus.Start(ctx, owned); err != nil {
+	address, stopBus, err := appbus.Start(ctx, owned)
+	if err != nil {
 		fmt.Fprintln(stderr, "mothership:", err)
 	} else {
 		defer stopBus()
@@ -157,6 +158,14 @@ func runMode(ctx context.Context, bin string, original []string, out, stderr io.
 	socket := strings.TrimPrefix(line, "WAYLAND_DISPLAY=")
 	if filepath.Base(socket) != socket || !strings.HasPrefix(socket, "wayland-") {
 		return errors.New("WM startup: invalid child socket")
+	}
+	if address != "" {
+		stopChooser, err := appbus.StartFileChooser(ctx, owned, filepath.Join(owned, socket), address, initial, stderr)
+		if err != nil {
+			fmt.Fprintln(stderr, "mothership: file chooser:", err)
+		} else {
+			defer stopChooser()
+		}
 	}
 
 	if err := s.start("Shell", "mothership-command-center", nil, "--nested", socket); err != nil {

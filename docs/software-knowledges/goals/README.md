@@ -18,6 +18,7 @@ Each criterion names the Flow scenario that demonstrates it.
 - [Launch Mothership Shell in COSMIC](launch-native-shell.md).
 - [Open a terminal or file manager from Command Center](open-native-apps.md).
 - [Find and launch installed apps from App Grid](use-app-grid.md).
+- [Open and save files from an app](open-app-file-dialogs.md).
 - [Enter Nodes from Overview and choose a layout](view-node-layouts.md).
 
 - [Show a configurable Center Map HUD](show-center-map.md).
@@ -29,7 +30,7 @@ Design accepted 2026-11-27; each document states what is implemented:
 
 - [Relaunch a Node's apps from its loadout](launch-node-loadouts.md).
 - [Work in a Node without interruptions](run-silent.md).
-- [Keep one window in sight across Nodes](pin-comms-window.md).
+- [Keep windows in sight across Nodes](pin-comms-window.md).
 - [Move a window to another Node in one gesture](move-windows-between-nodes.md).
 - [Find any open window by name](find-any-window.md).
 - [See where the day went](review-mission-log.md).

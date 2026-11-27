@@ -52,7 +52,8 @@ void map_hud_center_mothership(void);
 
 void map_hud_notice_count(const char *,unsigned);
 void map_hud_set_silent(const char *names);
-// "name\tmuted" lines for Nodes with playing audio; empty clears comms.
+// "name\tcomms\tmusic" lines for Nodes with playing audio, each 0 none,
+// 1 playing or 2 muted; empty clears comms arcs and music zones.
 void map_hud_set_comms(const char *lines);
 void map_hud_notice_received(const char *);
 

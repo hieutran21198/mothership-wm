@@ -290,7 +290,7 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 		g_object_unref(row);
 	}
 	double row=b.y+(b.h-29)*.5;
-	double available=layout.stealth.x-x-12;
+	double available=(layout.stealth.w>0?layout.stealth.x:b.x)-x-12;
 	if(d && d->empty) label(cr,"No windows open",x,row+6,MAX(1,available),12,FALSE);
 	int shown=0;
 	if(widget) icons_resolve(widget,d);
@@ -312,8 +312,10 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 		cairo_set_source_rgb(cr,.25,.40,.49);cairo_stroke(cr);
 	}
 	struct profile_rect st=layout.stealth;
-	analog_button_paint(cr,st.x,st.y,st.w,st.h,stealth_state);
-	stealth_glyph(cr,st,(stealth_state&GTK_STATE_FLAG_CHECKED)!=0);
+	if (st.w>0) {
+		analog_button_paint(cr,st.x,st.y,st.w,st.h,stealth_state);
+		stealth_glyph(cr,st,(stealth_state&GTK_STATE_FLAG_CHECKED)!=0);
+	}
 	analog_button_paint(cr,b.x,b.y,b.w,b.h,button_state);
 	cairo_save(cr);cairo_translate(cr,b.x+b.w*.5,b.y+b.h*.5);cairo_rotate(cr,.60);
 	cairo_set_source_rgb(cr,.69,.90,.94);

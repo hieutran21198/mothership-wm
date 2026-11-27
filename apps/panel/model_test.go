@@ -115,6 +115,30 @@ func TestNodeDetailReflectsAppLifecycleAndActivity(t *testing.T) {
 	}
 }
 
+func TestDefaultNodeDetailTracksMappedInbox(t *testing.T) {
+	s := domainipc.Snapshot{
+		WMReady: true,
+		Windows: []domainipc.Window{
+			{ID: 1, Mapped: true, AppID: "org.example.Editor.desktop"},
+			{ID: 2, AppID: "org.example.Hidden"},
+		},
+	}
+	row := profileRows(s)[0]
+	if row.Domain != "" || row.Description != "Default Node · 1 window" || row.empty ||
+		len(row.apps) != 1 || row.apps[0] != "org.example.Editor" {
+		t.Fatalf("wrong Default Node detail: %+v", row)
+	}
+	s.Windows[0].Domain = "Dev"
+	row = profileRows(s)[0]
+	if !row.empty || len(row.apps) != 0 {
+		t.Fatalf("assigned window still appears in Default Node: %+v", row)
+	}
+	s.WMReady = false
+	if profileRows(s)[0].empty {
+		t.Fatal("unknown Inbox membership was reported empty")
+	}
+}
+
 func TestRelayRejectionKeepsConfirmedMapAndIdentifiesRequest(t *testing.T) {
 	var v view
 	c := controller{

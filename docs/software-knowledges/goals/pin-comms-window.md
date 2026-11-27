@@ -1,13 +1,15 @@
-# Keep one window in sight across Nodes
+# Keep windows in sight across Nodes
 
-**Status:** implemented 2026-11-27; owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27.
+**Implemented** after design approval on 2026-11-27. Mothership Dev session
+acceptance is pending.
 
-The desktop user needs to watch one live window, such as a call, build log
-or player, while working in other Nodes, without moving it into each Node.
+The desktop user needs to watch several live windows, such as a call and
+a build log, while working in other Nodes and keep each window in its
+source Node.
 
 | Criterion | Observable success | Proven by |
 | --- | --- | --- |
-| G-PIN-1 Pin | **Meta + P** pins the focused window. A live, read-only thumbnail appears in other Nodes, Default Node and Home, and keeps updating. | [F-PIN-1](../flows/pin-comms-window.md#f-pin-1) |
-| G-PIN-2 Return | Clicking the pin connects to the window's Node and focuses that window. | [F-PIN-2](../flows/pin-comms-window.md#f-pin-2) |
-| G-PIN-3 Out of the way | The pin never takes keyboard focus or forwards input to the app. It hides in its own Node, the Map and exclusive shell overlays, and can sit in any corner. | [F-PIN-3](../flows/pin-comms-window.md#f-pin-3) |
-| G-PIN-4 Release | Unpinning, closing the window or ending the session removes the pin. Membership and the app's size never change. | [F-PIN-4](../flows/pin-comms-window.md#f-pin-4) |
+| G-PIN-1 Pin | **Meta + P** toggles the focused window's pin independently. Read-only thumbnails update in other Nodes, Default Node and blank Home. | [F-PIN-1](../flows/pin-comms-window.md#f-pin-1) |
+| G-PIN-2 Return | Selecting a pin switches to its current Node and focuses that exact window. | [F-PIN-2](../flows/pin-comms-window.md#f-pin-2) |
+| G-PIN-3 Out of the way | The stack fits at a chosen corner, keeps overflow reachable and takes no app focus on its own. Pins disappear in their source Node and keep their order. | [F-PIN-1](../flows/pin-comms-window.md#f-pin-1), [F-PIN-3](../flows/pin-comms-window.md#f-pin-3) |
+| G-PIN-4 Release | Unpinning or closing a window removes its pin. Ending the session clears the stack. Each window keeps its Node membership and client size. | [F-PIN-1](../flows/pin-comms-window.md#f-pin-1), [F-PIN-4](../flows/pin-comms-window.md#f-pin-4) |

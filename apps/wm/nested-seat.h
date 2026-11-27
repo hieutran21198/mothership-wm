@@ -16,7 +16,7 @@ struct nested_hit {
 	struct wlr_surface *panel_keyboard;
 	void *handle, *decoration;
 	int chrome_action;
-	bool resize, tray, defer_move_focus, pin;
+	bool resize, frame_resize, tray, defer_move_focus, pin;
 	double x, y;
 };
 
@@ -62,8 +62,9 @@ const char *nested_seat_close_key_name(const struct nested_seat *);
 void nested_seat_move_bind(struct nested_seat *,bool (*move)(void *,struct wlr_surface *,uint32_t));
 // Called on every key, pointer motion, button or scroll; carries no data.
 void nested_seat_activity_bind(struct nested_seat *,void (*activity)(void *));
-// Meta+P on the focused app window toggles the comms pin.
-void nested_seat_pin_bind(struct nested_seat *,bool (*pin)(void *,struct wlr_surface *));
+// Meta+P toggles the focused window's pin. Escape and outside clicks dismiss overflow.
+void nested_seat_pin_bind(struct nested_seat *,bool (*pin)(void *,struct wlr_surface *),
+	bool (*dismiss)(void *));
 void nested_seat_shortcut_panel(struct nested_seat *,struct wlr_surface *);
 void nested_seat_screenshot_bind(struct nested_seat *,bool (*open)(void *),void (*abort)(void *),void *);
 void nested_seat_screenshot_modal(struct nested_seat *,struct wlr_surface *);
@@ -77,6 +78,8 @@ void nested_seat_cancel_node_switch(struct nested_seat *seat);
 void nested_seat_map_home(struct nested_seat *seat,bool enabled);
 struct wlr_surface *nested_seat_map_position(struct nested_seat *,double *x,double *y);
 void nested_seat_refresh(struct nested_seat *seat);
+void nested_seat_dialog_bind(struct nested_seat *,struct wlr_surface *(*target)(void *,struct wlr_surface *));
+void nested_seat_refresh_dialog(struct nested_seat *);
 void nested_seat_destroy(struct nested_seat *seat);
 
 #endif

@@ -4,8 +4,8 @@ For visual changes, compare the [original approved assets and review checklist](
 
 - Wallpaper is lowest and the WM owns application surfaces above it. In
   one Center Map HUD, paint back to front: surface/grid/frame, radar, world
-  (Mothership, Nodes, names, routes and relay), minimap and input guide,
-  then Node Detail.
+  (music zones, then Mothership, Nodes, names, routes and relay), minimap
+  and input guide, then Node Detail.
   Command Center and the physical panel remain independent.
 - The native radar uses a Wayland subsurface of the same HUD. It runs
   before world landmarks appear; it and the GTK fallback both exclude the
@@ -90,6 +90,26 @@ For visual changes, compare the [original approved assets and review checklist](
   during the radar, Arcade, and Connect relay; Disconnect restores selection
   without opening it. Click the selected Node again to reopen it.
 
+### Default Node detail
+
+In active Map View, click the Mothership hull or label to open the existing
+Detail card beside it when Default Node is enabled. Title the card
+**Mothership** and identify its contents as **Default Node**. Use the live
+[Inbox membership](../artifacts/domain.md) for the window count, mapped app icons and the
+existing empty state. On first open, center Mothership if the frame would
+clip its hull. Show activity times only when available for Default Node.
+Keep one Mothership marker at the route origin. Selecting it clears the named
+Node route and keeps the Map open.
+
+Connect and Enter use the existing Default Node entry, with the same outcome
+as key 1. When Default Node is disabled, the Mothership marker still serves
+as the route origin and does not open Detail.
+
+Verify with a mapped Inbox app, after assigning that app to a named Node,
+and with Default Node disabled. Pan and zoom with the card open to check
+that it follows the marker and clears the minimap. Verify that opening the
+card preserves the current view and that Connect opens Default Node.
+
 ## Visual invariants
 
 - Use one retained layer stack in one HUD, in the order above. Check both
@@ -123,6 +143,16 @@ For visual changes, compare the [original approved assets and review checklist](
   Mothership on the next Map open; see
   [Show ship status](../flows/show-ship-status.md). Both states are
   implemented.
+- **Music** (owner-approved 2026-11-27; see the
+  [Music zone preview](music-zone-preview.html), variant B) replaces comms
+  arcs for music streams; calls and other audio keep the arcs. It is the
+  one approved exception to “no ring, glow or size change”: a fixed
+  52 logical px octagon zone at 1× with a faint tint, beat waves that fade
+  out from the hull and a 32-tick spectrum halo. It is limited to music,
+  paints under every ship, label, route and badge, keeps 3 px clear of
+  its own Node's name, adds no hit target and never moves the marker,
+  label or route endpoints. Waves move only with motion; muted is still
+  and struck. Details are in [Show ship status](../flows/show-ship-status.md#f-ship-4).
 - Use the same [shell typeface and role weights](../../../internal/shellfonts/fonts/chakra-petch/README.md)
   across Mothership-owned text; external applications keep their own fonts.
   Mothership, numbered Node names and unnumbered Node names share the
@@ -145,9 +175,8 @@ For visual changes, compare the [original approved assets and review checklist](
 ## Connect and Disconnect
 
 - Mothership is a virtual route origin at a fixed coordinate
-  in the map's world. Pan and zoom project it just like Nodes. A small,
-  non-interactive mark denotes the origin inside the Map; it is not a
-  Node, a separate viewport control, or part of the frame. The dashed route
+  in the map's world. Pan and zoom project it just like Nodes. Its marker
+  also opens Default Node detail when enabled. The dashed route
   and both relay glyphs share this coordinate and clip to Map content.
   Selection does not switch workspace. With motion enabled, only the
   dash pattern loops at constant speed from Mothership to the selected
@@ -169,7 +198,7 @@ For visual changes, compare the [original approved assets and review checklist](
 - Switching directly from Node A to B uses the same acknowledgement.
   A rejected switch leaves A selected. If WM fails to acknowledge or
   disconnects, the result is unknown; do not render B as connected.
-- Key 1 is reserved for Default Node, which remains off the Map. Named
+- Key 1 is reserved for Default Node, represented by the Mothership marker. Named
   Node keys 2–9 match their labels. The key is the saved named-Node slot
   plus one; saved records do not change. Named Nodes beyond the first
   eight shortcut slots remain available on the Map and in the command

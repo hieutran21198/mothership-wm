@@ -42,8 +42,9 @@ func pinParts(id uint64, appID string) (source, node, name string) {
 // the GTK thread; the title never leaves the Panel.
 //
 //export panelPinLabel
-func panelPinLabel(id C.uint64_t, title, app *C.char) *C.char {
+func panelPinLabel(id C.uint64_t, title, app *C.char, nodeBytes *C.uint) *C.char {
 	_, node, name := pinParts(uint64(id), C.GoString(app))
+	*nodeBytes = C.uint(len(node))
 	label := node + " · " + name
 	if t := strings.TrimSpace(C.GoString(title)); t != "" {
 		label += " — " + t

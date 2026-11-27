@@ -102,8 +102,59 @@ func TestCommsNodesShowPlayingAndMutedNodes(t *testing.T) {
 		paused,                            // Quiet: paused
 		testStream(5, "105", "10", true),  // Ops has one unmuted stream left
 	}
-	got := commsNodes(routeAudio(streams, windows, func(int) int { return 0 }))
-	if want := map[string]bool{"Ops": false, "Dev": true}; !reflect.DeepEqual(got, want) {
+	got := shipAudioNodes(routeAudio(streams, windows, func(int) int { return 0 }), func(audioStream) bool { return false })
+	want := map[string]shipAudio{"Ops": {Comms: true}, "Dev": {Comms: true, CommsMuted: true}}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("comms %v, want %v", got, want)
+	}
+}
+
+func TestShipAudioSplitsMusicFromComms(t *testing.T) {
+	windows := []domainipc.Window{
+		{PID: 10, Domain: "Studio", Mapped: true},
+		{PID: 20, Domain: "Ops", Mapped: true},
+		{PID: 30, Domain: "Lounge", Mapped: true},
+	}
+	tagged := testStream(1, "101", "10", false)
+	tagged.Properties["media.role"] = "music"
+	call := testStream(2, "102", "10", false)  // Studio: also in a call
+	player := testStream(3, "103", "31", true) // Lounge: child of the player, muted
+	other := testStream(4, "104", "20", false) // Ops: not a player
+	parent := func(pid int) int {
+		if pid == 31 {
+			return 30
+		}
+		return 0
+	}
+	streams := []audioStream{tagged, call, player, other}
+	routed := routeAudio(streams, windows, parent)
+	players := map[int]bool{30: true}
+	got := shipAudioNodes(routed, func(s audioStream) bool { return musicStream(s, players, parent) })
+	want := map[string]shipAudio{
+		"Studio": {Comms: true, Music: true},
+		"Lounge": {Music: true, MusicMuted: true},
+		"Ops":    {Comms: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ship audio %v, want %v", got, want)
+	}
+	if !needsPlayers(routed) {
+		t.Fatal("untagged playing streams need the media-player check")
+	}
+	if needsPlayers(routeAudio([]audioStream{tagged}, windows, parent)) {
+		t.Fatal("a tagged music stream needs no media-player check")
+	}
+}
+
+func TestParseBusReplies(t *testing.T) {
+	names := parseBusNames([]byte(`{"type":"as","data":[["org.freedesktop.DBus",":1.5","org.mpris.MediaPlayer2.spotify"]]}`))
+	if !reflect.DeepEqual(names, []string{"org.mpris.MediaPlayer2.spotify"}) {
+		t.Fatalf("names %v", names)
+	}
+	if !parseBusPlaying([]byte(`{"type":"s","data":"Playing"}`)) || parseBusPlaying([]byte(`{"type":"s","data":"Paused"}`)) {
+		t.Fatal("playback status")
+	}
+	if parseBusPID([]byte(`{"type":"u","data":[4242]}`)) != 4242 || parseBusPID([]byte(`{"type":"u","data":[1]}`)) != 0 {
+		t.Fatal("process id")
 	}
 }

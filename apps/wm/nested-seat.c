@@ -41,6 +41,7 @@ struct nested_seat {
 	struct wl_surface *output;
 	struct wlr_surface *selected, *panel_focus, *blank_shell;
 	struct wlr_surface *screenshot_panel;
+	struct wlr_surface *(*dialog_target)(void *,struct wlr_surface *);
 	nested_hit_test hit_test;
 	nested_selected select_window;
 	nested_cursor_move move_cursor;
@@ -63,6 +64,7 @@ struct nested_seat {
 	bool (*move_window)(void *,struct wlr_surface *,uint32_t);
 	void (*activity)(void *);
 	bool (*pin_window)(void *,struct wlr_surface *);
+	bool (*pin_dismiss)(void *);
 	bool (*render_capture)(void *);
 	bool (*screenshot_open)(void *);
 	void (*screenshot_abort)(void *);
@@ -101,6 +103,8 @@ static const struct wlr_keyboard_impl keyboard_impl = { .name = "nested-wayland"
 static struct wlr_surface *keyboard_target(struct nested_seat *seat) {
 	if (seat->screenshot_panel) return seat->screenshot_panel;
 	if (seat->panel_focus) return seat->panel_focus;
+	if (seat->selected && seat->dialog_target)
+		return seat->dialog_target(seat->data,seat->selected);
 	return seat->selected ? seat->selected : seat->blank_shell;
 }
 
@@ -203,6 +207,18 @@ void nested_seat_screenshot_bind(struct nested_seat *seat,bool (*open)(void *),
 	seat->screenshot_open=open;
 	seat->screenshot_abort=abort;
 	seat->screenshot_data=data;
+}
+
+void nested_seat_dialog_bind(struct nested_seat *seat,
+		struct wlr_surface *(*target)(void *,struct wlr_surface *)) {
+	seat->dialog_target=target;
+}
+
+void nested_seat_refresh_dialog(struct nested_seat *seat) {
+	if (!seat || !seat->keyboard_inside || !seat->has_keymap ||
+			keyboard_target(seat)==seat->child->keyboard_state.focused_surface) return;
+	isolate_keys(seat);
+	keyboard_focus(seat);
 }
 
 void nested_seat_screenshot_modal(struct nested_seat *seat,struct wlr_surface *panel) {
@@ -418,6 +434,10 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		return;
 	}
 	struct nested_hit hit = pointer_focus(seat);
+	// Collapsing can put a preview under the pointer. Wait until the
+	// outside click ends so the app underneath receives its release.
+	if(!hit.pin && was_held && !seat->buttons_held[button] && seat->pin_dismiss)
+		seat->pin_dismiss(seat->data);
 	struct wlr_surface *map=map_panel(seat);
 	if(weapon && !was_held && seat->buttons_held[button] && !hit.surface &&
 	   seat->map_weapon(seat->data,weapon,true)) {
@@ -425,18 +445,19 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 		return;
 	}
 	if (hit.handle != NULL && button == BTN_LEFT && state == WL_POINTER_BUTTON_STATE_PRESSED) {
-		if (seat->panel_focus != NULL) {
+		if (seat->panel_focus != NULL && !hit.pin) {
 			isolate_keys(seat);
 			seat->panel_focus = NULL;
 		}
 		wlr_seat_pointer_end_grab(seat->child);
 		wlr_seat_pointer_clear_focus(seat->child);
+		if (hit.frame_resize) seat->start_move(seat->data, hit, seat->x, seat->y);
 		if(!hit.defer_move_focus) {
 			seat->selected = hit.toplevel;
 			seat->select_window(seat->data, hit.toplevel);
 			keyboard_focus(seat);
 		}
-		seat->start_move(seat->data, hit, seat->x, seat->y);
+		if (!hit.frame_resize) seat->start_move(seat->data, hit, seat->x, seat->y);
 		seat->moving = true;
 		return;
 	}
@@ -650,8 +671,12 @@ void nested_seat_move_bind(struct nested_seat *seat,bool (*move)(void *,struct w
 void nested_seat_activity_bind(struct nested_seat *seat,void (*activity)(void *)) {
 	if(seat) seat->activity=activity;
 }
-void nested_seat_pin_bind(struct nested_seat *seat,bool (*pin)(void *,struct wlr_surface *)) {
-	if(seat) seat->pin_window=pin;
+void nested_seat_pin_bind(struct nested_seat *seat,bool (*pin)(void *,struct wlr_surface *),
+		bool (*dismiss)(void *)) {
+	if(seat) {
+		seat->pin_window=pin;
+		seat->pin_dismiss=dismiss;
+	}
 }
 // Exactly one Meta key and this key, nothing else, no latched modifiers.
 static bool meta_alone_chord(const struct nested_seat *seat,uint32_t key) {
@@ -824,6 +849,12 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 		forward_key(seat,time,key,state);
 		return;
 	}
+	if(key==KEY_ESC && seat->keys_held[key] && !was_held && !seat->panel_focus &&
+			!seat->cycle_active && seat->pin_dismiss && seat->pin_dismiss(seat->data)) {
+		seat->keys_blocked[key]=true;
+		seat->blocked_count++;
+		return;
+	}
 	bool arrow=key==KEY_LEFT || key==KEY_RIGHT || key==KEY_UP || key==KEY_DOWN;
 	if((arrow || key==KEY_F12) && seat->keys_held[key] && !was_held && meta_shift_chord(seat,key)) {
 		bool handled=false;
@@ -839,6 +870,15 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 			seat->blocked_count++;
 			return;
 		}
+	}
+	// Leave existing editable Win+S bindings in control when configured.
+	if(key==KEY_S && key!=seat->close_key && key!=seat->apps_key && key!=seat->settings_key &&
+			node_scope && !seat->panel_focus && !seat->cycle_active && node_switch_available(seat) &&
+			seat->keys_held[key] && !was_held && meta_alone_chord(seat,key) &&
+			seat->node_panel_key(seat->data,KEY_S)) {
+		seat->keys_blocked[key]=true;
+		seat->blocked_count++;
+		return;
 	}
 	// Meta+P pins or unpins the focused app window.
 	if(key==KEY_P && seat->pin_window && seat->keys_held[key] && !was_held &&

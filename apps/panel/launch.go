@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,18 +65,18 @@ func appCommand(ctx context.Context, action appAction, display string, env []str
 	}
 	switch action {
 	case openBrave:
-		// Keep Chromium singleton sockets, configuration and credentials
-		// inside the owned nested runtime. Never reuse the COSMIC profile.
-		profile := nestedBraveProfile(display)
-		if err := os.Mkdir(profile, 0700); err != nil && !os.IsExist(err) {
-			return nil, name, fmt.Errorf("could not make a private Brave profile: %w", err)
+		args = []string{"--ozone-platform=wayland"}
+		if profile := braveProfile(display, nativeSession(env)); profile != "" {
+			if err := os.Mkdir(profile, 0700); err != nil && !os.IsExist(err) {
+				return nil, name, fmt.Errorf("could not make a private Brave profile: %w", err)
+			}
+			st, err := os.Lstat(profile)
+			if err != nil || !st.IsDir() || st.Mode().Perm() != 0700 {
+				return nil, name, fmt.Errorf("Brave profile is not a private directory")
+			}
+			args = append(args, "--user-data-dir="+profile)
 		}
-		st, err := os.Lstat(profile)
-		if err != nil || !st.IsDir() || st.Mode().Perm() != 0700 {
-			return nil, name, fmt.Errorf("Brave profile is not a private directory")
-		}
-		args = []string{"--ozone-platform=wayland", "--user-data-dir=" + profile,
-			"--no-first-run", "--no-default-browser-check", "--new-window", "about:blank"}
+		args = append(args, "--no-first-run", "--no-default-browser-check", "--new-window", "about:blank")
 	case openBtop:
 		tool, err := exec.LookPath("btop")
 		if err != nil {
@@ -97,7 +98,7 @@ func appCommand(ctx context.Context, action appAction, display string, env []str
 			"XDG_ACTIVATION_TOKEN", "DESKTOP_STARTUP_ID", "DBUS_SESSION_BUS_ADDRESS":
 			continue
 		}
-		if action == openBrave {
+		if action == openBrave && !nativeSession(env) {
 			switch key {
 			case "CHROME_USER_DATA_DIR", "CHROME_CONFIG_HOME", "CHROMIUM_USER_FLAGS", "CHROMIUM_FLAGS",
 				"BRAVE_USER_FLAGS", "BRAVE_FLAGS":
@@ -208,13 +209,27 @@ func gridLaunchWindow(windows []domainipc.Window, after uint64, matches func(int
 	return id
 }
 
-func nestedBraveProfile(display string) string {
+func nativeSession(env []string) bool {
+	return slices.Contains(env, "MOTHERSHIP_NATIVE_SESSION=1")
+}
+
+// braveProfile is the --user-data-dir for a Mothership Brave launch, or ""
+// for Brave's normal profile. The native session is the user's desktop, so
+// it keeps the normal profile across sessions. A nested session keeps a
+// private profile in its runtime so Chromium's singleton cannot forward the
+// window to a host browser; it is removed with that runtime.
+func braveProfile(display string, native bool) string {
+	if native {
+		return ""
+	}
 	return filepath.Join(filepath.Dir(display), "brave-profile")
 }
 
 // The Nix wrapper may fork Brave, and a warm launch may be forwarded to
 // the existing browser. Neither case keeps the command's PID on Wayland.
-func ownsNestedBraveProfile(procRoot string, pid int, profile string) bool {
+// An empty profile matches a Brave browser on its normal profile, which
+// has no --user-data-dir flag.
+func ownsBraveProfile(procRoot string, pid int, profile string) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -238,6 +253,9 @@ func ownsNestedBraveProfile(procRoot string, pid int, profile string) bool {
 		if err != nil || !isBrave(exe) {
 			return false
 		}
+		if profile == "" {
+			return !bytes.Contains(argv[0], []byte(" --user-data-dir"))
+		}
 		marker := append(append([]byte{' '}, flag...), ' ')
 		return bytes.Contains(append(argv[0], ' '), marker)
 	}
@@ -245,11 +263,14 @@ func ownsNestedBraveProfile(procRoot string, pid int, profile string) bool {
 		return false
 	}
 	for _, a := range argv[1:] {
-		if bytes.Equal(a, flag) {
+		if profile == "" && bytes.HasPrefix(a, []byte("--user-data-dir")) {
+			return false
+		}
+		if profile != "" && bytes.Equal(a, flag) {
 			return true
 		}
 	}
-	return false
+	return profile == ""
 }
 
 func braveLaunchWindow(windows []domainipc.Window, after uint64, ownsProfile func(int) bool) uint64 {

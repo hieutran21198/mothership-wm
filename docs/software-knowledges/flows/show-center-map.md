@@ -71,3 +71,7 @@ through the existing acknowledgement. Number keys 1–9 connect to their own
 slot, and every visible Node can be selected and connected without a number.
 Explicit Disconnect returns to the previous camera and last connected selection.
 See the [Center Map UI contract](../system/center-map-ui.md).
+
+Click Mothership to inspect its [Default Node detail](../system/center-map-ui.md#default-node-detail).
+Enter or Connect requests the same view as key 1 through desktopd. The Panel
+uses the live Inbox membership and refreshes the card as windows change.

@@ -40,7 +40,9 @@ be mapped, live, and without Domain membership. Explicit assignment removes
 it from Inbox. Unmap or destruction also makes a window ineligible.
 
 The Default Node is the reserved foreground projection of Inbox, not stored
-in the named Domain catalog and not included in map slots or mini-map.
+in the named Domain catalog. Its detail is available from the existing
+[Mothership marker](../system/center-map-ui.md#default-node-detail), which
+keeps its fixed position on the Map and minimap.
 Blank Home and the active Default Node are distinct views; the latter has
 the normal stack capacity (eight projected members). Overflow remains live
 and assignable. WM owns its private position and focus history; it never

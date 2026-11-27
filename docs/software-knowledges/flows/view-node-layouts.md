@@ -235,3 +235,24 @@ separately. If the parent reserves Meta+Tab, use a parent that delivers the
 chord. Record a full viewport and matching strip crop at 100% and 150%.
 Check physical input separately in the
 [native developer session](use-native-dev-session.md).
+
+### F-VIEW-8
+
+Drag the bottom-right corner of a standalone [window frame](../system/window-frame.md)
+on the Flow strip or in Stage. The WM draws the proposed bounds while the app
+keeps its current size. Release to apply a changed size and send one final
+size to the app. Press **Esc** to discard the preview and keep the current size.
+
+Flow keeps the window in its slot and reflows the strip in the same order
+when the drag commits. Stage keeps the window in its work area. Each window
+keeps its Flow and Stage sizes separately for the session.
+
+At 100% and 150% scale, capture a real Wayland app before, during and after
+the drag in each layout. Grow, shrink, and change the two axes in opposite
+directions. Check that the stripes follow only the added and removed areas.
+In the Wayland trace, verify that the requested size stays fixed through motion
+and changes once after release. Check that the app redraws at the final size.
+Repeat with a canceled drag and a release at the
+original size. In Flow, check the order of neighboring windows. In Stage,
+check the work-area limit and that only the active window presents. Switch
+between layouts and verify that each size is restored.

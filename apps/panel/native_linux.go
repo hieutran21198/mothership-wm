@@ -122,7 +122,7 @@ func main() {
 	volumeDone := make(chan struct{})
 	go func() { defer close(volumeDone); runNodeVolume(ctx, active) }()
 	go sampleHome(ctx)
-	go runComms(ctx, active)
+	go runComms(ctx, active, apps.bus)
 	go runSystems(ctx)
 	go func() {
 		<-ctx.Done()
@@ -146,7 +146,11 @@ func showNative(v view) {
 	}
 	var profiles strings.Builder
 	for _, p := range v.profiles {
-		closed, open := missionTodayFor(p.Domain)
+		missionNode := p.Domain
+		if missionNode == "" {
+			missionNode = "@default"
+		}
+		closed, open := missionTodayFor(missionNode)
 		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\t%d\t%d\t%d\t%d\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","), p.Shortcut, len(p.Loadout), closed, open)
 	}
 	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode, profiles.String()}
@@ -696,10 +700,12 @@ func launchGridEntry(info *C.GDesktopAppInfo, key, executable string, dbus bool,
 	attached := func(id uint64, ok bool) {
 		if ok && node != "" {
 			launched.record(session, id, key)
+			// The assignment event can render before the launch entry is recorded.
+			active.rerender()
 		}
 		done(ok)
 	}
-	// One in-flight request per shared nested profile. A second request
+	// One in-flight request per shared Brave profile. A second request
 	// cannot claim the first request's new browser window.
 	brave := action == openBrave
 	if brave && !braveLaunchPending.CompareAndSwap(false, true) {
@@ -723,11 +729,11 @@ func launchGridEntry(info *C.GDesktopAppInfo, key, executable string, dbus bool,
 		return err.Error()
 	}
 	if brave {
-		profile := nestedBraveProfile(apps.display)
+		profile := braveProfile(apps.display, nativeSession(os.Environ()))
 		go func() {
 			defer braveLaunchPending.Store(false)
 			attachGridWindow(active, session, node, 12*time.Second, func(w []domainipc.Window) uint64 {
-				return braveLaunchWindow(w, after, func(pid int) bool { return ownsNestedBraveProfile("/proc", pid, profile) })
+				return braveLaunchWindow(w, after, func(pid int) bool { return ownsBraveProfile("/proc", pid, profile) })
 			}, attached)
 		}()
 	} else if node != "" {

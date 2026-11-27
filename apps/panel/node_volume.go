@@ -189,21 +189,6 @@ func audioGroups(streams []nodeAudioStream, node string) []audioGroup {
 	return result
 }
 
-// commsNodes reports named Nodes with an identifiable playing stream, and
-// whether all of a Node's playing streams are muted. Corked (paused)
-// streams are not playing. The Default Node is not on the Map.
-func commsNodes(routed []nodeAudioStream) map[string]bool {
-	out := map[string]bool{}
-	for _, s := range routed {
-		if s.stream.Corked || s.node == "" || s.node == defaultAudioNode {
-			continue
-		}
-		muted, seen := out[s.node]
-		out[s.node] = s.stream.Mute && (!seen || muted)
-	}
-	return out
-}
-
 type audioMuteState struct {
 	nodes   map[string]bool
 	restore map[audioKey]string // Streams muted here, never pre-muted inputs.

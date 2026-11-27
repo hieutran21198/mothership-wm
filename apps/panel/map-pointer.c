@@ -54,6 +54,9 @@ static void node_apps(void *data,struct mothership_map_pointer_v1 *p) {
 static void node_slash(void *data,struct mothership_map_pointer_v1 *p) {
 	(void)data;(void)p;panel_node_slash();
 }
+static void node_save_loadout(void *data,struct mothership_map_pointer_v1 *p) {
+	(void)data;(void)p;panel_node_save_loadout();
+}
 static void node_notifications(void *data,struct mothership_map_pointer_v1 *p) {
 	(void)data;(void)p;panel_node_notifications();
 }
@@ -82,6 +85,21 @@ static void beam(void *d,struct mothership_map_pointer_v1 *p,uint32_t phase,uint
 }
 static void pin_activate(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo) {
 	(void)d;(void)p;panel_pin_activate(((uint64_t)hi<<32)|lo);
+}
+static void pin_stack_label(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo,
+		int32_t x,int32_t y,int32_t w,int32_t h,const char *title,const char *app) {
+	(void)d;(void)p;
+	panel_pin_stack_label(((uint64_t)hi<<32)|lo,x,y,w,h,title,app);
+}
+static void pin_stack_control(void *d,struct mothership_map_pointer_v1 *p,
+		int32_t x,int32_t y,int32_t w,int32_t h,uint32_t count,uint32_t expanded) {
+	(void)d;(void)p;
+	panel_pin_stack_control(x,y,w,h,count,expanded!=0);
+}
+static void pin_stack_added(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo,
+		const char *title,const char *app) {
+	(void)d;(void)p;
+	panel_pin_stack_added(((uint64_t)hi<<32)|lo,title,app);
 }
 gboolean panel_request_window_list(uint32_t serial) {
 	if(!pointer || mothership_map_pointer_v1_get_version(pointer)<MOTHERSHIP_MAP_POINTER_V1_WINDOW_LIST_SINCE_VERSION)
@@ -230,12 +248,13 @@ static const struct mothership_map_pointer_v1_listener events={
 	.display_done=display_done,.display_result=display_result,
 	.scene_glass_available=scene_glass_available,.node_slash=node_slash,
 	.group_state=group_state,.group_settings_anchor=group_settings_anchor,
-	.node_notifications=node_notifications,
+	.node_notifications=node_notifications,.node_save_loadout=node_save_loadout,
 	.screenshot_available=screenshot_available,.screenshot_open=screenshot_open,.screenshot_frame=screenshot_frame,
 	.screenshot_target=screenshot_target,.screenshot_image=screenshot_image,.screenshot_problem=screenshot_problem,
 	.node_switch_step=node_switch_step,.node_switch_finish=node_switch_finish,
 	.window_list_row=window_list_row,.window_list_end=window_list_end,.node_move=node_move,
 	.pin_state=pin_state,.pin_activate=pin_activate,.beam=beam,
+	.pin_stack_label=pin_stack_label,.pin_stack_control=pin_stack_control,.pin_stack_added=pin_stack_added,
 };
 
 static void apply_aim(void) {
@@ -347,6 +366,7 @@ static void removed(void *data,struct wl_registry *r,uint32_t name) {
 		panel_picker_end(0);
 		panel_node_switch_finish(0);
 		panel_window_count(0);
+		panel_pin_reset();
 	}
 }
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="28">
+  <interface name="mothership_map_pointer_v1" version="30">
     <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
       inside the frame and left-button sequences in the mapped, focused Map View.
@@ -330,6 +330,37 @@
     <event name="pin_activate" since="28">
       <description summary="a click on the comms pin asks to connect to its window"/>
       <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+    </event>
+    <event name="node_save_loadout" since="29">
+      <description summary="save the active named Node's app list without transferring focus"/>
+    </event>
+    <event name="pin_stack_label" since="30">
+      <description summary="update or remove one pinned window's caption">
+        The logical rectangle covers only the header of a live card or the
+        corresponding compact row. Width zero removes the caption for this
+        window ID. This event never announces a newly pinned window.
+      </description>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="title" type="string"/><arg name="app_id" type="string"/>
+    </event>
+    <event name="pin_stack_control" since="30">
+      <description summary="position the pin stack overflow control">
+        Count gives the number of additional pins. The expanded state changes
+        the caption to Show previews. Width zero removes the control.
+      </description>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="count" type="uint"/><arg name="expanded" type="uint"/>
+    </event>
+    <event name="pin_stack_added" since="30">
+      <description summary="announce a newly pinned window">
+        Sent once per addition, even if the window is in the current Node.
+        Replaying visible captions never sends this event.
+      </description>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="title" type="string"/><arg name="app_id" type="string"/>
     </event>
   </interface>
 </protocol>

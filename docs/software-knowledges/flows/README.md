@@ -18,6 +18,7 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Launch and close a nested Shell](launch-native-shell.md).
 - [Open native apps inside the nested session](open-native-apps.md).
 - [Browse and launch from App Grid](use-app-grid.md).
+- [Open an app file chooser](open-app-file-dialog.md).
 - [Navigate Overview and lay out a Node](view-node-layouts.md).
 
 - [Show and hide the Center Map](show-center-map.md).
@@ -30,7 +31,7 @@ Design accepted 2026-11-27; each document states what is implemented. See the
 
 - [Save and launch a Node loadout](launch-node-loadout.md).
 - [Run silent in a Node](run-silent.md).
-- [Pin a comms window](pin-comms-window.md).
+- [Pin windows across Nodes](pin-comms-window.md).
 - [Tractor-beam a window to another Node](tractor-beam-window.md).
 - [Search windows and connect to one](search-windows.md).
 - [Record and review the Mission Log](review-mission-log.md).

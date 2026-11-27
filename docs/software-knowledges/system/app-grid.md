@@ -50,7 +50,9 @@ a command to replace or recolor actual app artwork.
   D-Bus. Ark uses Qt Wayland. Brave opens a blank tab with Wayland and a
   private profile under the current nested session runtime, which is
   removed when that session ends; it does not reuse the host profile or
-  disable Chromium sandboxing. btop is the fixed command launched inside
+  disable Chromium sandboxing. In Mothership Dev (native), Mothership is the
+  user's desktop, so Brave uses its normal profile and keeps it across
+  sessions. It still gets only the private app bus, not the host keyring. btop is the fixed command launched inside
   a separate nested Ghostty terminal. Other entries name the unavailable app
   without trying the host. The WM is the source for whether a new window
   mapped; a child exiting is not a successful launch.
