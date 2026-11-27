@@ -141,6 +141,7 @@ struct nested {
 	struct wlr_scene_rect *background;
 	struct wlr_scene *scene;
 	struct wlr_scene_tree *wallpaper_tree, *app_tree, *hud_tree, *shell_tree, *node_strip_tree;
+	struct wlr_scene_tree *node_switcher_tree;
 	struct wlr_box node_strip;
 	struct {
 		struct wlr_scene_rect *background,*ring,*placeholder,*focus_marks[9];
@@ -178,6 +179,7 @@ struct nested {
 	bool picker_keyboard;
 	bool strip_motion;
 	struct shell_panel *wallpaper, *panel, *map_hud, *node_telemetry;
+	struct shell_panel *node_switcher;
 	struct wl_resource *map_pointer;
 	struct {
 		struct wl_event_source *pid_source;
@@ -435,6 +437,7 @@ static void panel_unmap(struct wl_listener *listener, void *data) {
 	if (!panel->paint_only) {
 		if (panel == panel->wm->panel)
 			screenshot_problem(panel->wm, "The Panel closed.", true);
+		nested_seat_cancel_node_switch(panel->wm->seat);
 		nested_seat_cancel_map_pointer(panel->wm->seat);
 		nested_seat_blank_shell(panel->wm->seat,NULL);
 		panel->wants_keyboard = false;
@@ -447,6 +450,7 @@ static void panel_destroy(struct wl_listener *listener, void *data) {
 	struct shell_panel *panel = wl_container_of(listener, panel, destroy);
 	if (!panel->paint_only) {
 		if (panel == panel->wm->panel) screenshot_reset(panel->wm);
+		nested_seat_cancel_node_switch(panel->wm->seat);
 		nested_seat_cancel_map_pointer(panel->wm->seat);
 		nested_seat_blank_shell(panel->wm->seat,NULL);
 		nested_seat_panel(panel->wm->seat, panel->layer->surface, false);
@@ -486,6 +490,10 @@ static void on_new_panel(struct wl_listener *listener, void *data) {
 			wl_resource_get_client(layer->resource)==wl_resource_get_client(wm->panel->layer->resource)) {
 		slot=&wm->node_telemetry;
 		tree=wm->shell_tree;
+	} else if (strcmp(layer->namespace, "mothership-node-switcher") == 0 && wm->panel &&
+			wl_resource_get_client(layer->resource) == wl_resource_get_client(wm->panel->layer->resource)) {
+		slot = &wm->node_switcher;
+		tree = wm->node_switcher_tree;
 	} else {
 		wlr_layer_surface_v1_destroy(layer);
 		return;
@@ -1570,7 +1578,7 @@ static struct nested_hit hit_view(void *data, double x, double y) {
 	if (wm->cleaning || wm->output == NULL) {
 		return hit;
 	}
-	// Wallpaper and HUD are paint-only. Never hit-test their trees, even
+	// Wallpaper, HUD and the Node switcher are paint-only. Never hit-test their trees, even
 	// before a client can commit its empty Wayland input region.
 	struct wlr_scene_node *node = wlr_scene_node_at(&wm->shell_tree->node,
 		x, y, &hit.x, &hit.y);
@@ -1836,6 +1844,7 @@ static void screenshot_begin(struct wl_client *client, struct wl_resource *resou
 	(void)client;
 	struct nested *wm = wl_resource_get_user_data(resource);
 	if (!screenshot_allowed(wm, resource) || wm->screenshot.pending || wm->screenshot.active) return;
+	nested_seat_cancel_node_switch(wm->seat);
 	wm->screenshot.opening = false;
 	wm->screenshot.pending = true;
 	if (!wm->panel || !wm->panel->layer->surface->mapped || !wm->output || !wm->output->enabled ||
@@ -2221,6 +2230,7 @@ static void map_pointer_gone(struct wl_resource *resource) {
 	}
 	if(wm->map_pointer==resource) {
 		wm->map_pointer=NULL;
+		nested_seat_cancel_node_switch(wm->seat);
 		bool glass_was_active=false;
 		for(unsigned i=0;i<SCENE_GLASS_COUNT;i++) {
 			glass_was_active|=wm->scene_glass[i].alpha>0;
@@ -2342,6 +2352,7 @@ static void parent_geometry_changed(void *data) {
 		position_panel(wm->map_hud);
 		position_panel(wm->wallpaper);
 		position_panel(wm->node_telemetry);
+		position_panel(wm->node_switcher);
 		if (wm->seat != NULL) nested_seat_refresh(wm->seat);
 	}
 	wlr_output_schedule_frame(wm->output);
@@ -2360,6 +2371,7 @@ static void domain_disconnect(struct nested *wm) {
 	if (wm->domain_fd >= 0) {
 		shutdown(wm->domain_fd, SHUT_RDWR);
 		wm->domain_fd = -1;
+		nested_seat_cancel_node_switch(wm->seat);
 	}
 }
 
@@ -3269,12 +3281,13 @@ static void group_frame(struct nested *wm,struct timespec now) {
 	struct xdg_view *drag=find_view(wm,wm->group_grab.source);
 	struct xdg_view *joining=find_view(wm,wm->group_join.id);
 	if(group_large(wm) && !wm->revealing && drag && drag->slot>=0 && wm->group_grab.moved) {
-		int w=wm->group_grab.tray?66:clamp_int(drag->placement.width/3,100,420);
-		int h=wm->group_grab.tray?38:clamp_int(drag->placement.height/3,64,260);
-		int x=clamp_int(wm->group_grab.x+12,0,lane.width-w);
-		int y=clamp_int(wm->group_grab.y-h-12,0,lane.height-h);
-		ghost=strip_image(wm->group_ghost,drag,&lane,x,y,w,h);
-		if(ghost)wlr_scene_buffer_set_opacity(wm->group_ghost,.82);
+		if(wm->group_grab.tray) {
+			const int w=66,h=38;
+			int x=clamp_int(wm->group_grab.x+12,0,lane.width-w);
+			int y=clamp_int(wm->group_grab.y-h-12,0,lane.height-h);
+			ghost=strip_image(wm->group_ghost,drag,&lane,x,y,w,h);
+			if(ghost)wlr_scene_buffer_set_opacity(wm->group_ghost,.82);
+		}
 		struct xdg_view *target=find_view(wm,wm->group_grab.target);
 		if(group_can_join(wm,drag,target)) {
 			bool ready=ms-wm->group_grab.since>=300;
@@ -3769,6 +3782,27 @@ static bool node_number(void *data,uint32_t number) {
 		wl_resource_get_version(wm->map_pointer)<MOTHERSHIP_MAP_POINTER_V1_NODE_NUMBER_SINCE_VERSION) return false;
 	mothership_map_pointer_v1_send_node_number(wm->map_pointer,number);
 	return true;
+}
+
+static bool node_switch(void *data, enum node_switch_action action) {
+	struct nested *wm = data;
+	if (!wm->map_pointer ||
+			wl_resource_get_version(wm->map_pointer) < MOTHERSHIP_MAP_POINTER_V1_NODE_SWITCH_STEP_SINCE_VERSION)
+		return false;
+	if (action == NODE_SWITCH_CANCEL) {
+		mothership_map_pointer_v1_send_node_switch_finish(wm->map_pointer, 0);
+		return true;
+	}
+	bool ready = !wm->cleaning && wm->domain_fd >= 0 && !wm->revealing &&
+		!wm->screenshot.opening && !wm->screenshot.pending && !wm->screenshot.active &&
+		!wm->picker_count && !wm->picker_keyboard && !wm->map_aim_enabled &&
+		wm->panel && wm->panel->layer->surface->mapped &&
+		(!wm->panel->wants_keyboard || wm->overview_active);
+	if (action == NODE_SWITCH_COMMIT)
+		mothership_map_pointer_v1_send_node_switch_finish(wm->map_pointer, ready);
+	else if (ready)
+		mothership_map_pointer_v1_send_node_switch_step(wm->map_pointer, action == NODE_SWITCH_NEXT ? 1 : -1);
+	return ready;
 }
 
 static void home_key_tap(void *data) {
@@ -4344,7 +4378,7 @@ static bool create_input_seat(struct nested *wm,struct wl_display *parent) {
 	wm->seat=nested_seat_create(wm->server,parent,parent?wlr_wl_output_get_surface(wm->output):NULL,
 		hit_view,remember_focus,move_cursor,start_view_move,update_view_move,map_scroll,map_contact,
 		map_weapon,activate_chrome,scroll_flow,scroll_node_strip,cycle_window,home_key_tap,node_panel_key,node_number,
-		close_focused_window,reorder_focused_window,render_capture_key,wm);
+		node_switch,close_focused_window,reorder_focused_window,render_capture_key,wm);
 	if (!wm->seat) return false;
 	nested_seat_screenshot_bind(wm->seat, screenshot_key, screenshot_abort, wm);
 	return true;
@@ -4486,6 +4520,7 @@ static void display_commit(struct nested *wm,struct wl_resource *resource,int w,
 		position_panel(wm->map_hud);
 		position_panel(wm->wallpaper);
 		position_panel(wm->node_telemetry);
+		position_panel(wm->node_switcher);
 		nested_seat_local_extent(wm->seat,wm->parent_window.width,wm->parent_window.height);
 		nested_seat_refresh(wm->seat);
 		wlr_output_schedule_frame(out);
@@ -4568,16 +4603,14 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 			wlr_presentation_create(wm.server,wm.backend,2) == NULL) {
 		fprintf(stderr,"Mothership: could not advertise Wayland presentation feedback\n");
 	}
-	const char *explicit_sync=getenv("MOTHERSHIP_EXPERIMENT_EXPLICIT_SYNC");
-	if (explicit_sync && strcmp(explicit_sync,"1")==0) {
-		int drm_fd=wlr_renderer_get_drm_fd(renderer);
-		if (drm_fd<0 || !renderer->features.timeline || !wm.backend->features.timeline) {
-			fprintf(stderr,"Mothership: explicit sync unavailable (DRM fd=%d, renderer timeline=%d, backend timeline=%d)\n",
-				drm_fd,renderer->features.timeline,wm.backend->features.timeline);
-		} else if (wlr_linux_drm_syncobj_manager_v1_create(wm.server,1,drm_fd)==NULL) {
-			fprintf(stderr,"Mothership: could not advertise Wayland explicit sync\n");
-		} else {
-			fprintf(stderr,"Mothership: Wayland explicit sync enabled\n");
+	if (renderer->features.timeline && wm.backend->features.timeline) {
+		int drm_fd = wlr_renderer_get_drm_fd(renderer);
+		if (drm_fd >= 0) {
+			if (wlr_linux_drm_syncobj_manager_v1_create(wm.server, 1, drm_fd) == NULL) {
+				fprintf(stderr, "Mothership: could not advertise Wayland explicit sync\n");
+			} else {
+				fprintf(stderr, "Mothership: Wayland explicit sync enabled\n");
+			}
 		}
 	}
 	struct wlr_xdg_shell *xdg_shell = wlr_xdg_shell_create(wm.server, 3);
@@ -4633,6 +4666,8 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 	}
 	wm.node_strip_tree=wlr_scene_tree_create(&wm.scene->tree);
 	if(!wm.node_strip_tree)goto done;
+	wm.node_switcher_tree = wlr_scene_tree_create(&wm.scene->tree);
+	if (!wm.node_switcher_tree) goto done;
 	const float preview_fallback[4]={.045f,.08f,.116f,1},preview_mark[4]={.29f,.42f,.48f,1};
 	const float group_ink[4]={.23f,.42f,.49f,1};
 	for(int i=0;i<NODE_WINDOWS;i++) {

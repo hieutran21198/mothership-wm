@@ -19,6 +19,8 @@ type controller struct {
 	ctx                                       context.Context
 	path                                      string
 	show                                      func(view)
+	showSwitch                                func(*nodeSwitchView)
+	nodeSwitch                                nodeSwitch
 	mu                                        sync.Mutex
 	state                                     domainipc.Snapshot
 	online                                    bool
@@ -86,6 +88,9 @@ func profileRows(s domainipc.Snapshot) []profileRow {
 
 func (c *controller) render() {
 	s := c.state
+	if c.nodeSwitch.reconcile(s, c.online && s.WMReady, c.pending) && c.showSwitch != nil {
+		c.showSwitch(nil)
+	}
 	title := "View unavailable"
 	if c.online && s.WMReady {
 		switch {
@@ -276,16 +281,21 @@ func (c *controller) createAndEnter(name string, finish func(error)) {
 
 func (c *controller) submitCommand(method string, body any, enterOverview bool, relay uint64, thenFocus string, finish func(error)) {
 	c.mu.Lock()
+	started := c.startCommand(method, body, enterOverview, relay, thenFocus, finish)
+	c.mu.Unlock()
+	if !started && finish != nil {
+		finish(errors.New("Desktop is busy or unavailable. Try again."))
+	}
+}
+
+// startCommand runs with c.mu held.
+func (c *controller) startCommand(method string, body any, enterOverview bool, relay uint64, thenFocus string, finish func(error)) bool {
 	if !c.online || !c.state.WMReady || c.pending {
 		if relay != 0 {
 			c.connectFailed = relay
 			c.render()
 		}
-		c.mu.Unlock()
-		if finish != nil {
-			finish(errors.New("Desktop is busy or unavailable. Try again."))
-		}
-		return
+		return false
 	}
 	c.pending = true
 	c.next++
@@ -295,7 +305,6 @@ func (c *controller) submitCommand(method string, body any, enterOverview bool, 
 	}
 	c.message = "Applying…"
 	c.render()
-	c.mu.Unlock()
 
 	go func() {
 		var err error
@@ -355,6 +364,7 @@ func (c *controller) submitCommand(method string, body any, enterOverview bool, 
 			finish(err)
 		}
 	}()
+	return true
 }
 
 func reduce(s *domainipc.Snapshot, e domainipc.Event) error {

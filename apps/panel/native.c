@@ -12,6 +12,7 @@
 #include "display-settings.h"
 #include "shortcut-settings.h"
 #include "node-volume.h"
+#include "node-switcher.h"
 #include "generated-map-pointer.h"
 #include "map-camera.h"
 #include "shell-paint.h"
@@ -43,6 +44,8 @@ extern int panelReloadConfig(void);
 extern char *panelSaveHomeSettings(int,int,int,int,int);
 extern void panelShellNotification(char *);
 extern void panelNodeNotFound(unsigned int);
+extern void panelNodeSwitchStep(int direction,int allowed,int include_default);
+extern void panelNodeSwitchFinish(int commit,int include_default);
 extern void panelSystemAction(int);
 extern char *panelSaveMapSettings(char *, int, int, int, int, int, int);
 
@@ -78,7 +81,7 @@ static int node_bell_center,node_tray_center;
 static gboolean tray_keys;
 static char *tray_node;
 static gboolean saved_node_guide=TRUE;
-enum { NODE_PREVIEW_HEIGHT=55, NODE_GUIDE_WIDTH=332, PICKER_BUTTON_SIZE=36 };
+enum { NODE_PREVIEW_HEIGHT=55, NODE_GUIDE_WIDTH=413, PICKER_BUTTON_SIZE=36 };
 static int node_tray_x,node_tray_width,node_strip_x,node_strip_width,node_left;
 static double node_pressed=-1;
 static GtkWidget *group_popover,*group_sx,*group_sy,*group_gap;
@@ -605,6 +608,67 @@ static gboolean enter_numbered_node(uint32_t slot) {
 void panel_node_number(uint32_t slot) {
 	if(!enabled || slot<1 || slot>9) return;
 	if(!enter_numbered_node(slot)) panelNodeNotFound(slot);
+}
+
+static gboolean node_switch_allowed(void) {
+	return !screenshot_visible() && !slash_open && !app_grid_open &&
+		!dock_settings_open && !map_settings_active && !map_menu &&
+		!notice_log_visible() && !node_volume_keys && !tray_keys &&
+		!picker_serial && !relay_target && !map_hud_arcade_active() &&
+		!(node_settings && gtk_widget_get_visible(node_settings)) &&
+		!(group_popover && gtk_widget_get_visible(group_popover));
+}
+
+void panel_node_switch_step(int32_t direction) {
+	panelNodeSwitchStep(direction,node_switch_allowed(),default_node_enabled);
+}
+
+void panel_node_switch_finish(uint32_t commit) {
+	panelNodeSwitchFinish(commit && node_switch_allowed(),default_node_enabled);
+}
+
+struct node_switch_update {
+	char **names, **descriptions;
+	int *counts;
+	size_t length, current, selected;
+};
+
+static gboolean paint_node_switch_update(gpointer data) {
+	struct node_switch_update *u=data;
+	if (u && node_switch_allowed()) {
+		node_switcher_show((const char *const *)u->names,(const char *const *)u->descriptions,
+			u->counts,u->length,u->current,u->selected);
+	} else {
+		node_switcher_hide();
+	}
+	return G_SOURCE_REMOVE;
+}
+
+static void free_node_switch_update(gpointer data) {
+	struct node_switch_update *u=data;
+	if (!u) return;
+	g_strfreev(u->names);
+	g_strfreev(u->descriptions);
+	g_free(u->counts);
+	g_free(u);
+}
+
+void panel_post_node_switcher(char *const *names,char *const *descriptions,const int *counts,
+		size_t length,size_t current,size_t selected) {
+	struct node_switch_update *u=NULL;
+	if (length) {
+		u=g_new(struct node_switch_update,1);
+		*u=(struct node_switch_update){
+			.names=g_new0(char *,length+1),.descriptions=g_new0(char *,length+1),
+			.counts=g_memdup2(counts,length*sizeof(*counts)),
+			.length=length,.current=current,.selected=selected,
+		};
+		for (size_t i=0;i<length;++i) {
+			u->names[i]=g_strdup(names[i]);
+			u->descriptions[i]=g_strdup(descriptions[i]);
+		}
+	}
+	g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,paint_node_switch_update,u,free_node_switch_update);
 }
 
 static void connect_to_node(const char *name) {connect_node(name,TRUE);}
@@ -2155,8 +2219,8 @@ static void node_keycaps(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer data
 	shortcut_guide(&app,&settings);
 	g_snprintf(app_label,sizeof app_label,"Meta + %c",app);
 	g_snprintf(settings_label,sizeof settings_label,"Meta + %c",settings);
-	const char *keys[]={"Meta","Alt + Tab",app_label,"Meta + N",settings_label};
-	int widths[]={43,68,65,65,65},x=1;
+	const char *keys[]={"Meta","Alt + Tab","Meta + Tab",app_label,"Meta + N",settings_label};
+	int widths[]={43,68,75,65,65,65},x=1;
 	for(size_t i=0;i<G_N_ELEMENTS(keys);i++){
 		cairo_set_source_rgba(cr,.05,.105,.145,.95);
 		int r=x+widths[i];

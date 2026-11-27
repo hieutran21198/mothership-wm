@@ -62,6 +62,12 @@ static void node_settings(void *data,struct mothership_map_pointer_v1 *p) {
 static void node_number(void *data,struct mothership_map_pointer_v1 *p,uint32_t slot) {
 	(void)data;(void)p;panel_node_number(slot);
 }
+static void node_switch_step(void *d,struct mothership_map_pointer_v1 *p,int32_t direction) {
+	(void)d;(void)p;panel_node_switch_step(direction);
+}
+static void node_switch_finish(void *d,struct mothership_map_pointer_v1 *p,uint32_t commit) {
+	(void)d;(void)p;panel_node_switch_finish(commit);
+}
 static void window_count(void *d,struct mothership_map_pointer_v1 *p,uint32_t count) {
 	(void)d;(void)p;panel_window_count(count);
 }
@@ -200,6 +206,7 @@ static const struct mothership_map_pointer_v1_listener events={
 	.node_notifications=node_notifications,
 	.screenshot_available=screenshot_available,.screenshot_open=screenshot_open,.screenshot_frame=screenshot_frame,
 	.screenshot_target=screenshot_target,.screenshot_image=screenshot_image,.screenshot_problem=screenshot_problem,
+	.node_switch_step=node_switch_step,.node_switch_finish=node_switch_finish,
 };
 
 static void apply_aim(void) {
@@ -309,6 +316,7 @@ static void removed(void *data,struct wl_registry *r,uint32_t name) {
 		panel_screenshot_available(FALSE);
 		display_settings_available(FALSE);
 		panel_picker_end(0);
+		panel_node_switch_finish(0);
 		panel_window_count(0);
 	}
 }

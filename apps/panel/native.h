@@ -22,6 +22,8 @@ void panel_home_sample(int,const int *,int,double,double,double,double,int,int,i
 void panel_set_map_settings(const char *, int outer, int inner, int frosted, int animation, int show_fps, int theme_pan, int pan_override, int max_outer, int max_inner, const char *default_border, int default_outer, int default_inner);
 void panel_post(const char *view, const char *message, const char *domains,
 	const char *windows, const char *node, const char *mode, const char *profiles, int enabled, int overview, int map_visible, int blank_home,int default_node,int ready,uint64_t connect_failed,uint64_t prepared_relay);
+void panel_post_node_switcher(char *const *names, char *const *descriptions, const int *counts,
+	size_t length, size_t current, size_t selected);
 void map_hud_configure(const char *, double, const char *, const char *, const char *, const char *);
 int wallpaper_set(const unsigned char *, size_t, int contain);
 void wallpaper_show(void);

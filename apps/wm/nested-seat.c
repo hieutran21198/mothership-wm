@@ -57,6 +57,7 @@ struct nested_seat {
 	void (*home_tap)(void *);
 	struct wlr_surface *(*node_panel_key)(void *,uint32_t);
 	bool (*node_number)(void *,uint32_t);
+	nested_node_switch node_switch;
 	bool (*close_window)(void *,struct wlr_surface *);
 	bool (*reorder_window)(void *,struct wlr_surface *,uint32_t);
 	bool (*render_capture)(void *);
@@ -68,6 +69,7 @@ struct nested_seat {
 	bool map_home;
 	int cycle_steps;
 	bool cycle_tab,cycle_active,cycle_visible,cycle_escape;
+	bool node_switch_active, node_switch_tab, node_switch_escape;
 	bool map_pressed, map_release_pending;
 	double map_pressed_x,map_pressed_y;
 	struct pending_axis axes[2];
@@ -164,9 +166,21 @@ static void cancel_cycle(struct nested_seat *seat) {
 	seat->cycle_steps=0;
 }
 
+static void finish_node_switch(struct nested_seat *seat, bool commit) {
+	if (!seat || !seat->node_switch_active) return;
+	seat->node_switch_active = false;
+	seat->node_switch(seat->data, commit ? NODE_SWITCH_COMMIT : NODE_SWITCH_CANCEL);
+}
+
+void nested_seat_cancel_node_switch(struct nested_seat *seat) {
+	finish_node_switch(seat, false);
+}
+
 static void isolate_keys(struct nested_seat *seat) {
 	seat->home_tap_key=0;
 	cancel_cycle(seat);
+	nested_seat_cancel_node_switch(seat);
+	seat->node_switch_tab = seat->node_switch_escape = false;
 	seat->cycle_tab=seat->cycle_escape=false;
 	memcpy(seat->keys_blocked, seat->keys_held, sizeof(seat->keys_held));
 	seat->blocked_count = 0;
@@ -256,6 +270,7 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bo
 	if (seat == NULL) {
 		return;
 	}
+	nested_seat_cancel_node_switch(seat);
 	seat->domain_mode = true;
 	if (seat->moving) {
 		seat->update_move(seat->data, MOVE_CANCEL, seat->x, seat->y);
@@ -536,6 +551,7 @@ static void capabilities(struct nested_seat *seat) {
 static void keyboard_keymap(void *data, struct wl_keyboard *keys, uint32_t format,
 		int fd, uint32_t size) {
 	struct nested_seat *seat = data;
+	nested_seat_cancel_node_switch(seat);
 	seat->home_tap_key=0;
 	if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1 || size < 2) {
 		close(fd);
@@ -571,6 +587,8 @@ static void keyboard_keymap(void *data, struct wl_keyboard *keys, uint32_t forma
 static void keyboard_enter(void *data, struct wl_keyboard *keys, uint32_t serial,
 		struct wl_surface *surface, struct wl_array *held) {
 	struct nested_seat *seat = data;
+	nested_seat_cancel_node_switch(seat);
+	seat->node_switch_tab = seat->node_switch_escape = false;
 	seat->home_tap_key=0;
 	seat->keyboard_inside = surface == seat->output;
 	seat->keyboard.num_keycodes = 0;
@@ -603,6 +621,7 @@ static void keyboard_leave(void *data, struct wl_keyboard *keys, uint32_t serial
 	struct nested_seat *seat = data;
 	if (surface == seat->output) {
 		seat->keyboard_inside = false;
+		nested_seat_cancel_node_switch(seat);
 		if (seat->screenshot_abort) seat->screenshot_abort(seat->screenshot_data);
 		seat->home_tap_key=0;
 		cancel_cycle(seat);
@@ -652,6 +671,54 @@ static bool meta_shift_chord(const struct nested_seat *seat,uint32_t key) {
 	return true;
 }
 
+static bool any_meta_held(const struct nested_seat *seat) {
+	return seat->keys_held[KEY_LEFTMETA] || seat->keys_held[KEY_RIGHTMETA];
+}
+
+static bool node_switch_available(struct nested_seat *seat) {
+	return !seat->blocked_count && !seat->screenshot_panel && !seat->moving &&
+		!seat->map_pressed && !seat->child->pointer_state.button_count &&
+		!seat->keyboard.modifiers.latched &&
+		!wlr_seat_keyboard_has_grab(seat->child) && !wlr_seat_pointer_has_grab(seat->child);
+}
+
+static bool node_switch_key(struct nested_seat *seat, uint32_t key, bool was_held) {
+	bool down = seat->keys_held[key];
+	if (key == KEY_ESC && (seat->node_switch_active || seat->node_switch_escape)) {
+		if (down) nested_seat_cancel_node_switch(seat);
+		seat->node_switch_escape = down;
+		return true;
+	}
+	bool meta = key == KEY_LEFTMETA || key == KEY_RIGHTMETA;
+	bool shift = key == KEY_LEFTSHIFT || key == KEY_RIGHTSHIFT;
+	if (key != KEY_TAB) {
+		if (down && !meta && !shift) nested_seat_cancel_node_switch(seat);
+		return false;
+	}
+	// The paired release stays with the gesture after commit or cancel.
+	if (!down || was_held) {
+		bool handled = seat->node_switch_tab;
+		if (!down) seat->node_switch_tab = false;
+		return handled;
+	}
+	if (!seat->node_switch || !any_meta_held(seat) || !node_switch_available(seat)) {
+		nested_seat_cancel_node_switch(seat);
+		return false;
+	}
+	for (uint32_t k = 0; k <= KEY_MAX; ++k) {
+		if (seat->keys_held[k] && k != KEY_TAB && k != KEY_LEFTMETA && k != KEY_RIGHTMETA &&
+				k != KEY_LEFTSHIFT && k != KEY_RIGHTSHIFT) return false;
+	}
+	bool reverse = seat->keys_held[KEY_LEFTSHIFT] || seat->keys_held[KEY_RIGHTSHIFT];
+	if (!seat->node_switch(seat->data, reverse ? NODE_SWITCH_PREVIOUS : NODE_SWITCH_NEXT)) {
+		nested_seat_cancel_node_switch(seat);
+		return false;
+	}
+	cancel_cycle(seat);
+	seat->node_switch_active = seat->node_switch_tab = true;
+	return true;
+}
+
 static void forward_key(struct nested_seat *seat,uint32_t time,uint32_t key,uint32_t state) {
 	struct wlr_keyboard_key_event e={.time_msec=time,.keycode=key,.state=state};
 	wlr_keyboard_notify_key(&seat->keyboard,&e);
@@ -694,6 +761,7 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	if (seat->domain_mode && !was_held && !seat->keys_held[key]) {
 		return;
 	}
+	if (node_switch_key(seat, key, was_held)) return;
 	if (!was_held && seat->keys_held[key] && screenshot_chord(seat,key)) {
 		seat->keys_blocked[key]=true;
 		seat->blocked_count++;
@@ -791,6 +859,8 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	}
 
 	forward_key(seat,time,key,state);
+	if (meta && !seat->keys_held[key] && !any_meta_held(seat))
+		finish_node_switch(seat, node_switch_available(seat));
 	if(home_tap && seat->home_tap) seat->home_tap(seat->data);
 	if (key==KEY_LEFTALT && !alt && seat->cycle_active) {
 		int steps=seat->cycle_steps;
@@ -843,6 +913,8 @@ static void drop_pointer(struct nested_seat *seat) {
 
 static void drop_keyboard(struct nested_seat *seat) {
 	nested_seat_cancel_map_pointer(seat);
+	nested_seat_cancel_node_switch(seat);
+	seat->node_switch_tab = seat->node_switch_escape = false;
 	cancel_cycle(seat);
 	seat->cycle_tab=seat->cycle_escape=false;
 	if (seat->keys != NULL) {
@@ -1130,6 +1202,7 @@ void nested_seat_local_active(struct nested_seat *seat,bool active) {
 static void render_focus_change(struct wl_listener *listener,void *data) {
 	(void)data;
 	struct nested_seat *seat=wl_container_of(listener,seat,render_focus_change);
+	nested_seat_cancel_node_switch(seat);
 	render_debug_activity(seat->render_debug,RENDER_FOCUS);
 }
 
@@ -1150,6 +1223,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 		nested_map_weapon weapon,
 		nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_strip_scroll strip_scroll,nested_flow_cycle cycle,void (*home_tap)(void *),
 		struct wlr_surface *(*node_panel_key)(void *,uint32_t),bool (*node_number)(void *,uint32_t),
+		nested_node_switch node_switch,
 		bool (*close_window)(void *,struct wlr_surface *),
 		bool (*reorder_window)(void *,struct wlr_surface *,uint32_t),bool (*render_capture)(void *),void *data) {
 	struct nested_seat *seat = calloc(1, sizeof(*seat));
@@ -1182,6 +1256,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	seat->home_tap=home_tap;
 	seat->node_panel_key=node_panel_key;
 	seat->node_number=node_number;
+	seat->node_switch=node_switch;
 	seat->close_window=close_window;
 	seat->reorder_window=reorder_window;
 	seat->render_capture=render_capture;

@@ -314,8 +314,9 @@ session; changing Default Node does not change any named Node.
 
 Node Panel Settings saves the independent preference
 `node_panel.show_keyboard_guide` (default true). The guide displays `Meta`,
-`Alt + Tab`, `Meta + A`, `Meta + N`, and `Meta + ,`, one
-keycap per action. Meta+A opens App Grid in the active Node without
+`Alt + Tab`, `Meta + Tab`, `Meta + A`, `Meta + N`, and `Meta + ,`, one
+keycap per action. [Meta + Tab](../flows/view-node-layouts.md#f-view-7)
+opens the Node switcher. Meta+A opens App Grid in the active Node without
 requiring pointer focus on the panel. **Meta + N** opens the
 [Notification Log](../flows/show-notifications.md#reading) for that Node.
 A bare Meta tap returns to Home. Hide it when Node Settings or

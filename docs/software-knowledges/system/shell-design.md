@@ -35,8 +35,8 @@ Keep two distinct surface families:
   bezel of Center Map. Use physical controls and continuous machined
   contours. Do not replace the hardware skin with projected glass.
 - **Analog displays:** the display inside the Center Map bezel, Map
-  Settings, Slash, App Grid and notifications. Use cool glass and thin projected outlines or separated
-  45° corner marks as prescribed by each overlay. Keep foreground controls
+  Settings, Slash, App Grid, Node Switcher and notifications. Use cool glass
+  and thin projected outlines or separated 45° corner marks as prescribed by each overlay. Keep foreground controls
   and type sharp. Do not add physical depth or a raised metal frame.
 
 Share neutral primitives such as glyphs and chamfer geometry. Buttons,
@@ -203,6 +203,21 @@ The [Flow window frame](window-frame.md) owns title, chrome, hit targets and vis
   not take app focus merely because an overlay or preview appears. The
   [Node layout](../flows/view-node-layouts.md) and [Command Center](../flows/use-command-center.md)
   flows own current behavior.
+
+### Node switcher
+
+Vector Strip uses one centered, cool translucent surface above the scene.
+Use a single thin 45° contour. Keep the rail and app geometry fixed. The
+strip is paint-only and does not change focus or intercept pointer input.
+
+Use one horizontal row of [Node glyphs](center-map-ui.md#visual-invariants)
+and names. Show `Current` and `Empty` where applicable. A cyan tint and
+four small separated corners mark the highlighted destination. Keep its
+position in the list visible and show its short description and live window
+count below. On narrow outputs keep the highlighted Node in view. If the
+tile truncates its name, use the readout to show the name and count.
+Use a compact keyboard guide for next, back, switch and cancel. The
+[Node switch flow](../flows/view-node-layouts.md#f-view-7) owns the gesture.
 
 ## Approved references
 

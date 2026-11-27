@@ -36,13 +36,13 @@ The compositor publishes `wp_presentation` version 2. Set
 `MOTHERSHIP_EXPERIMENT_PRESENTATION=0` before launch for a baseline
 without presentation feedback.
 
-Set `MOTHERSHIP_EXPERIMENT_EXPLICIT_SYNC=1` before launching a separate
-test session. The compositor publishes `wp_linux_drm_syncobj_manager_v1`
-only if the renderer has a DRM fd and both the renderer and backend support
-timelines. Check the startup log and the client registry before comparing
-performance. Leave the experiment off for normal use.
+## Explicit sync
 
-While the experiment is on, the normal window surface uses wlroots'
+The compositor automatically publishes `wp_linux_drm_syncobj_manager_v1`
+when the renderer has a DRM fd and both the renderer and backend support
+timelines. Check the startup log and the client registry to confirm support.
+
+With explicit sync, the normal window surface uses wlroots'
 acquire and release points. The strip, overflow picker, and keyboard
 projection share a compositor-owned GPU thumbnail for each visible window.
 Each copy waits on the client's acquire point and registers GPU completion

@@ -87,7 +87,7 @@ func main() {
 	applyDefaultNodePreference(preferences.defaultNode)
 	applyAppPins(preferences.appPins)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	active = &controller{ctx: ctx, path: path, show: showNative}
+	active = &controller{ctx: ctx, path: path, show: showNative, showSwitch: showNativeNodeSwitch}
 	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
 	address, shared := os.LookupEnv(appbus.AddressEnv)
 	if address == "" {
@@ -172,6 +172,40 @@ func showNative(v view) {
 		defaultNode = 1
 	}
 	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], enabled, overview, mapVisible, blankHome, defaultNode, ready, C.uint64_t(v.connectFailed), C.uint64_t(v.preparedRelay))
+}
+
+func showNativeNodeSwitch(v *nodeSwitchView) {
+	if v == nil {
+		C.panel_post_node_switcher(nil, nil, nil, 0, 0, 0)
+		return
+	}
+	names := make([]*C.char, len(v.rows))
+	descriptions := make([]*C.char, len(v.rows))
+	counts := make([]C.int, len(v.rows))
+	for i, row := range v.rows {
+		names[i] = C.CString(row.name)
+		descriptions[i] = C.CString(row.description)
+		counts[i] = C.int(row.windows)
+	}
+	C.panel_post_node_switcher(&names[0], &descriptions[0], &counts[0], C.size_t(len(counts)), C.size_t(v.current), C.size_t(v.selected))
+	for i := range names {
+		C.free(unsafe.Pointer(names[i]))
+		C.free(unsafe.Pointer(descriptions[i]))
+	}
+}
+
+//export panelNodeSwitchStep
+func panelNodeSwitchStep(direction, allowed, includeDefault C.int) {
+	if active != nil {
+		active.stepNodeSwitch(int(direction), allowed != 0, includeDefault != 0)
+	}
+}
+
+//export panelNodeSwitchFinish
+func panelNodeSwitchFinish(commit, includeDefault C.int) {
+	if active != nil {
+		active.finishNodeSwitch(commit != 0, includeDefault != 0)
+	}
 }
 
 func cBool(v bool) C.int {

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="25">
+  <interface name="mothership_map_pointer_v1" version="26">
     <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
       inside the frame and left-button sequences in the mapped, focused Map View.
@@ -263,5 +263,20 @@
       <description summary="set the Node preview strip's hover zoom percentage"/>
       <arg name="percent" type="uint"/>
     </request>
+    <event name="node_switch_step" since="26">
+      <description summary="start or advance the held Node switching gesture">
+        Direction is 1 for Tab and -1 for Shift+Tab. The first step captures
+        the chooser's candidates from its live Node state.
+      </description>
+      <arg name="direction" type="int"/>
+    </event>
+    <event name="node_switch_finish" since="26">
+      <description summary="finish the held Node switching gesture">
+        Commit is 1 when the last Meta key is released, or 0 when the
+        gesture is canceled. An open chooser can request selection once
+        on commit.
+      </description>
+      <arg name="commit" type="uint"/>
+    </event>
   </interface>
 </protocol>

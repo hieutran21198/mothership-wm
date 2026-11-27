@@ -36,6 +36,8 @@ typedef bool (*nested_strip_scroll)(void *data,struct wlr_surface *surface,doubl
 	double delta,bool wheel);
 enum cycle_phase { CYCLE_BEGIN, CYCLE_PREVIEW, CYCLE_COMMIT, CYCLE_CANCEL };
 typedef bool (*nested_flow_cycle)(void *data,enum cycle_phase phase,int steps);
+enum node_switch_action { NODE_SWITCH_NEXT, NODE_SWITCH_PREVIOUS, NODE_SWITCH_COMMIT, NODE_SWITCH_CANCEL };
+typedef bool (*nested_node_switch)(void *data, enum node_switch_action action);
 
 struct nested_seat *nested_seat_create(struct wl_display *server,
 	struct wl_display *parent, struct wl_surface *output,
@@ -44,6 +46,7 @@ struct nested_seat *nested_seat_create(struct wl_display *server,
 	nested_map_weapon weapon,
 	nested_chrome_action chrome,nested_flow_scroll flow_scroll,nested_strip_scroll strip_scroll,nested_flow_cycle cycle,void (*home_tap)(void *),
 	struct wlr_surface *(*node_panel_key)(void *,uint32_t),bool (*node_number)(void *,uint32_t),
+	nested_node_switch node_switch,
 	bool (*close_window)(void *,struct wlr_surface *),
 	bool (*reorder_window)(void *,struct wlr_surface *,uint32_t),bool (*render_capture)(void *),void *data);
 struct wlr_backend;
@@ -63,6 +66,7 @@ void nested_seat_switch(struct nested_seat *seat, struct wlr_surface *target, bo
 void nested_seat_panel(struct nested_seat *seat, struct wlr_surface *panel, bool acquire);
 void nested_seat_blank_shell(struct nested_seat *seat,struct wlr_surface *panel);
 void nested_seat_cancel_map_pointer(struct nested_seat *seat);
+void nested_seat_cancel_node_switch(struct nested_seat *seat);
 void nested_seat_map_home(struct nested_seat *seat,bool enabled);
 struct wlr_surface *nested_seat_map_position(struct nested_seat *,double *x,double *y);
 void nested_seat_refresh(struct nested_seat *seat);

@@ -108,6 +108,7 @@ order. Repeat in Default Node and check that each Node keeps its own layout.
 
 On a wide output in Flow or Stage, drag a tray thumbnail onto a second
 thumbnail. In Flow, you can also drag the frame's title rail on the desktop.
+Show the thumbnail next to the pointer only for drags that start in the tray.
 The potential group shows focus corners while the pointer rests on a valid
 target. At 300 ms the corners brighten. Release to join, or leave the target
 to cancel. A group accepts up to four windows. Use two columns, a large left
@@ -198,3 +199,39 @@ client sizes. Within a group, send a final size only when the destination
 tile requires it. Animation frames send no size requests. Record native
 hardware frame pacing separately using the
 [render runbook](../../runbooks/render-performance.md).
+
+### F-VIEW-7
+
+Press **Meta + Tab** in a Node or from Home, Overview or the active Map.
+The WM handles the chord unless an exclusive shell interaction owns input.
+The Shell shows the [Vector Strip](../system/shell-design.md#node-switcher)
+without taking keyboard focus from the current view.
+
+Shell freezes the session's recent Node order at the start of the gesture.
+An acknowledged entry moves that Node to the front for the next gesture.
+Unvisited Nodes appear afterward in name order. Empty and unnumbered named
+Nodes are included, as is Default Node when enabled. Home, Overview and Map
+are entry points to the switcher.
+
+The first press highlights the next Node after the current one, or the
+first available Node when starting outside a Node. Further Tab presses
+step through the order and wrap. Hold **Shift** to step backward. Releasing the
+final **Meta** key closes the strip and commits at most one Node
+activation. Releasing on the current Node simply closes the strip.
+**Esc** or keyboard focus leaving the session cancels the gesture.
+
+On commit, Shell uses the existing [Fly or Home transition](use-command-center.md#f-command-3)
+to request the destination. desktopd resolves it and publishes the
+selection after WM applies it. The WM restores the eligible focus in the
+destination as in [F-VIEW-3](#f-view-3). A missing destination or stale
+connection prevents activation.
+
+With real native Wayland apps in two Nodes, switch back and forth with
+quick taps, cycle to an unnumbered or empty Node, and verify that input
+reaches the destination only after commit. Cancel with Esc and by leaving
+the nested window. Verify the original view and focus, and repeat from
+Map, Home and Overview. Check the bare Meta tap and window Alt+Tab
+separately. If the parent reserves Meta+Tab, use a parent that delivers the
+chord. Record a full viewport and matching strip crop at 100% and 150%.
+Check physical input separately in the
+[native developer session](use-native-dev-session.md).
