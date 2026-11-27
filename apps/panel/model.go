@@ -37,6 +37,19 @@ type view struct {
 	profiles                                                     []profileRow
 	enabled, overview, mapVisible, blankHome, ready, defaultNode bool
 	connectFailed, preparedRelay                                 uint64
+	// Loadout offer for the current named Node; zero when it has none.
+	loadoutMissing, loadoutTotal int
+	loadoutRunning               bool
+}
+
+// loadoutOffer is set by the native shell; tests leave it nil.
+var loadoutOffer func(domainipc.Snapshot, string) (int, int, bool)
+
+// rerender refreshes the view from outside a state update.
+func (c *controller) rerender() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.render()
 }
 
 type windowRow struct{ key, label string }
@@ -114,6 +127,9 @@ func (c *controller) render() {
 		v.overview = s.Selection.View == "overview"
 	}
 	v.blankHome = c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home"
+	if loadoutOffer != nil && c.online && s.WMReady && v.node != "" {
+		v.loadoutMissing, v.loadoutTotal, v.loadoutRunning = loadoutOffer(s, v.node)
+	}
 	v.defaultNode = c.online && s.WMReady && s.Selection.State == "acknowledged" && s.Selection.View == "home_node"
 	if c.online {
 		v.domains = append([]string(nil), s.Domains...)
@@ -423,6 +439,17 @@ func reduce(s *domainipc.Snapshot, e domainipc.Event) error {
 			return err
 		}
 		s.MapVisible = v.Visible
+	case domainipc.NodeLoadoutEvent:
+		v, err := domainipc.Decode[domainipc.LoadoutBody](e.Body)
+		if err != nil {
+			return err
+		}
+		for i := range s.NodeProfiles {
+			if s.NodeProfiles[i].Domain == v.Domain {
+				s.NodeProfiles[i].Loadout = v.Entries
+				break
+			}
+		}
 	case "selection.changed":
 		v, err := domainipc.Decode[domainipc.Selection](e.Body)
 		if err != nil {

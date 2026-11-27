@@ -11,9 +11,9 @@
 
 enum slash_kind {
 	MODULE_APPS,MODULE_NODES,MODULE_WINDOWS,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
-	COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,
+	COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,COMMAND_LAUNCH,
 	COMMAND_DISPLAY,COMMAND_SHORTCUTS,
-	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE,RESULT_WINDOW
+	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE,RESULT_WINDOW,RESULT_LAUNCH
 };
 static const struct {
 	enum slash_kind module,kind;
@@ -23,6 +23,7 @@ static const struct {
 	{MODULE_NODES,COMMAND_NEW,"new","nodes new "},
 	{MODULE_NODES,COMMAND_DELETE,"delete","nodes delete "},
 	{MODULE_NODES,COMMAND_FORCE,"force-delete","nodes force-delete "},
+	{MODULE_NODES,COMMAND_LAUNCH,"launch","nodes launch "},
 	{MODULE_SETTINGS,COMMAND_DISPLAY,"display","settings display"},
 	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"}
 };
@@ -64,6 +65,7 @@ static guint32 window_serial,window_waiting;
 static gboolean window_unavailable;
 extern char *panelSlashWindowRows(char *,int);
 extern void panelSlashFocusWindow(uint64_t,uint64_t);
+extern char *panelLaunchLoadout(char *);
 extern int panel_default_node_enabled(void);
 gboolean panel_request_window_list(uint32_t serial);
 static void refresh(void);
@@ -162,7 +164,7 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 	} else if(kind==MODULE_MAPS) {
 		cairo_translate(cr,-12,-12);
 		home_map_glyph(cr);
-	} else if(kind==MODULE_NODES || kind==RESULT_NODE || kind==RESULT_DELETE || kind==RESULT_FORCE) {
+	} else if(kind==MODULE_NODES || kind==RESULT_NODE || kind==RESULT_DELETE || kind==RESULT_FORCE || kind==RESULT_LAUNCH) {
 		cairo_scale(cr,.79,.79);
 		cairo_move_to(cr,fleet_node[0].x,fleet_node[0].y);
 		for(unsigned i=1;i<FLEET_COUNT(fleet_node);i++) cairo_line_to(cr,fleet_node[i].x,fleet_node[i].y);
@@ -230,6 +232,9 @@ static void complete(void) {
 	case RESULT_WINDOW:
 		value=g_strdup_printf("windows %s",s->name);
 		break;
+	case RESULT_LAUNCH:
+		value=g_strdup_printf("nodes launch %s",s->name);
+		break;
 	default: return;
 	}
 	fill_text(value);
@@ -275,6 +280,15 @@ static void activation(GtkEntry *input,gpointer data) {
 		break;
 	case RESULT_NODE:
 		submit_node(s->name,FALSE);break;
+	case RESULT_LAUNCH: {
+		// Launches into that Node without changing the current view.
+		char *err=panelLaunchLoadout(s->name);
+		if(err) {
+			g_free(node_error);node_error=g_strdup(err);free(err);
+			refresh();
+		} else close_slash();
+		break;
+	}
 	case RESULT_WINDOW:
 		g_clear_pointer(&node_error,g_free);
 		node_request=++node_serial;
@@ -414,7 +428,8 @@ static void refresh(void) {
 		gboolean explicit_connect=take_token(&query,"connect");
 		gboolean ordinary_delete=!explicit_connect && take_token(&query,"delete");
 		gboolean force_delete=!explicit_connect && !ordinary_delete && take_token(&query,"force-delete");
-		if(!explicit_connect && !ordinary_delete && !force_delete && take_token(&query,"new")) {
+		gboolean launch=!explicit_connect && !ordinary_delete && !force_delete && take_token(&query,"launch");
+		if(!explicit_connect && !ordinary_delete && !force_delete && !launch && take_token(&query,"new")) {
 			new_node=TRUE;
 			new_name=g_strdup(g_strchomp(query));
 			new_name_ready=valid_new_name(new_name);
@@ -427,12 +442,12 @@ static void refresh(void) {
 				}
 		} else {
 			g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
-			gboolean explicit_node=explicit_connect || ordinary_delete || force_delete;
+			gboolean explicit_node=explicit_connect || ordinary_delete || force_delete || launch;
 			if(!explicit_node) add_commands(MODULE_NODES,term);
 			for(int i=0;(explicit_node || *term) && node_names && node_names[i];i++) {
 				if(!*node_names[i] || !match(node_names[i],term,FALSE)) continue;
 				if(g_str_equal(node_names[i],query) && *term) chosen=(int)results->len;
-				add(force_delete?RESULT_FORCE:ordinary_delete?RESULT_DELETE:RESULT_NODE,node_names[i],NULL);
+				add(launch?RESULT_LAUNCH:force_delete?RESULT_FORCE:ordinary_delete?RESULT_DELETE:RESULT_NODE,node_names[i],NULL);
 			}
 		}
 	} else if(module_available(MODULE_WINDOWS) && take_token(&query,"windows")) {

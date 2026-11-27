@@ -88,6 +88,17 @@ func (d *desktop) request(ctx context.Context, c *net.UnixConn, packet string) {
 			return
 		}
 		sendSuccess(c, req.ID)
+	case domainipc.LoadoutSetMethod:
+		b, err := domainipc.Decode[domainipc.LoadoutBody](req.Body)
+		if err != nil || !domain.ValidName(b.Domain) || !domain.ValidLoadout(b.Entries) {
+			badBody()
+			return
+		}
+		if err := d.service.SetLoadout(b.Domain, b.Entries); err != nil {
+			sendCommandError(c, req.ID, err)
+			return
+		}
+		sendSuccess(c, req.ID)
 	case domainipc.DeleteMethod:
 		b, err := domainipc.Decode[domainipc.DeleteBody](req.Body)
 		if err != nil || !domain.ValidName(b.Domain) {
@@ -239,7 +250,7 @@ func windowWire(w domain.Window) domainipc.Window {
 }
 
 func nodeWire(n domain.Node) domainipc.NodeProfile {
-	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive, Shortcut: n.NumberKey()}
+	return domainipc.NodeProfile{Domain: n.Name, Description: n.Description, CreatedAt: n.CreatedAt, LastActive: n.LastActive, Shortcut: n.NumberKey(), Loadout: n.Loadout}
 }
 
 func sendSnapshot(c *net.UnixConn, id uint64, s app.Snapshot) bool {
@@ -281,6 +292,8 @@ func eventWire(u app.Update) domainipc.Event {
 		body = sel
 	case app.MapVisibilityChanged:
 		body = domainipc.MapVisibility{Visible: u.MapVisible}
+	case app.NodeLoadoutChanged:
+		body = domainipc.LoadoutBody{Domain: u.Domain, Entries: append([]string{}, u.Node.Loadout...)}
 	}
 	raw, _ := json.Marshal(body)
 	return domainipc.Event{Revision: u.Revision, Event: u.Kind, Body: raw}

@@ -221,6 +221,38 @@ gboolean app_catalog_launch_native(GDesktopAppInfo *app,const char *display,
 		G_SPAWN_SEARCH_PATH_FROM_ENVP,NULL,NULL,desktop_launch_pid,pid,error);
 }
 
+GDesktopAppInfo *app_catalog_find(const char *id,const char **executable,int *dbus) {
+	GDesktopAppInfo *info=id && *id?g_desktop_app_info_new(id):NULL;
+	if(!info) return NULL;
+	*executable=g_app_info_get_executable(G_APP_INFO(info));
+	if(!*executable) *executable="";
+	*dbus=g_desktop_app_info_get_boolean(info,"DBusActivatable");
+	return info;
+}
+// Accept only one installed entry whose ID or StartupWMClass is the app ID;
+// an ambiguous match is not a relaunch rule.
+char *app_catalog_desktop_id_for(const char *app_id) {
+	if(!app_id || !*app_id) return NULL;
+	g_autofree char *desktop=g_strconcat(app_id,".desktop",NULL);
+	char *found=NULL;
+	gboolean ambiguous=FALSE;
+	GList *installed=g_app_info_get_all();
+	for(GList *n=installed;n && !ambiguous;n=n->next) {
+		if(!G_IS_DESKTOP_APP_INFO(n->data)) continue;
+		const char *id=g_app_info_get_id(n->data);
+		const char *wm_class=g_desktop_app_info_get_startup_wm_class(n->data);
+		if(!id || (g_strcmp0(id,desktop)!=0 && g_strcmp0(wm_class,app_id)!=0)) continue;
+		if(found && g_strcmp0(found,id)!=0) ambiguous=TRUE;
+		else if(!found) found=g_strdup(id);
+	}
+	g_list_free_full(installed,g_object_unref);
+	if(ambiguous) g_clear_pointer(&found,g_free);
+	return found;
+}
+char *app_catalog_name(const char *id) {
+	g_autoptr(GDesktopAppInfo) info=id && *id?g_desktop_app_info_new(id):NULL;
+	return g_strdup(info?g_app_info_get_display_name(G_APP_INFO(info)):id);
+}
 gboolean app_catalog_launch(GDesktopAppInfo *app) {
 	GAppInfo *info=G_APP_INFO(app);
 	char *error=panelLaunchGridApp(app,(char *)app_id(app),(char *)g_app_info_get_executable(info),

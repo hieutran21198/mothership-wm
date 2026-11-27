@@ -24,6 +24,7 @@ type Service struct {
 	saveNode          func(domain.Node) error
 	now               func() time.Time
 	reportPersistence func(error)
+	saveLoadout       func(string, []string) error
 	active            *domain.Session
 	ready             bool
 	selection         Selection
@@ -44,6 +45,41 @@ func New(nodes []domain.Node, save func(domain.Node) error, report func(error)) 
 	}
 	return s
 }
+
+// UseLoadoutStore sets where SetLoadout commits a Node's loadout.
+func (s *Service) UseLoadoutStore(save func(string, []string) error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.saveLoadout = save
+}
+
+// SetLoadout replaces one Node's loadout; an empty list clears it. It is
+// committed before it is published and changes no membership or view.
+func (s *Service) SetLoadout(name string, entries []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.names.Exists(name) || s.deleting == name {
+		return ErrUnknownDomain
+	}
+	if !domain.ValidLoadout(entries) {
+		return fmt.Errorf("a loadout has up to %d desktop entry IDs", domain.MaxLoadout)
+	}
+	entries = append([]string(nil), entries...)
+	if len(entries) == 0 {
+		entries = nil
+	}
+	if s.saveLoadout != nil {
+		if err := s.saveLoadout(name, entries); err != nil {
+			return fmt.Errorf("could not save loadout: %w", err)
+		}
+	}
+	n := s.names.Node(name)
+	n.Loadout = entries
+	s.names.Put(n)
+	s.publish(Update{Kind: NodeLoadoutChanged, Domain: name, Node: n})
+	return nil
+}
+
 func (s *Service) unixNow() int64 {
 	if s.now != nil {
 		return s.now().Unix()

@@ -929,3 +929,35 @@ func TestUnassignReturnsWindowToInboxAndRefreshesShownNode(t *testing.T) {
 		t.Fatalf("unknown window accepted: %+v", r.Error)
 	}
 }
+
+func TestLoadoutSetPublishesAndStaysOutOfMembership(t *testing.T) {
+	s := newTestServer(t)
+	sub := s.request(1, "subscribe", "{}")
+	success(t, sub, 1)
+	success(t, s.request(2, "create", `{"domain":"Dev"}`), 2)
+	next(t, sub, 1, app.DomainCreated)
+	body := `{"domain":"Dev","entries":["com.mitchellh.ghostty.desktop","org.gnome.Nautilus.desktop"]}`
+	success(t, s.request(3, domainipc.LoadoutSetMethod, body), 3)
+	got := decode[domainipc.LoadoutBody](t, next(t, sub, 2, app.NodeLoadoutChanged))
+	if got.Domain != "Dev" || len(got.Entries) != 2 || got.Entries[1] != "org.gnome.Nautilus.desktop" {
+		t.Fatalf("event %+v", got)
+	}
+	snap := decode[domainipc.Snapshot](t, success(t, s.request(4, "snapshot", "{}"), 4))
+	if len(snap.NodeProfiles) != 1 || len(snap.NodeProfiles[0].Loadout) != 2 || len(snap.Windows) != 0 {
+		t.Fatalf("snapshot %+v", snap)
+	}
+	success(t, s.request(5, domainipc.LoadoutSetMethod, `{"domain":"Dev","entries":[]}`), 5)
+	if cleared := decode[domainipc.LoadoutBody](t, next(t, sub, 3, app.NodeLoadoutChanged)); len(cleared.Entries) != 0 {
+		t.Fatalf("clear event %+v", cleared)
+	}
+	for id, bad := range map[uint64]string{
+		6: `{"domain":"Nope","entries":[]}`,
+		7: `{"domain":"Dev","entries":["sh -c evil"]}`,
+		8: `{"domain":"Dev","entries":["a.desktop","b.desktop","c.desktop","d.desktop","e.desktop","f.desktop","g.desktop","h.desktop","i.desktop"]}`,
+	} {
+		if r := reply(t, s.request(id, domainipc.LoadoutSetMethod, bad), id); r.Error == nil {
+			t.Fatalf("accepted %s", bad)
+		}
+	}
+	assertQuiet(t, sub)
+}

@@ -17,6 +17,7 @@ const (
 	WindowClosed         = "window.closed"
 	SelectionChanged     = "selection.changed"
 	MapVisibilityChanged = "map.visibility.changed"
+	NodeLoadoutChanged   = domainipc.NodeLoadoutEvent
 
 	queueSize      = 16
 	maxSubscribers = 16

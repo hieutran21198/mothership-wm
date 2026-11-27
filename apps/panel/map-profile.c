@@ -81,23 +81,25 @@ GHashTable *profile_parse(const char *rows) {
 	GHashTable *out=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,profile_data_free);
 	g_auto(GStrv) lines=g_strsplit(rows,"\n",-1);
 	for(char **line=lines; *line; ++line) {
-		g_auto(GStrv) fields=g_strsplit(*line,"\t",7);
+		g_auto(GStrv) fields=g_strsplit(*line,"\t",8);
 		int count=g_strv_length(fields);
-		if(count!=6 && count!=7) continue;
+		if(count<6 || count>8) continue;
 		struct profile_data *d=g_new0(struct profile_data,1);
 		d->created_at=g_ascii_strtoll(fields[1],NULL,10);
 		d->last_active=g_ascii_strtoll(fields[2],NULL,10);
 		d->empty=g_str_equal(fields[3],"true");
 		d->description=g_strdup(fields[4]);
 		d->app_ids=g_strsplit(fields[5],",",-1);
-		d->shortcut=count==7?CLAMP((int)g_ascii_strtoll(fields[6],NULL,10),0,9):0;
+		d->shortcut=count>=7?CLAMP((int)g_ascii_strtoll(fields[6],NULL,10),0,9):0;
+		d->loadout=count==8?CLAMP((int)g_ascii_strtoll(fields[7],NULL,10),0,8):0;
 		g_hash_table_replace(out,g_strdup(fields[0]),d);
 	}
 	return out;
 }
 
 double profile_height(const struct profile_data *d) {
-	return 108+(d && *d->description?24:0)+(d && (d->created_at>0 || d->last_active>0)?22:0)+(d && (d->empty || d->app_ids[0])?27:0);
+	return 108+(d && *d->description?24:0)+(d && (d->created_at>0 || d->last_active>0)?22:0)+
+		(d && d->loadout>0?22:0)+(d && (d->empty || d->app_ids[0])?27:0);
 }
 
 static char *elapsed(gint64 from,gint64 now) {
@@ -249,7 +251,27 @@ static void draw_profile(GtkSnapshot *snap,GtkWidget *widget,struct profile_layo
 	label(cr,name,x,y,w,26,TRUE);y+=36;
 	if(d && *d->description) { label(cr,d->description,x,y,w,15,FALSE);y+=24; }
 	gint64 now=g_get_real_time()/G_USEC_PER_SEC;
-	if(d && (d->created_at>0 || d->last_active>0)) profile_stats(cr,d,x,y,w,now);
+	if(d && (d->created_at>0 || d->last_active>0)) {profile_stats(cr,d,x,y,w,now);y+=22;}
+	if(d && d->loadout>0) {
+		// Only a real saved loadout gets a row; there is no placeholder.
+		PangoLayout *loadout=stat_layout(cr,"Loadout",d->loadout==1?"1 app":"");
+		if(d->loadout!=1) {
+			g_autofree char *count=g_strdup_printf("%d apps",d->loadout);
+			g_object_unref(loadout);
+			loadout=stat_layout(cr,"Loadout",count);
+		}
+		cairo_set_source_rgb(cr,.56,.72,.81);
+		cairo_set_line_width(cr,1);
+		int lh;pango_layout_get_pixel_size(loadout,NULL,&lh);
+		// Three stacked bars: the saved launch sequence.
+		for(int i=0;i<3;i++) {cairo_move_to(cr,x+1,y+lh*.5-3+3*i);cairo_line_to(cr,x+10,y+lh*.5-3+3*i);}
+		cairo_stroke(cr);
+		pango_layout_set_width(loadout,MAX(1,w-16)*PANGO_SCALE);
+		pango_layout_set_ellipsize(loadout,PANGO_ELLIPSIZE_END);
+		cairo_move_to(cr,x+16,y);
+		pango_cairo_show_layout(cr,loadout);
+		g_object_unref(loadout);
+	}
 	double row=b.y+(b.h-29)*.5;
 	double available=layout.stealth.x-x-12;
 	if(d && d->empty) label(cr,"No windows open",x,row+6,MAX(1,available),12,FALSE);

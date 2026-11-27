@@ -48,7 +48,12 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return fmt.Errorf("load Nodes: %w", err)
 		}
+		loadouts := store.LoadLoadouts(nodes, func(err error) { fmt.Fprintln(os.Stderr, "mothership-desktopd:", err) })
+		for i := range nodes {
+			nodes[i].Loadout = loadouts[nodes[i].Name]
+		}
 		service := app.New(nodes, store.Save, func(err error) { fmt.Fprintln(os.Stderr, "mothership-desktopd: save Last active:", err) })
+		service.UseLoadoutStore(store.SaveLoadout)
 		if address := os.Getenv(appbus.AddressEnv); address != "" {
 			stopTray, err := tray.Start(address)
 			if err != nil {

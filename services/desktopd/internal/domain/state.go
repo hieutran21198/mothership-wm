@@ -30,6 +30,38 @@ type Node struct {
 	CreatedAt   int64  `json:"created_at"`
 	LastActive  int64  `json:"last_active,omitempty"`
 	Shortcut    int    `json:"shortcut"`
+	// Loadout lists desktop entry IDs to relaunch. It is stored in its own
+	// file, never in the Node record, and says nothing about membership.
+	Loadout []string `json:"-"`
+}
+
+const MaxLoadout = MaxNodeWindows
+
+// ValidDesktopID accepts a desktop file ID such as org.gnome.Nautilus.desktop.
+func ValidDesktopID(s string) bool {
+	const suffix = ".desktop"
+	if len(s) <= len(suffix) || len(s) > 255 || s[len(s)-len(suffix):] != suffix {
+		return false
+	}
+	for _, b := range []byte(s) {
+		if !(b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// ValidLoadout allows up to one entry per Node slot; an app may repeat.
+func ValidLoadout(entries []string) bool {
+	if len(entries) > MaxLoadout {
+		return false
+	}
+	for _, e := range entries {
+		if !ValidDesktopID(e) {
+			return false
+		}
+	}
+	return true
 }
 
 // NumberKey projects the saved named-Node ordinal onto the numeric keys.

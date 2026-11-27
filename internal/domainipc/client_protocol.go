@@ -28,6 +28,8 @@ const (
 	MapShowMethod      = "map.show"
 	MapHideMethod      = "map.hide"
 	MapChangedEvent    = "map.visibility.changed"
+	LoadoutSetMethod   = "loadout.set"
+	NodeLoadoutEvent   = "node.loadout"
 )
 
 type Request struct {
@@ -53,11 +55,19 @@ type MapVisibility struct {
 }
 
 type NodeProfile struct {
-	Domain      string `json:"domain"`
-	Description string `json:"description,omitempty"`
-	CreatedAt   int64  `json:"created_at,omitempty"`
-	LastActive  int64  `json:"last_active,omitempty"`
-	Shortcut    int    `json:"shortcut,omitempty"`
+	Domain      string   `json:"domain"`
+	Description string   `json:"description,omitempty"`
+	CreatedAt   int64    `json:"created_at,omitempty"`
+	LastActive  int64    `json:"last_active,omitempty"`
+	Shortcut    int      `json:"shortcut,omitempty"`
+	Loadout     []string `json:"loadout,omitempty"`
+}
+
+// LoadoutBody sets a Node's loadout (an empty list clears it) and is the
+// node.loadout event body.
+type LoadoutBody struct {
+	Domain  string   `json:"domain"`
+	Entries []string `json:"entries"`
 }
 
 type CreateBody struct {

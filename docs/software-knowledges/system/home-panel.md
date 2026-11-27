@@ -142,6 +142,8 @@ the wheel or move the selection with the arrow keys.
 - `apps <query>` searches the installed catalog and launches with the App
   Grid's launch rules; `apps` alone lists the catalog. It never runs
   arbitrary shell text.
+- `nodes launch <name>` starts the missing apps of that Node's
+  [loadout](../flows/launch-node-loadout.md) without changing the view.
 - `nodes connect <name>` focuses an existing named Node. `nodes new
   <name>` creates and enters a Node. `nodes delete <name>` and `nodes
   force-delete <name>` show confirmation before submission and report the
@@ -312,7 +314,10 @@ If animations are disabled, the same state change is immediate.
 The left wing's fourth control, **Silent running**, latches with the
 toggled cyan edge while the current Node runs silent. Node Panel Settings
 adds a **Silent running: Off / Notices / Notices + audio** row. See
-[Run silent in a Node](../flows/run-silent.md).
+[Run silent in a Node](../flows/run-silent.md). In a named Node it also
+shows **Loadout** with the saved count, **Save current apps** and
+**Clear**, and the preview lane can offer **Launch sequence**; see
+[Save and launch a Node loadout](../flows/launch-node-loadout.md).
 
 Node Panel Settings exposes the same **Flow / Stage** layout row in Default
 Node and in a named Node. The compositor applies the choice before desktopd

@@ -89,6 +89,7 @@ func main() {
 	silentMarker = filepath.Join(filepath.Dir(path), "mothership-silent-audio")
 	pushSilentState()
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	loadoutOffer = loadoutOfferFor
 	active = &controller{ctx: ctx, path: path, show: showNative, showSwitch: showNativeNodeSwitch}
 	checkSilentMarker()
 	apps = &appLauncher{ctx: ctx, display: filepath.Join(filepath.Dir(path), socket), report: active.report}
@@ -142,7 +143,7 @@ func showNative(v view) {
 	}
 	var profiles strings.Builder
 	for _, p := range v.profiles {
-		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\t%d\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","), p.Shortcut)
+		fmt.Fprintf(&profiles, "%s\t%d\t%d\t%t\t%s\t%s\t%d\t%d\n", p.Domain, p.CreatedAt, p.LastActive, p.empty, p.Description, strings.Join(p.apps, ","), p.Shortcut, len(p.Loadout))
 	}
 	s := []string{v.title, v.message, strings.Join(v.domains, "\n"), ws.String(), v.node, v.mode, profiles.String()}
 	ptr := make([]*C.char, len(s))
@@ -175,6 +176,7 @@ func showNative(v view) {
 		defaultNode = 1
 	}
 	C.panel_post(ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], enabled, overview, mapVisible, blankHome, defaultNode, ready, C.uint64_t(v.connectFailed), C.uint64_t(v.preparedRelay))
+	postLoadoutOffer(v.loadoutMissing, v.loadoutTotal, v.loadoutRunning)
 }
 
 func showNativeNodeSwitch(v *nodeSwitchView) {
@@ -659,26 +661,45 @@ var braveLaunchPending atomic.Bool
 
 //export panelLaunchGridApp
 func panelLaunchGridApp(info *C.GDesktopAppInfo, id, executable *C.char, dbus C.int) *C.char {
-	key := C.GoString(id)
-	binary := filepath.Base(C.GoString(executable))
-	action, ok := gridLaunchAction(key, binary, dbus != 0)
+	active.mu.Lock()
+	node, session := active.state.Selection.Domain, active.state.Session
+	active.mu.Unlock()
+	if err := launchGridEntry(info, C.GoString(id), C.GoString(executable), dbus != 0, node, session, nil); err != "" {
+		return C.CString(err)
+	}
+	return nil
+}
+
+// launchGridEntry starts one desktop entry for node ("" for Home) with the
+// App Grid launch policy. done, if set, learns whether a window attached.
+// Runs on the GTK thread.
+func launchGridEntry(info *C.GDesktopAppInfo, key, executable string, dbus bool, node, session string, done func(bool)) string {
+	if done == nil {
+		done = func(bool) {}
+	}
+	binary := filepath.Base(executable)
+	action, ok := gridLaunchAction(key, binary, dbus)
 	if !ok && os.Getenv("MOTHERSHIP_NATIVE_SESSION") != "1" {
 		fmt.Fprintf(os.Stderr, "mothership-app-grid: standalone launch blocked for %q\n", key)
-		return C.CString("no safe standalone Wayland launch.")
+		return "no safe standalone Wayland launch."
 	}
 	active.mu.Lock()
-	state := active.state
-	node, session := state.Selection.Domain, state.Session
 	var after uint64
-	for _, w := range state.Windows {
+	for _, w := range active.state.Windows {
 		after = max(after, w.ID)
 	}
 	active.mu.Unlock()
+	attached := func(id uint64, ok bool) {
+		if ok && node != "" {
+			launched.record(session, id, key)
+		}
+		done(ok)
+	}
 	// One in-flight request per shared nested profile. A second request
 	// cannot claim the first request's new browser window.
 	brave := action == openBrave
 	if brave && !braveLaunchPending.CompareAndSwap(false, true) {
-		return C.CString("Brave is still opening a window. Try again in a moment.")
+		return "Brave is still opening a window. Try again in a moment."
 	}
 	var pid int
 	var err error
@@ -695,7 +716,7 @@ func panelLaunchGridApp(info *C.GDesktopAppInfo, id, executable *C.char, dbus C.
 		if brave {
 			braveLaunchPending.Store(false)
 		}
-		return C.CString(err.Error())
+		return err.Error()
 	}
 	if brave {
 		profile := nestedBraveProfile(apps.display)
@@ -703,19 +724,21 @@ func panelLaunchGridApp(info *C.GDesktopAppInfo, id, executable *C.char, dbus C.
 			defer braveLaunchPending.Store(false)
 			attachGridWindow(active, session, node, 12*time.Second, func(w []domainipc.Window) uint64 {
 				return braveLaunchWindow(w, after, func(pid int) bool { return ownsNestedBraveProfile("/proc", pid, profile) })
-			})
+			}, attached)
 		}()
 	} else if node != "" {
 		go attachGridWindow(active, session, node, 12*time.Second, func(windows []domainipc.Window) uint64 {
 			return gridLaunchWindow(windows, after, func(candidate int) bool {
 				return (pid > 0 && candidate == pid) || ownsGridLaunch("/proc", candidate, token)
 			})
-		})
+		}, attached)
+	} else {
+		done(false)
 	}
 	if node == "" {
 		bringHomeLaunchForward()
 	}
-	return nil
+	return ""
 }
 
 func launchNativeDesktopApp(info *C.GDesktopAppInfo, token string) (int, error) {
@@ -737,7 +760,7 @@ func launchNativeDesktopApp(info *C.GDesktopAppInfo, token string) (int, error) 
 
 // Launch against the originally selected Node, never against the later seat
 // focus. A process that cannot be tied to the request stays in Inbox.
-func attachGridWindow(c *controller, session, node string, timeout time.Duration, match func([]domainipc.Window) uint64) {
+func attachGridWindow(c *controller, session, node string, timeout time.Duration, match func([]domainipc.Window) uint64, done func(uint64, bool)) {
 	ctx, cancel := context.WithTimeout(c.ctx, timeout)
 	defer cancel()
 	tick := time.NewTicker(70 * time.Millisecond)
@@ -753,6 +776,7 @@ func attachGridWindow(c *controller, session, node string, timeout time.Duration
 			if c.ctx.Err() == nil && node != "" {
 				report("No matching Node window. Check Home / Inbox.")
 			}
+			done(0, false)
 			return
 		case <-tick.C:
 			c.mu.Lock()
@@ -768,15 +792,17 @@ func attachGridWindow(c *controller, session, node string, timeout time.Duration
 				continue
 			}
 			if node == "" {
+				done(id, true)
 				return
 			}
-			_, _, done, err := connection(ctx, c.path, domainipc.AssignMethod, 1, domainipc.AssignBody{
+			_, _, closeConn, err := connection(ctx, c.path, domainipc.AssignMethod, 1, domainipc.AssignBody{
 				Session: session, WindowID: id, Domain: node,
 			})
-			done()
+			closeConn()
 			if err != nil {
 				report(err.Error() + " Check Home / Inbox.")
 			}
+			done(id, err == nil)
 			return
 		}
 	}

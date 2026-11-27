@@ -67,6 +67,14 @@ static GtkWindow *node_telemetry_layer;
 static GtkWidget *silent_input[3];
 static int saved_silent_mode;
 static gboolean silent_syncing;
+// Loadout: offer button in the preview lane and the Node Panel Settings rows.
+extern void panelGtkCall(guint64);
+extern void panelSaveLoadout(char *);
+extern void panelClearLoadout(char *);
+extern char *panelLaunchLoadout(char *);
+static GtkWidget *loadout_offer,*loadout_row,*loadout_actions,*loadout_count,*loadout_clear,*loadout_result;
+static int loadout_missing,loadout_total;
+static gboolean loadout_running;
 static GtkWidget *node_actions[4],*node_bell,*node_bell_ink,*node_speaker,*node_tray_button,*node_readout,*node_telemetry_off,*node_telemetry_on;
 static GtkWidget *window_picker,*picker_grid,*picker_button,*picker_button_label;
 enum { PICKER_TILE_CAP=8, PICKER_GAP=8, PICKER_INSET=12 };
@@ -700,6 +708,69 @@ static void connect_to_node(const char *name) {connect_node(name,TRUE);}
 static void stealth_node(const char *name) {
 	char *err=panelToggleSilentNode((char *)name);
 	if(err) {panel_home_notice(err);free(err);}
+}
+
+static gboolean run_gtk_call(gpointer data) {
+	panelGtkCall((guint64)GPOINTER_TO_SIZE(data));
+	return G_SOURCE_REMOVE;
+}
+// Thread-safe: Go goroutines hand work to the GTK main loop.
+void panel_gtk_call(guint64 id) {
+	g_idle_add_full(G_PRIORITY_DEFAULT,run_gtk_call,GSIZE_TO_POINTER((gsize)id),NULL);
+}
+
+static gboolean named_node_shown(void) {
+	return current_node && *current_node && !default_node;
+}
+static void loadout_sync(void) {
+	if(loadout_row) {
+		gboolean named=named_node_shown();
+		gtk_widget_set_visible(loadout_row,named);
+		gtk_widget_set_visible(loadout_actions,named);
+		g_autofree char *count=loadout_total?g_strdup_printf("%d app%s",loadout_total,loadout_total==1?"":"s"):g_strdup("None");
+		gtk_label_set_text(GTK_LABEL(loadout_count),count);
+		gtk_widget_set_sensitive(loadout_clear,loadout_total>0);
+	}
+	if(loadout_offer) {
+		g_autofree char *label=loadout_running?g_strdup("Launching…"):
+			node_window_count==0?g_strdup_printf("Launch sequence · %d app%s",loadout_missing,loadout_missing==1?"":"s"):
+			g_strdup_printf("Launch missing · %d",loadout_missing);
+		analog_button_label(loadout_offer,label);
+		gtk_widget_set_sensitive(loadout_offer,!loadout_running);
+	}
+}
+struct loadout_offer_update { int missing,total,running; };
+static gboolean apply_loadout_offer(gpointer data) {
+	struct loadout_offer_update *u=data;
+	gboolean changed=u->missing!=loadout_missing || u->total!=loadout_total || u->running!=loadout_running;
+	loadout_missing=u->missing;loadout_total=u->total;loadout_running=u->running;
+	if(changed) {loadout_sync();node_panel_update();}
+	return G_SOURCE_REMOVE;
+}
+// Called from the controller goroutine with the current Node's counts.
+void panel_loadout_offer(int missing,int total,int running) {
+	struct loadout_offer_update *u=g_new(struct loadout_offer_update,1);
+	*u=(struct loadout_offer_update){missing,total,running!=0};
+	g_idle_add_full(G_PRIORITY_DEFAULT,apply_loadout_offer,u,g_free);
+}
+// Called on the GTK thread with the result of Save or Clear.
+void panel_loadout_status(const char *message) {
+	if(!loadout_result) return;
+	gtk_label_set_text(GTK_LABEL(loadout_result),message);
+	gtk_widget_set_visible(loadout_result,TRUE);
+}
+static void launch_loadout(GtkButton *button,gpointer unused) {
+	(void)button;(void)unused;
+	if(!named_node_shown()) return;
+	char *err=panelLaunchLoadout(current_node);
+	if(err) {panel_home_notice(err);free(err);}
+}
+static void loadout_action(GtkButton *button,gpointer data) {
+	(void)button;
+	if(!named_node_shown()) return;
+	gtk_widget_set_visible(loadout_result,FALSE);
+	if(GPOINTER_TO_INT(data)) panelClearLoadout(current_node);
+	else panelSaveLoadout(current_node);
 }
 
 void panel_map_click(double x,double y) {
@@ -2160,6 +2231,8 @@ void panel_open_node_settings(void) {
 	gtk_spin_button_set_value(GTK_SPIN_BUTTON(node_hover_zoom),saved_node_hover_zoom);
 	gtk_widget_set_visible(node_guide_error,FALSE);
 	if(silent_input[0]) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(silent_input[saved_silent_mode]),TRUE);
+	if(loadout_result) gtk_widget_set_visible(loadout_result,FALSE);
+	loadout_sync();
 	node_stage_settings_sync();
 	gtk_widget_set_visible(node_settings,TRUE);
 	gtk_layer_set_keyboard_mode(window,KEYS_ON_DEMAND);
@@ -2588,6 +2661,21 @@ static void node_panel_update(void) {
 	}
 	gtk_widget_set_visible(picker_button,list_available);
 	picker_fit();
+	// Offer the loadout in free lane space: at the lane start in an empty
+	// Node, after the previews otherwise. Slash still works without room.
+	gboolean offer=loadout_offer && previews && !log_open && named_node_shown() && loadout_missing>0;
+	if(offer) {
+		loadout_sync();
+		int offer_w=0;
+		gtk_widget_measure(loadout_offer,GTK_ORIENTATION_HORIZONTAL,-1,NULL,&offer_w,NULL,NULL);
+		int used=MIN(strip,(int)node_window_count*SHELL_PREVIEW_PITCH);
+		int x=start+(node_window_count?used+8:0);
+		int limit=start+strip-(list_available?PICKER_BUTTON_SIZE+8:0);
+		int center=NODE_PREVIEW_HEIGHT-SHELL_PREVIEW_BOTTOM-(NODE_PREVIEW_HEIGHT-SHELL_PREVIEW_REST_INSET)/2;
+		offer=x+offer_w<=limit;
+		if(offer) gtk_fixed_move(GTK_FIXED(node_dock),loadout_offer,x,center-PICKER_BUTTON_SIZE/2);
+	}
+	if(loadout_offer) gtk_widget_set_visible(loadout_offer,offer);
 	if(node_strip_x!=start || node_strip_width!=strip) {
 		node_pressed=-1;
 		panel_node_strip_pointer(-1,FALSE);
@@ -2904,6 +2992,14 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_widget_set_size_request(picker_button,PICKER_BUTTON_SIZE,PICKER_BUTTON_SIZE);
 	gtk_widget_set_visible(picker_button,FALSE);
 	gtk_fixed_put(GTK_FIXED(node_dock),picker_button,0,0);
+	loadout_offer=gtk_button_new_with_label("Launch sequence");
+	gtk_widget_add_css_class(loadout_offer,"window-picker-trigger");
+	analog_button_style(loadout_offer,12,0);
+	gtk_widget_set_focus_on_click(loadout_offer,FALSE);
+	g_signal_connect(loadout_offer,"clicked",G_CALLBACK(launch_loadout),NULL);
+	gtk_widget_set_size_request(loadout_offer,-1,PICKER_BUTTON_SIZE);
+	gtk_widget_set_visible(loadout_offer,FALSE);
+	gtk_fixed_put(GTK_FIXED(node_dock),loadout_offer,0,0);
 	gtk_widget_set_visible(node_dock,FALSE);
 	gtk_overlay_add_overlay(overlay,node_dock);
 	// Leave all dock chrome/input on the original shell surface. A telemetry
@@ -3011,6 +3107,30 @@ static void node_panel_init(GtkOverlay *overlay) {
 		gtk_box_append(GTK_BOX(row),silent_input[i]);
 	}
 	gtk_box_append(GTK_BOX(body),row);
+	loadout_row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+	label=gtk_label_new("Loadout");
+	gtk_label_set_xalign(GTK_LABEL(label),0);gtk_widget_set_hexpand(label,TRUE);
+	gtk_box_append(GTK_BOX(loadout_row),label);
+	loadout_count=gtk_label_new("None");
+	gtk_box_append(GTK_BOX(loadout_row),loadout_count);
+	gtk_box_append(GTK_BOX(body),loadout_row);
+	loadout_actions=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+	gtk_widget_set_halign(loadout_actions,GTK_ALIGN_END);
+	GtkWidget *save_loadout=gtk_button_new_with_label("Save current apps");
+	home_mechanical_button(save_loadout,FALSE);
+	g_signal_connect(save_loadout,"clicked",G_CALLBACK(loadout_action),GINT_TO_POINTER(0));
+	gtk_box_append(GTK_BOX(loadout_actions),save_loadout);
+	loadout_clear=gtk_button_new_with_label("Clear");
+	home_mechanical_button(loadout_clear,FALSE);
+	gtk_accessible_update_property(GTK_ACCESSIBLE(loadout_clear),GTK_ACCESSIBLE_PROPERTY_LABEL,"Clear loadout",-1);
+	g_signal_connect(loadout_clear,"clicked",G_CALLBACK(loadout_action),GINT_TO_POINTER(1));
+	gtk_box_append(GTK_BOX(loadout_actions),loadout_clear);
+	gtk_box_append(GTK_BOX(body),loadout_actions);
+	loadout_result=gtk_label_new("");
+	gtk_label_set_wrap(GTK_LABEL(loadout_result),TRUE);
+	gtk_label_set_xalign(GTK_LABEL(loadout_result),0);
+	gtk_widget_set_visible(loadout_result,FALSE);
+	gtk_box_append(GTK_BOX(body),loadout_result);
 	node_guide_error=gtk_label_new("");
 	gtk_label_set_wrap(GTK_LABEL(node_guide_error),TRUE);
 	gtk_widget_set_visible(node_guide_error,FALSE);

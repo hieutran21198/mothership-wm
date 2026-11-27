@@ -12,7 +12,7 @@ struct profile_data {
 	char *description;
 	gint64 created_at,last_active;
 	gboolean empty;
-	int shortcut;
+	int shortcut,loadout;
 	char **app_ids;
 	GPtrArray *icons;
 	GskRenderNode *paint;

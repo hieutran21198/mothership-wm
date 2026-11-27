@@ -88,3 +88,53 @@ func TestDeleteStaysDeletedAfterOpen(t *testing.T) {
 		t.Fatalf("deleted Node returned: %v, %v", nodes, err)
 	}
 }
+
+func TestLoadoutFilesSitBesideNodesAndLeaveWithThem(t *testing.T) {
+	dir := t.TempDir()
+	s, _, err := Open(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev := domain.Node{Name: "Dev", CreatedAt: 10}
+	if err := s.Save(dev); err != nil {
+		t.Fatal(err)
+	}
+	entries := []string{"com.mitchellh.ghostty.desktop", "com.system76.CosmicFiles.desktop", "com.mitchellh.ghostty.desktop"}
+	if err := s.SaveLoadout("Dev", entries); err != nil {
+		t.Fatal(err)
+	}
+	// The Node loader must not see or reject loadout files.
+	s, nodes, err := Open(dir, "")
+	if err != nil || len(nodes) != 1 {
+		t.Fatalf("restart with loadout: %v %v", nodes, err)
+	}
+	var warnings []error
+	warn := func(err error) { warnings = append(warnings, err) }
+	if got := s.LoadLoadouts(nodes, warn); !reflect.DeepEqual(got["Dev"], entries) || len(warnings) != 0 {
+		t.Fatalf("loaded %v warnings %v", got, warnings)
+	}
+	for _, bad := range [][]string{{"../evil.desktop"}, {"no-suffix"}, make([]string, 9)} {
+		if err := s.SaveLoadout("Dev", bad); err == nil {
+			t.Fatalf("accepted %q", bad)
+		}
+	}
+	if err := os.WriteFile(s.loadoutPath("Dev"), []byte(`{"entries":["bad"]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.LoadLoadouts(nodes, warn); len(got) != 0 || len(warnings) != 1 {
+		t.Fatalf("malformed loadout: %v %v", got, warnings)
+	}
+	if err := s.SaveLoadout("Dev", entries); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(dev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.loadoutPath("Dev")); !os.IsNotExist(err) {
+		t.Fatalf("loadout outlived its Node: %v", err)
+	}
+	// Clearing a loadout that is already gone is not an error.
+	if err := s.SaveLoadout("Dev", nil); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -14,7 +14,9 @@ Domain does not own seats.
 | DOM-3 | `FocusDomain` names an existing Domain and resolves its members. Only WM applies the visible set and determines the eligible keyboard target. Membership grants no authority to send input. |
 
 Only Node name, optional plain-text description, creation time, latest
-acknowledged workspace entry and optional Map shortcut slot are durable, local to the current user.
+acknowledged workspace entry, optional Map shortcut slot and optional
+[loadout](../flows/launch-node-loadout.md) (desktop entry IDs to relaunch,
+never membership) are durable, local to the current user.
 Creation time is set once. Last active advances only when WM acknowledges an
 explicit entry into that named workspace, including an empty Node; layout,
 assignment, hover and profile changes do not affect it. Node age and activity
@@ -51,7 +53,7 @@ falls back to Inbox while a named Domain is active.
 | DOM-4 | Delete only a user-created named Node after leaving its active view. The Mothership marker and Default Node are not deletable. Normal Delete requires no live Window members, including unmapped members. |
 | DOM-5 | An agent still attached as a manager blocks both Delete and Force Delete, even when the Node has no windows. End or detach that manager explicitly. Deleting a Node never stops or transfers an agent. |
 | DOM-6 | Force Delete can move live Window members to Default Node by clearing their named membership into the Inbox. Preserve the existing Window IDs and clients; do not open Default Node or close apps. Inbox overflow and unmapped members remain live under the existing projection rules. Delete the Node only after the move succeeds. |
-| DOM-7 | Successful deletion removes the durable Node record, frees its optional shortcut slot without renumbering other Nodes, and preserves existing notification history. |
+| DOM-7 | Successful deletion removes the durable Node record and its loadout, frees its optional shortcut slot without renumbering other Nodes, and preserves existing notification history. |
 
 See [Delete a Node](../flows/use-command-center.md#delete-a-node).
 
