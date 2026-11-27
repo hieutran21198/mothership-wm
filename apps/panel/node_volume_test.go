@@ -85,3 +85,25 @@ func TestNodeMuteMovesBetweenMutedNodesWithoutUnmuting(t *testing.T) {
 		t.Fatalf("restore ownership = %+v, err = %v", state.restore, err)
 	}
 }
+
+func TestCommsNodesShowPlayingAndMutedNodes(t *testing.T) {
+	windows := []domainipc.Window{
+		{PID: 10, Domain: "Ops", Mapped: true},
+		{PID: 11, Domain: "Dev", Mapped: true},
+		{PID: 12, Mapped: true},
+		{PID: 13, Domain: "Quiet", Mapped: true},
+	}
+	paused := testStream(4, "104", "13", false)
+	paused.Corked = true
+	streams := []audioStream{
+		testStream(1, "101", "10", false), // Ops playing
+		testStream(2, "102", "11", true),  // Dev playing but muted
+		testStream(3, "103", "12", false), // Default Node: not on the Map
+		paused,                            // Quiet: paused
+		testStream(5, "105", "10", true),  // Ops has one unmuted stream left
+	}
+	got := commsNodes(routeAudio(streams, windows, func(int) int { return 0 }))
+	if want := map[string]bool{"Ops": false, "Dev": true}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("comms %v, want %v", got, want)
+	}
+}

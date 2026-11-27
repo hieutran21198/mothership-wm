@@ -45,6 +45,7 @@ extern void panelSilentView(char *);
 extern char *panelSaveSilentRunning(int);
 extern char *panelToggleSilentRunning(void);
 extern char *panelToggleSilentNode(char *);
+extern void panelCommsWatch(int);
 extern int panelReloadConfig(void);
 extern char *panelSaveHomeSettings(int,int,int,int,int);
 extern void panelShellNotification(char *);
@@ -1377,6 +1378,8 @@ static gboolean apply_update(gpointer data) {
 		close_slash();
 		if(expanded) set_expanded(FALSE);
 	}
+	// Comms status samples playback only while the Map shows the fleet.
+	if(map_visible!=show_nodes) panelCommsWatch(show_nodes);
 	map_visible = show_nodes;
 	if(map_visible && (app_grid_open || gtk_widget_get_visible(app_grid))) clear_app_grid();
 	if(gtk_window_is_active(window)) navigation_focused();

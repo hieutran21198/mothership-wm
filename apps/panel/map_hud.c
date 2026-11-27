@@ -251,6 +251,13 @@ static void cloak_set_shown(const char *name,gboolean on) {
 	else g_hash_table_remove(cloak_shown,name);
 }
 static double cloak_level(const char *name);
+// Comms: named Nodes with an identifiable playing stream (value 1), or with
+// every playing stream muted (value 2).
+static GHashTable *comms_nodes;
+static guint comms_tick;
+static double comms_phase;
+static gboolean transit_motion(void);
+static void draw_comms(cairo_t *cr,const char *name,double x,double y,double bow);
 static GQueue notice_transit=G_QUEUE_INIT;
 static guint notice_tick;
 static gint64 notice_started;
@@ -630,8 +637,10 @@ static void draw_symbol(cairo_t *cr, const char *name, double x, double y) {
 		cairo_restore(cr);
 	} else {
 		draw_fleet_ship_as(cr,x,y,map_zoom.scale,FALSE,active,selected,FALSE,cloak_level(name));
+		draw_comms(cr,name,x,y,FLEET_NODE_HALF_HEIGHT*map_zoom.scale);
 		return;
 	}
+	draw_comms(cr,name,x,y,half);
 	if (active && !selected) {
 		diamond(cr, x, y, half);
 		source(cr, amber, .7);
@@ -1567,8 +1576,73 @@ static void cloak_sync_all(void) {
 // command packet carries them from Mothership. The first list at startup,
 // or a change while the Map is showing, applies without a packet.
 static void queue_cloak_commands(void);
-static gboolean transit_motion(void);
 static gboolean notice_frame(GtkWidget *,GdkFrameClock *,gpointer);
+
+// Three short arcs ahead of the bow. With motion, brightness travels
+// outward on a 1.2 s loop; Motion Off is static. A muted Node's arcs are
+// static and struck through. Hidden during the radar, Arcade and relay.
+static void draw_comms(cairo_t *cr,const char *name,double x,double y,double bow) {
+	int state=comms_nodes?GPOINTER_TO_INT(g_hash_table_lookup(comms_nodes,name)):0;
+	if(!state || intro_tick || arcade_playing || relay_node) return;
+	gboolean muted=state==2,moving=!muted && comms_tick;
+	double s=map_zoom.scale,cy=y-bow+1.5*s;
+	cairo_save(cr);
+	cairo_new_path(cr);
+	cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_width(cr,1.3);
+	for(int i=0;i<3;i++) {
+		double r=(4+3.6*i)*s,alpha=.72;
+		if(moving) alpha=.28+.72*(1-fmod(comms_phase-i/3.+1.,1.));
+		cairo_set_source_rgba(cr,.56,.85,.89,alpha);
+		cairo_arc(cr,x,cy,r,-G_PI*.78,-G_PI*.22);
+		cairo_stroke(cr);
+	}
+	if(muted) {
+		double r=(4+3.6*2)*s;
+		cairo_set_source_rgba(cr,.80,.90,.93,.85);
+		cairo_move_to(cr,x-r*.75,cy-r*.95);
+		cairo_line_to(cr,x+r*.75,cy-r*.15);
+		cairo_stroke(cr);
+	}
+	cairo_restore(cr);
+}
+
+static gboolean comms_frame(GtkWidget *widget,GdkFrameClock *clock,gpointer unused) {
+	(void)widget;(void)unused;
+	comms_phase=fmod(gdk_frame_clock_get_frame_time(clock)/1200000.,1.);
+	if(annotations) gtk_widget_queue_draw(annotations);
+	return G_SOURCE_CONTINUE;
+}
+
+static void sync_comms_tick(void) {
+	gboolean playing=FALSE;
+	if(comms_nodes) {
+		GHashTableIter it;gpointer value;
+		g_hash_table_iter_init(&it,comms_nodes);
+		while(g_hash_table_iter_next(&it,NULL,&value)) playing|=GPOINTER_TO_INT(value)==1;
+	}
+	gboolean want=playing && annotations && gtk_widget_get_mapped(annotations) && transit_motion();
+	if(want && !comms_tick) comms_tick=gtk_widget_add_tick_callback(annotations,comms_frame,NULL,NULL);
+	else if(!want && comms_tick) {
+		gtk_widget_remove_tick_callback(annotations,comms_tick);
+		comms_tick=0;
+	}
+}
+
+void map_hud_set_comms(const char *lines) {
+	if(!comms_nodes) comms_nodes=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
+	g_hash_table_remove_all(comms_nodes);
+	g_auto(GStrv) rows=g_strsplit(lines?lines:"","\n",-1);
+	for(int i=0;rows[i];i++) {
+		g_auto(GStrv) f=g_strsplit(rows[i],"\t",2);
+		if(g_strv_length(f)==2 && *f[0])
+			g_hash_table_replace(comms_nodes,g_strdup(f[0]),GINT_TO_POINTER(g_str_equal(f[1],"1")?2:1));
+	}
+	sync_comms_tick();
+	if(annotations) gtk_widget_queue_draw(annotations);
+}
+
+static gboolean transit_motion(void);
 void map_hud_set_silent(const char *names) {
 	if(!silent_nodes) silent_nodes=g_hash_table_new_full(g_str_hash,g_str_equal,g_free,NULL);
 	g_auto(GStrv) list=g_strsplit(names?names:"","\n",-1);
@@ -1941,6 +2015,8 @@ static void annotations_snapshot(GtkWidget *widget,GtkSnapshot *snap) {
 			if(!**n || !marker(plane,*n,&x,&y))continue;
 			project_map_point(&x,&y);
 			double radius = painted_marker_radius(*n)+1;
+			if(comms_nodes && g_hash_table_contains(comms_nodes,*n))
+				radius=MAX(radius,(FLEET_NODE_HALF_HEIGHT+18)*map_zoom.scale);
 			double reach=annotation_reach(*n);
 			graphene_rect_t bounds=GRAPHENE_RECT_INIT(x-radius,y-radius,2*radius,2*radius);
 			if(pass) {

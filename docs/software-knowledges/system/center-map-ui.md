@@ -121,8 +121,8 @@ For visual changes, compare the [original approved assets and review checklist](
   A custom Node SVG is painted at half opacity when cloaked. A change
   made while the Map is closed arrives as a cyan command packet from
   Mothership on the next Map open; see
-  [Show ship status](../flows/show-ship-status.md). Cloaked is
-  implemented; Comms is not yet.
+  [Show ship status](../flows/show-ship-status.md). Both states are
+  implemented.
 - Use the same [shell typeface and role weights](../../../internal/shellfonts/fonts/chakra-petch/README.md)
   across Mothership-owned text; external applications keep their own fonts.
   Mothership, numbered Node names and unnumbered Node names share the

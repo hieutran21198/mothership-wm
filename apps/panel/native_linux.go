@@ -122,6 +122,7 @@ func main() {
 	volumeDone := make(chan struct{})
 	go func() { defer close(volumeDone); runNodeVolume(ctx, active) }()
 	go sampleHome(ctx)
+	go runComms(ctx, active)
 	go func() {
 		<-ctx.Done()
 		C.panel_quit()
