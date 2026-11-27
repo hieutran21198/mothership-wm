@@ -19,7 +19,7 @@ control to preserve a preferred width.
 | Part | Normal-width recipe |
 | --- | --- |
 | Rail | One opaque graphite silhouette with paired, parallel thin strokes. Each cut has equal horizontal and vertical runs. Keep the positive end and seam gaps from the [shell design system](shell-design.md). |
-| Actions | Two equal wings: Map, App Grid and Reload on the left; Hangar, Audio, Lock and Notification Log on the right. Do not add a global Settings button. All button faces share a size, up to 44 × 36 logical px. Mirror the 13 px outer inset and use 8 px between buttons at normal widths. Compact faces and gaps equally at narrow widths. Extra space stays toward the tray; the telemetry center never shifts. |
+| Actions | Two equal wings: Map, App Grid and Reload on the left; Hangar, Systems, Lock and Notification Log on the right. Do not add a global Settings button. Every Home and Node dock button face is a fixed 44 × 36 logical px. Mirror the 13 px outer inset and use 8 px between buttons. Size both wings to hold the fuller side at that face size; panel width changes the tray, not the faces. Only when the output is too narrow for those wings, compact faces and gaps equally so every action stays reachable. Extra space stays toward the tray; the telemetry center never shifts. |
 | Readout | 51 px high, with a matched upper/lower edge and quiet ink. Use the same near-black blue base as the Node recess. Separate Health, CPU, RAM, NET, and time/date; the display does not acquire focus. |
 | Map gap | The Home Panel anchor does not move. The Center Map ends 16 logical px above the painted top of the panel, at every supported width. |
 
@@ -102,7 +102,7 @@ The controls require a local PulseAudio-compatible playback server
 Show a small, noninteractive Map-style key strip above the dock on blank
 Home. Align its left edge with the dock, not the viewport, and keep a 16
 logical px vertical gap. Render only the **A**, **M**, **W**, **/**, **,**,
-**R**, **N** and **L** keycaps, without text captions. Omit **W** if Default Node is disabled. Wrap at
+**R**, **N**, **L** and **D** keycaps, without text captions. Omit **W** if Default Node is disabled. Wrap at
 narrow widths, and hide it when Map, Settings, Slash, App Grid, the Mission
 Log or Command Center is open. The guide is on by default. Save **Keyboard guide** under
 `home_panel.show_keyboard_guide`; Cancel leaves the old value. This setting
@@ -114,7 +114,7 @@ never changes the actual shortcuts or the guides in other views.
 | --- | --- |
 | Map / Command Center | The existing acknowledged Map actions and Command Center. Opening the latter in Map suspends map-specific input until it closes; outside the dock or open controls the previous view keeps its input behavior. |
 | Reload | Same explicit validation as Home **R**. No filesystem watcher. It is unavailable outside blank Home. |
-| Audio | Read-only level/mute state of the default PipeWire output via `wpctl`; unavailable state without it. No mixer or volume mutation in this slice. |
+| Systems / `D` | Open the [Systems board](../flows/control-devices.md) for sound and Bluetooth devices. The button shows small struck marks while the default output or microphone is muted. |
 | Panel Settings | Use the contextual comma shortcut rather than a dock button. Preview width in logical px and set **Video wallpaper**. Cancel restores width and leaves video unchanged. Turning video off uses the bundled image and keeps the selected MP4 path. Map Settings remain separate. |
 | Lock | Request lock for the shell's active local Wayland login, only when the same login can be validated. Report success only if logind acknowledges `LockedHint`. If it is not available or confirmed, say so; no in-app imitation. |
 | `,` | Toggles Panel Settings on focused blank Home. In Center Map the same key addresses Map Settings. Editable fields keep the literal comma. |

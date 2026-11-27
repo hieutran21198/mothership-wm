@@ -273,7 +273,7 @@ struct nested {
 	struct wl_event_source *domain_source;
 	// Comms pin: one live, read-only thumbnail of a window from another view.
 	struct {
-		uint64_t id;
+		uint64_t id,sent_id;
 		int corner; // 0 bottom-right, 1 bottom-left, 2 top-left, 3 top-right
 		bool shown,grabbing,moved;
 		struct wlr_box box,sent;
@@ -311,7 +311,7 @@ struct xdg_view {
 	struct scene_glass *frame_glass;
 	struct owned_preview preview_copy;
 	uint64_t preview_generation;
-	int content_top, content_edge, flow_width, flow_height;
+	int content_top, content_bottom, content_edge, flow_width, flow_height;
 	bool flowed_out, maximized, configured_maximized, configured_stage;
 	int configure_w, configure_h;
 	uint64_t id;
@@ -1446,7 +1446,7 @@ static void arrange_flow(struct nested *wm, struct xdg_view *center) {
 			if (!v->flow_width) {
 				struct wlr_box g=v->toplevel->base->geometry;
 				v->flow_width=g.width>0 && g.width<w ? g.width+2*WINDOW_CONTENT_EDGE : 720+2*WINDOW_CONTENT_EDGE;
-				v->flow_height=g.height>0 && g.height<h ? g.height+WINDOW_CONTENT_TOP+WINDOW_CONTENT_EDGE : 520+WINDOW_CONTENT_TOP+WINDOW_CONTENT_EDGE;
+				v->flow_height=g.height>0 && g.height<h ? g.height+WINDOW_CONTENT_TOP+WINDOW_CONTENT_BOTTOM : 520+WINDOW_CONTENT_TOP+WINDOW_CONTENT_BOTTOM;
 			}
 			int vw=clamp_int(v->flow_width,w<180?w:180,w);
 			int vh=clamp_int(v->flow_height,h<100?h:100,h);
@@ -1477,8 +1477,8 @@ static void clip_chrome(struct xdg_view *view,struct wlr_scene_rect *scene,struc
 static void apply_view_clip(struct xdg_view *view) {
 	if(!view || !view->tree || (!view->frame->node.enabled && view->wm->maximize.view!=view)) return;
 	struct rect r=view->placement;
-	int bar=view->content_top,edge=view->content_edge;
-	struct wlr_box target={r.x+edge,r.y+bar,r.width-2*edge,r.height-bar-edge},visible=target;
+	int bar=view->content_top,bottom=view->content_bottom,edge=view->content_edge;
+	struct wlr_box target={r.x+edge,r.y+bar,r.width-2*edge,r.height-bar-bottom},visible=target;
 	bool shown=!view->wm->revealing || wlr_box_intersection(&visible,&target,&view->wm->aperture);
 	wlr_scene_node_set_enabled(&view->tree->node,shown);
 	if(shown) {
@@ -1502,6 +1502,16 @@ static void apply_view_clip(struct xdg_view *view) {
 			window_chrome_clip(view->chrome,&crop);
 		} else if (visible_frame) window_chrome_clip(view->chrome,NULL);
 	}
+}
+
+// Only the keyboard-focused frame lists the window chords it accepts.
+// Every frame keeps the same footer height so focus never resizes an app.
+static const char *frame_hints(struct nested *wm,struct xdg_view *view,bool movable,char *out,size_t size) {
+	const char *close=nested_seat_close_key_name(wm->seat);
+	if(wm->focused!=view || !close) return NULL;
+	snprintf(out,size,"Win + %s Close%s%s",close,wm->pin.tree?"|Win + P Pin":"",
+		movable?"|Win + Shift + Arrows Move":"");
+	return out;
 }
 
 static void place_view(struct xdg_view *view) {
@@ -1548,9 +1558,9 @@ static void place_view(struct xdg_view *view) {
 	} else {
 		r = tile_rect(view->slot, wm->visible_count, width, height);
 	}
-	bool framed=(flow||stage) && r.width>2*WINDOW_CONTENT_EDGE && r.height>WINDOW_CONTENT_TOP+WINDOW_CONTENT_EDGE;
+	bool framed=(flow||stage) && r.width>2*WINDOW_CONTENT_EDGE && r.height>WINDOW_CONTENT_TOP+WINDOW_CONTENT_BOTTOM;
 	int bar=framed?WINDOW_CONTENT_TOP:(!flow && floating)?FLOAT_BAR:0;
-	int edge=framed?WINDOW_CONTENT_EDGE:0;
+	int edge=framed?WINDOW_CONTENT_EDGE:0,bottom=framed?WINDOW_CONTENT_BOTTOM:0;
 	if(wm->mode_slide_view==view){r.x+=wm->mode_slide_x;r.y+=wm->mode_slide_y;}
 	if(wm->reorder.active) {
 		r.x+=(int)round(view->reorder_x*wm->reorder.remaining);
@@ -1558,14 +1568,16 @@ static void place_view(struct xdg_view *view) {
 	}
 	view->placement=r;
 	view->content_top=bar;
+	view->content_bottom=bottom;
 	view->content_edge=edge;
 	wlr_scene_node_set_position(&view->frame->node,r.x,r.y);
 	wlr_scene_node_set_position(&view->tree->node,edge,bar);
 	if (framed && !view->chrome) view->chrome=window_chrome_create(view->frame);
 	if (view->chrome) {
+		char hints[96];
 		if (framed) window_chrome_update(view->chrome,r.width,r.height,(double)wm->parent_window.scale_120/120,
 			view->toplevel->title,wm->focused==view,flow && !grouped,floating,maximized,
-			stage || grouped,!grouped);
+			stage || grouped,!grouped,frame_hints(wm,view,flow && !floating && !maximized,hints,sizeof(hints)));
 		else window_chrome_show(view->chrome,false);
 	}
 	if (floating && !flow && view->bar == NULL) {
@@ -1589,7 +1601,7 @@ static void place_view(struct xdg_view *view) {
 		wlr_xdg_toplevel_set_tiled(view->toplevel,tiled?
 			WLR_EDGE_TOP|WLR_EDGE_BOTTOM|WLR_EDGE_LEFT|WLR_EDGE_RIGHT:0);
 	}
-	int request_w=node?r.width-2*edge:0, request_h=node?r.height-bar-edge:0;
+	int request_w=node?r.width-2*edge:0, request_h=node?r.height-bar-bottom:0;
 	if (request_w != view->configure_w || request_h != view->configure_h) {
 		view->configure_w = request_w;
 		view->configure_h = request_h;
@@ -2520,9 +2532,10 @@ static struct wlr_box pin_corner_box(struct nested *wm,int corner) {
 static void pin_notify(struct nested *wm,struct wlr_box box) {
 	if(!wm->map_pointer ||
 		wl_resource_get_version(wm->map_pointer)<MOTHERSHIP_MAP_POINTER_V1_PIN_STATE_SINCE_VERSION) return;
-	if(box.x==wm->pin.sent.x && box.y==wm->pin.sent.y && box.width==wm->pin.sent.width &&
-		box.height==wm->pin.sent.height) return;
+	if(wm->pin.id==wm->pin.sent_id && box.x==wm->pin.sent.x && box.y==wm->pin.sent.y &&
+		box.width==wm->pin.sent.width && box.height==wm->pin.sent.height) return;
 	wm->pin.sent=box;
+	wm->pin.sent_id=wm->pin.id;
 	struct xdg_view *v=pin_view(wm);
 	const char *title=v && v->toplevel->title?v->toplevel->title:"";
 	const char *app=v && v->toplevel->app_id?v->toplevel->app_id:"";
@@ -2572,7 +2585,8 @@ static void pin_forget(struct nested *wm,struct xdg_view *view) {
 	pin_hide(wm);
 	wm->pin.id=0;
 	wm->pin.grabbing=false;
-	wm->pin.sent=(struct wlr_box){0};
+	// ID 0 tells the shell the pin is gone.
+	pin_notify(wm,(struct wlr_box){0});
 }
 
 static bool pin_toggle(void *data,struct wlr_surface *surface) {
@@ -2584,7 +2598,8 @@ static bool pin_toggle(void *data,struct wlr_surface *surface) {
 		struct xdg_view *old=pin_view(wm);
 		if(old) pin_forget(wm,old);
 		wm->pin.id=v->id;
-		wm->pin.sent=(struct wlr_box){0};
+		// A new ID announces the pin even while its own Node hides it.
+		pin_notify(wm,(struct wlr_box){0});
 	}
 	wlr_output_schedule_frame(wm->output);
 	return true;
@@ -2628,14 +2643,22 @@ static void pin_grab(struct nested *wm,enum nested_move_phase phase,double x,dou
 	}
 }
 
+static bool tray_closing(struct nested *wm) {
+	for(int i=0;i<FLOW_GROUP_MAX;i++)
+		if(wm->tray_flight[i].id && !wm->tray_flight[i].opening)return true;
+	return false;
+}
+
 static void stage_show_unit(struct nested *wm,struct xdg_view *view) {
 	struct xdg_view *members[FLOW_GROUP_MAX];
 	int count=stage_members(wm,view,members);
+	// Keep the work area exclusive while the outgoing unit docks.
+	bool closing=tray_closing(wm);
 	for(int i=0;i<wm->visible_count;i++) {
 		struct xdg_view *v=wm->slots[i];
 		bool paint=false;
 		for(int j=0;j<count;j++) paint|=v==members[j];
-		wlr_scene_node_set_enabled(&v->frame->node,paint);
+		wlr_scene_node_set_enabled(&v->frame->node,paint && !closing);
 	}
 	for(int i=0;i<count;i++) place_view(members[i]);
 }
@@ -2671,6 +2694,7 @@ static bool tray_flight_enabled(struct nested *wm,struct xdg_view *view) {
 		wm->focused==view:!view->maximized);
 }
 static void tray_flights_clear(struct nested *wm) {
+	bool stage_closing=is_stage(wm) && tray_closing(wm);
 	for(int i=0;i<FLOW_GROUP_MAX;i++) {
 		__typeof__(wm->tray_flight[0]) *f=&wm->tray_flight[i];
 		if(f->opening && f->id) {
@@ -2680,6 +2704,7 @@ static void tray_flights_clear(struct nested *wm) {
 		stage_scale_clear(&f->sprite);
 		f->id=0;
 	}
+	if(stage_closing)present_stage(wm);
 }
 static struct wlr_box tray_flight_anchor(struct nested *wm,struct xdg_view *v) {
 	struct wlr_box tile=strip_rest_tile(wm,v,fmin(wm->strip_offset,strip_limit(wm)));
@@ -2698,6 +2723,7 @@ static void tray_flight_start(struct nested *wm,struct xdg_view *v,int index,boo
 static void tray_flights_frame(struct nested *wm,struct timespec now) {
 	int64_t ms=now.tv_sec*1000LL+now.tv_nsec/1000000;
 	bool changed=false;
+	bool stage_closing=is_stage(wm) && tray_closing(wm);
 	for(int i=0;i<FLOW_GROUP_MAX;i++) {
 		__typeof__(wm->tray_flight[0]) *f=&wm->tray_flight[i];
 		if(!f->id)continue;
@@ -2716,6 +2742,7 @@ static void tray_flights_frame(struct nested *wm,struct timespec now) {
 			stage_scale_draw(&f->sprite,f->anchor,stage_ease(f->opening?t:1.-t));
 		wlr_output_schedule_frame(wm->output);
 	}
+	if(stage_closing && !tray_closing(wm))present_stage(wm);
 	if(changed)nested_seat_refresh(wm->seat);
 }
 static bool stage_capture_unit(struct nested *wm,struct xdg_view *view) {
@@ -2738,6 +2765,8 @@ static bool stage_capture_unit(struct nested *wm,struct xdg_view *view) {
 }
 
 static void stage_begin_switch(struct nested *wm) {
+	if(tray_closing(wm))return;
+	tray_flights_clear(wm);
 	struct xdg_view *painted=wm->stage_painted;
 	if(!wm->strip_motion || !painted) {present_stage(wm);return;}
 	wm->strip_hover=0;
@@ -2837,7 +2866,7 @@ static size_t glass_below(struct nested *wm,struct wlr_scene_node *anchor,
 static struct wlr_box client_aperture(struct xdg_view *v) {
 	struct rect a=v->placement;
 	return (struct wlr_box){a.x+v->content_edge,a.y+v->content_top,
-		a.width-2*v->content_edge,a.height-v->content_top-v->content_edge};
+		a.width-2*v->content_edge,a.height-v->content_top-v->content_bottom};
 }
 static unsigned decorate_frames(struct nested *wm) {
 	const struct wlr_box output={0,0,wm->parent_window.width,wm->parent_window.height};
@@ -4132,6 +4161,8 @@ static int on_domain_fd(int fd, uint32_t mask, void *data) {
 			domain_disconnect(wm);
 			return 0;
 		}
+		// The focused frame names the close key in its footer.
+		if(wm->focused && wm->focused->slot>=0) place_view(wm->focused);
 		domain_send(wm,"applied",serial);
 		return 0;
 	}
@@ -5002,7 +5033,8 @@ int mothership_wm_run(struct mothership_control *control, int stop_read_fd, int 
 		goto done;
 	}
 	{
-		const float face[4]={.027f,.064f,.091f,.96f},mark[4]={.49f,.83f,.90f,1};
+		// Amber, not the cyan focus ink, so the pin never reads as a focused window.
+		const float face[4]={.027f,.064f,.091f,.96f},mark[4]={.96f,.71f,.33f,1};
 		wm.pin.face=wlr_scene_rect_create(wm.pin.tree,1,1,face);
 		wm.pin.image=wlr_scene_buffer_create(wm.pin.tree,NULL);
 		if(!wm.pin.face || !wm.pin.image) goto done;

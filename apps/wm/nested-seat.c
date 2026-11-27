@@ -671,6 +671,20 @@ bool nested_seat_set_shortcuts(struct nested_seat *seat,uint64_t close,uint64_t 
 	return true;
 }
 
+const char *nested_seat_close_key_name(const struct nested_seat *seat) {
+	static const struct { uint32_t first; const char *keys; } rows[]={
+		{KEY_Q,"QWERTYUIOP"},{KEY_A,"ASDFGHJKL"},{KEY_Z,"ZXCVBNM"}};
+	static char name[2];
+	if(!seat) return NULL;
+	if(seat->close_key==KEY_COMMA) return ",";
+	for(size_t i=0;i<sizeof(rows)/sizeof(rows[0]);i++)
+		if(seat->close_key>=rows[i].first && seat->close_key<rows[i].first+strlen(rows[i].keys)) {
+			name[0]=rows[i].keys[seat->close_key-rows[i].first];
+			return name;
+		}
+	return NULL;
+}
+
 static bool screenshot_chord(struct nested_seat *seat,uint32_t key) {
 	if (!seat->screenshot_open || seat->keyboard.modifiers.latched) return false;
 	bool win_shift=key==KEY_S;

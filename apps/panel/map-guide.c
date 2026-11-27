@@ -207,7 +207,7 @@ void home_guide_draw(cairo_t *cr,int width,gboolean default_node) {
 	ink(cr,0x637f8c);cairo_set_line_width(cr,1);cairo_stroke(cr);
 	face(cr,width,height,8,3.6);
 	ink(cr,0x324e5b);cairo_stroke(cr);
-	static const char *keys[]={"A","M","W","/",",","R","N","L"};
+	static const char *keys[]={"A","M","W","/",",","R","N","L","D"};
 	PangoLayout *layout=pango_cairo_create_layout(cr);
 	PangoFontDescription *font=shell_font_description(NULL,10,PANGO_WEIGHT_SEMIBOLD);
 	pango_layout_set_font_description(layout,font);pango_font_description_free(font);

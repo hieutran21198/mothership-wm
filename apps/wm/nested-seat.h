@@ -57,6 +57,8 @@ void nested_seat_local_extent(struct nested_seat *,int width,int height);
 void nested_seat_local_active(struct nested_seat *,bool active);
 void nested_seat_set_render_debug(struct nested_seat *,struct render_debug *);
 bool nested_seat_set_shortcuts(struct nested_seat *,uint64_t,uint64_t,uint64_t,uint64_t);
+// Physical (US) label of the configured close key, such as "Q".
+const char *nested_seat_close_key_name(const struct nested_seat *);
 void nested_seat_move_bind(struct nested_seat *,bool (*move)(void *,struct wlr_surface *,uint32_t));
 // Called on every key, pointer motion, button or scroll; carries no data.
 void nested_seat_activity_bind(struct nested_seat *,void (*activity)(void *));

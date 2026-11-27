@@ -23,6 +23,7 @@
 #include "analog-glass.h"
 #include "analog-button.h"
 #include "mission-log.h"
+#include "systems-board.h"
 #include "notification-ui.h"
 #include "screenshot.h"
 #include "system-tray.h"
@@ -47,6 +48,7 @@ extern char *panelToggleSilentRunning(void);
 extern char *panelToggleSilentNode(char *);
 extern void panelCommsWatch(int);
 extern char *panelPinLabel(uint64_t,char *,char *);
+extern void panelPinNotice(uint64_t,char *,char *);
 extern void panelPinActivate(uint64_t);
 // Comms pin label: the WM draws the thumbnail; this paints only its header.
 enum { PIN_HEADER=22 };
@@ -108,6 +110,7 @@ static int saved_node_preview_zoom=150,saved_node_hover_zoom=100;
 static GtkWidget *node_layout_row,*node_layout_flow,*node_layout_stage;
 static void node_stage_settings_sync(void);
 static int node_bell_center,node_tray_center;
+static gboolean systems_keys;
 static gboolean tray_keys;
 static char *tray_node;
 static gboolean saved_node_guide=TRUE;
@@ -145,6 +148,7 @@ static gboolean settings_motion_alternate;
 enum { SETTINGS_MOTION_MS=250 };
 static int saved_toast_mode;
 static void update_dock(void);
+static void open_systems(enum systems_module);
 static void open_slash(gboolean in_node);
 static void open_node_notice(GtkButton *,gpointer);
 static void open_system_tray(GtkButton *,gpointer);
@@ -301,7 +305,7 @@ static gboolean set_input_region(gpointer data) {
 		return G_SOURCE_REMOVE;
 	}
 	cairo_region_t *region=cairo_region_create();
-	if(screenshot_visible() || slash_open || notice_log_visible() || mission_log_visible() || node_volume_keys || tray_keys || app_grid_open || (window_picker && gtk_widget_get_visible(window_picker)) ||
+	if(screenshot_visible() || slash_open || notice_log_visible() || mission_log_visible() || systems_board_visible() || node_volume_keys || tray_keys || app_grid_open || (window_picker && gtk_widget_get_visible(window_picker)) ||
 		(node_settings && gtk_widget_get_visible(node_settings))) {
 		// Receive the surrounding press/release pair while a popup is
 		// open so its dismiss click never reaches the underlying app.
@@ -310,7 +314,8 @@ static gboolean set_input_region(gpointer data) {
 	}
 	GtkWidget *hangar=home_dock_hangar();
 	GtkWidget *part[]={dock,node_dock,node_settings,slash_box,entry_button,form,notice_log_visible()?notice_log_widget():NULL,
-		mission_log_visible()?mission_log_widget():NULL,notice_close_target(),node_volume_widget(),
+		mission_log_visible()?mission_log_widget():NULL,systems_board_visible()?systems_board_widget():NULL,
+		notice_close_target(),node_volume_widget(),
 		hangar && gtk_widget_get_can_target(hangar)?hangar:NULL};
 	for(size_t i=0;i<G_N_ELEMENTS(part);i++) {
 		GtkWidget *w=part[i];
@@ -359,7 +364,7 @@ static void dismiss_popup_press(GtkGestureClick *click,int count,double x,double
 		gtk_gesture_set_state(GTK_GESTURE(click),GTK_EVENT_SEQUENCE_CLAIMED);
 		return;
 	}
-	GtkWidget *popup=app_grid_open?app_grid:notice_log_visible()?notice_log_widget():
+	GtkWidget *popup=app_grid_open?app_grid:systems_board_visible()?systems_board_widget():notice_log_visible()?notice_log_widget():
 		mission_log_visible()?mission_log_widget():node_volume_keys?node_volume_widget():
 		tray_keys?system_tray_widget():
 		window_picker && gtk_widget_get_visible(window_picker)?window_picker:
@@ -368,6 +373,7 @@ static void dismiss_popup_press(GtkGestureClick *click,int count,double x,double
 		(popup==node_settings && popup_click_inside(node_actions[2],x,y)) ||
 		(popup==notice_log_widget() && popup_click_inside(notice_close_target(),x,y)) ||
 		(popup==node_volume_widget() && popup_click_inside(node_speaker,x,y)) ||
+		(popup==systems_board_widget() && popup_click_inside(home_dock_systems_button(),x,y)) ||
 		(popup==system_tray_widget() && (popup_click_inside(system_tray_trigger(),x,y) ||
 			popup_click_inside(node_bell,x,y) || popup_click_inside(home_dock_notice_button(),x,y))) ||
 		(popup==window_picker && (popup_click_inside(picker_button,x,y) ||
@@ -382,6 +388,7 @@ static void dismiss_popup_release(GtkGestureClick *click,int count,double x,doub
 	if(slash_open) close_slash();
 	else if(app_grid_open) close_app_grid();
 	else if(window_picker && gtk_widget_get_visible(window_picker)) dismiss_window_picker(0);
+	else if(systems_board_close()) return;
 	else if(tray_keys)system_tray_close();
 	else if(node_settings && gtk_widget_get_visible(node_settings))node_settings_close();
 	else if(mission_log_dismiss()) return;
@@ -752,7 +759,13 @@ static void draw_pin_label(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer
 	cairo_rectangle(cr,0,h-1,w,1);cairo_fill(cr);
 }
 void panel_pin_state(uint64_t id,int x,int y,int w,int h,const char *title,const char *app) {
+	static uint64_t known;
 	(void)h;
+	// A new non-zero ID is a new pin; 0 means unpinned.
+	if(id!=known) {
+		known=id;
+		if(id) panelPinNotice(id,(char *)(title?title:""),(char *)(app?app:""));
+	}
 	if(!pin_layer) return;
 	if(w<=0) {
 		gtk_widget_set_visible(GTK_WIDGET(pin_layer),FALSE);
@@ -1011,6 +1024,7 @@ static unsigned modal_shortcut(guint key) {
 	case GDK_KEY_r: return 4;
 	case GDK_KEY_n: return 8;
 	case GDK_KEY_l: return 16;
+	case GDK_KEY_d: return 32;
 	default: return 0;
 	}
 }
@@ -1159,6 +1173,17 @@ static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 		return TRUE;
 	}
 	unsigned shortcut=modal_shortcut(key);
+	if (shortcut==32) {
+		// D opens the Systems board on focused blank Home.
+		if (!enabled || !blank_home || !gtk_window_is_active(window) ||
+				expanded || navigating || map_visible || navigation_timeout ||
+				slash_open || app_grid_open || editing_input() || (mods & commands)) return FALSE;
+		if (!(shortcut_held&shortcut)) {
+			shortcut_held|=shortcut;
+			open_systems(SYSTEMS_LAST);
+		}
+		return TRUE;
+	}
 	if (shortcut==16) {
 		// L toggles the Mission Log on focused blank Home, like N for notices.
 		if(mission_log_visible() && gtk_window_is_active(window) && !(mods & commands)) {
@@ -1172,6 +1197,7 @@ static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 			shortcut_held|=shortcut;
 			home_dock_hangar_close();
 			system_tray_close();
+			systems_board_close();
 			notice_log_close();
 			mission_log_toggle();
 		}
@@ -1189,6 +1215,7 @@ static gboolean key_pressed(GtkEventControllerKey *keys, guint key, guint code,
 			shortcut_held|=shortcut;
 			home_dock_hangar_close();
 			system_tray_close();
+			systems_board_close();
 			mission_log_dismiss();
 			notice_log_toggle();
 		}
@@ -1904,6 +1931,11 @@ static void update_dock(void) {
 	notice_layout(output_width,output_height,in_node?node_bell_center:
 		(output_width-fit_home())/2+home_dock_notice_center(),HOME_HEIGHT+HOME_BOTTOM+16);
 	mission_log_layout(output_width,output_height,output_width/2,HOME_HEIGHT+HOME_BOTTOM+16);
+	systems_board_layout(output_width,output_height,(output_width-fit_home())/2+home_dock_systems_center(),
+		HOME_HEIGHT+HOME_BOTTOM+16);
+	// Systems is Mothership scope: it never stays open inside a Node.
+	if(systems_board_visible() && (map_visible || expanded || slash_open || app_grid_open || !visible || in_node))
+		systems_board_close();
 	if(!visible || in_node || map_visible || expanded || slash_open || app_grid_open) mission_log_dismiss();
 	if((!visible && !in_node) || map_visible || expanded || slash_open || app_grid_open) notice_log_dismiss(TRUE);
 	if(tray_keys && (map_visible || expanded || app_grid_open || slash_open ||
@@ -2100,6 +2132,13 @@ static void open_display_settings(GtkButton *,gpointer);
 static void open_shortcuts(GtkButton *,gpointer);
 static void slash_open_view(enum slash_view view) {
 	if(view==SLASH_SCREENSHOT) {screenshot_open_from_menu();return;}
+	if(view>=SLASH_SYSTEMS && node_dock && gtk_widget_get_visible(node_dock)) return;
+	if(view==SLASH_SYSTEMS_MUTE) {systems_board_toggle_mute();return;}
+	if(view==SLASH_SYSTEMS || view==SLASH_SYSTEMS_SOUND || view==SLASH_SYSTEMS_BLUETOOTH || view==SLASH_SYSTEMS_SCAN) {
+		open_systems(view==SLASH_SYSTEMS_SOUND?SYSTEMS_SOUND:view==SLASH_SYSTEMS?SYSTEMS_LAST:SYSTEMS_BLUETOOTH);
+		if(view==SLASH_SYSTEMS_SCAN && systems_board_visible()) systems_board_scan();
+		return;
+	}
 	if(node_dock && gtk_widget_get_visible(node_dock)) {
 		if(view==SLASH_NOTIFICATIONS) open_node_notice(NULL,NULL);
 		else if(view==SLASH_SETTINGS) panel_open_node_settings();
@@ -2107,7 +2146,7 @@ static void slash_open_view(enum slash_view view) {
 	}
 	if(view==SLASH_MAP) open_map_view(NULL,NULL);
 	else if(view==SLASH_MISSIONS) {
-		if(!mission_log_visible()) {notice_log_close();mission_log_toggle();}
+		if(!mission_log_visible()) {systems_board_close();notice_log_close();mission_log_toggle();}
 	} else if(view==SLASH_NOTIFICATIONS) {
 		if(!notice_log_visible()) home_action(HOME_NOTIFICATIONS);
 	} else {
@@ -2283,13 +2322,14 @@ static void home_action(enum home_action action) {
 		}
 		break;
 	case HOME_HANGAR: system_tray_close();home_dock_hangar_toggle();break;
-	case HOME_AUDIO: panelSystemAction(0);break;
+	case HOME_AUDIO: if(!systems_board_close()) open_systems(SYSTEMS_LAST);break;
 	case HOME_LOCK: panelSystemAction(1);break;
 	case HOME_TRAY: open_system_tray(GTK_BUTTON(home_dock_tray_button()),NULL);break;
 	case HOME_NOTIFICATIONS:
 		if(!expanded && !map_visible && !app_grid_open && !slash_open) {
 			home_dock_hangar_close();
 			system_tray_close();
+			systems_board_close();
 			notice_log_toggle();
 		}
 		break;
@@ -2654,6 +2694,31 @@ static void tray_region_changed(void) {
 	update_dock();
 	schedule_region();
 }
+static void systems_region_changed(void) {
+	home_dock_systems_open(systems_board_visible());
+	if(systems_keys && !systems_board_visible()) {
+		systems_keys=FALSE;
+		return_keys();
+	}
+	schedule_region();
+}
+// Device control is machine-wide, so it is Mothership (Home) scope only:
+// a Node's panel never opens it.
+static void open_systems(enum systems_module module) {
+	if(node_dock && gtk_widget_get_visible(node_dock)) return;
+	if(expanded || map_visible || navigating || app_grid_open || slash_open || relay_target) return;
+	if(!dock || !gtk_widget_get_visible(dock)) return;
+	notice_log_close();
+	mission_log_dismiss();
+	system_tray_close();
+	node_volume_close();
+	home_dock_hangar_close();
+	dismiss_window_picker(0);
+	systems_keys=TRUE;
+	gtk_layer_set_keyboard_mode(window,KEYS_ON_DEMAND);
+	update_dock();
+	systems_board_open(module);
+}
 static void open_system_tray(GtkButton *button,gpointer unused) {
 	(void)unused;
 	if(system_tray_close())return;
@@ -2662,6 +2727,7 @@ static void open_system_tray(GtkButton *button,gpointer unused) {
 	if(GTK_WIDGET(button)==home_dock_tray_button() && !can_open_app_grid())return;
 	notice_log_close();
 	node_volume_close();
+	systems_board_close();
 	home_dock_hangar_close();
 	dismiss_window_picker(0);
 	tray_keys=TRUE;
@@ -2675,6 +2741,7 @@ static void open_node_volume(GtkButton *button,gpointer unused) {
 			gtk_widget_get_visible(node_settings))return;
 	if(node_volume_close())return;
 	notice_log_close();
+	systems_board_close();
 	dismiss_window_picker(0);
 	node_volume_keys=TRUE;
 	gtk_layer_set_keyboard_mode(window,KEYS_ON_DEMAND);
@@ -2689,6 +2756,7 @@ static void open_node_notice(GtkButton *button,gpointer unused) {
 	if(notice_log_close())return;
 	system_tray_close();
 	node_volume_close();
+	systems_board_close();
 	dismiss_window_picker(0);
 	node_log_keys=TRUE;
 	gtk_layer_set_keyboard_mode(window,KEYS_ON_DEMAND);
@@ -2708,21 +2776,22 @@ static void node_panel_update(void) {
 		gtk_widget_set_visible(node_settings,FALSE);
 		return_keys();
 	}
-	const int inset=7, gap=16, min_preview=208, min_telemetry=156, max_wing=164;
+	const int inset=7, gap=16, min_preview=208, min_telemetry=156;
+	// Four left actions set the wing; the right wing holds at most three.
+	const int faces=4, max_wing=home_wing_width(faces);
 	int w=fit_home();
 	if(saved_node_telemetry) {
 		// Expand the Node dock, not Home, to fit the full readout and preview.
 		const int full_dock=2*(max_wing+inset)+gap+min_preview+NODE_TELEMETRY_FULL_WIDTH;
 		w=MAX(w,MIN(full_dock,output_width-24));
 	}
-	int wing=MAX(46,MIN(max_wing,w/4)),tray=w-2*wing;
+	int wing=MAX(46,MIN(max_wing,(w-2*inset-min_preview)/2)),tray=w-2*wing;
 	node_left=(output_width-w)/2;
 	gboolean changed=node_tray_x!=wing || node_tray_width!=tray;
 	node_tray_x=wing;node_tray_width=tray;
-	int side=CLAMP(wing/10,5,13),button_gap=CLAMP(wing/20,4,8);
+	const struct home_wing_fit fit=home_wing_fit(wing,faces);
+	const int side=fit.inset,button_gap=fit.gap,bell_w=fit.face;
 	gboolean has_tray=system_tray_has_items();
-	int count=has_tray?3:2;
-	int bell_w=CLAMP((wing-2*side-(count-1)*button_gap)/count,8,44);
 	int bell_x=w-side-bell_w, tray_x=bell_x-button_gap-bell_w;
 	int speaker_x=has_tray?tray_x-button_gap-bell_w:tray_x;
 	node_volume_layout(output_width,output_height,node_left+speaker_x+bell_w/2,HOME_HEIGHT+HOME_BOTTOM+16);
@@ -2732,11 +2801,11 @@ static void node_panel_update(void) {
 	gtk_widget_set_visible(node_tray_button,has_tray);
 	if(changed || has_tray!=last_has_tray) {
 		gtk_fixed_move(GTK_FIXED(node_dock),node_bell,bell_x,18);
-		gtk_widget_set_size_request(node_bell,bell_w,36);
+		gtk_widget_set_size_request(node_bell,bell_w,HOME_BUTTON_HEIGHT);
 		gtk_fixed_move(GTK_FIXED(node_dock),node_speaker,speaker_x,18);
-		gtk_widget_set_size_request(node_speaker,bell_w,36);
+		gtk_widget_set_size_request(node_speaker,bell_w,HOME_BUTTON_HEIGHT);
 		gtk_fixed_move(GTK_FIXED(node_dock),node_tray_button,tray_x,18);
-		gtk_widget_set_size_request(node_tray_button,bell_w,36);
+		gtk_widget_set_size_request(node_tray_button,bell_w,HOME_BUTTON_HEIGHT);
 		last_has_tray=has_tray;
 	}
 
@@ -2744,10 +2813,9 @@ static void node_panel_update(void) {
 		gtk_widget_set_size_request(node_dock,w,HOME_HEIGHT);
 		gtk_widget_set_size_request(node_rail,w,HOME_HEIGHT);
 		gtk_widget_queue_draw(node_rail);
-		int pad=CLAMP(wing/10,6,13),cell=CLAMP((wing-2*pad-15)/4,10,44);
 		for(int i=0;i<4;i++){
-			gtk_fixed_move(GTK_FIXED(node_dock),node_actions[i],pad+i*(cell+5),18);
-			gtk_widget_set_size_request(node_actions[i],cell,36);
+			gtk_fixed_move(GTK_FIXED(node_dock),node_actions[i],fit.inset+i*(fit.face+fit.gap),18);
+			gtk_widget_set_size_request(node_actions[i],fit.face,HOME_BUTTON_HEIGHT);
 		}
 		gtk_fixed_move(GTK_FIXED(node_dock),node_hover,wing+7,0);
 		gtk_widget_set_size_request(node_hover,MAX(1,tray-14),NODE_PREVIEW_HEIGHT);
@@ -3297,6 +3365,7 @@ static void init_home_controls(GtkOverlay *overlay) {
 	notice_init(overlay,notice_region_changed);
 	mission_log_init(overlay,schedule_region);
 	node_volume_init(overlay,volume_region_changed);
+	systems_board_init(overlay,systems_region_changed);
 	system_tray_init(overlay,tray_region_changed);
 	home_settings=gtk_overlay_new();
 	gtk_widget_add_css_class(home_settings,"home-settings-motion");

@@ -308,7 +308,8 @@
         The compositor draws the pinned window's live thumbnail; the shell
         paints the label strip (the top PIN_HEADER logical px of the box)
         and the unpin mark at its right end. Title and app ID stay on this
-        shell connection.
+        shell connection. A new non-zero window ID is sent at once when a
+        window is pinned, even while hidden; ID 0 means nothing is pinned.
       </description>
       <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
       <arg name="x" type="int"/><arg name="y" type="int"/>

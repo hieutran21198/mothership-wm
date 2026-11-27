@@ -24,6 +24,16 @@ for the analog material.
   for the keyboard-focused window. Do not force-kill the app, close its
   other windows, or handle the shortcut while an overlay owns focus.
   A held key sends one request.
+- Give every frame a flat footer band that mirrors the header separator.
+  Only the keyboard-focused frame lists its window chords there, left-aligned:
+  **Win + Q Close** (with the configured close key), **Win + P Pin**, and
+  **Win + Shift + Arrows Move** while the window can reorder in Flow. Use
+  the shell guide keycaps (17px chamfered cap, 10px semibold Chakra Petch
+  chord, plain action label after it), as in the notification and Mission
+  Log guides. Center the caps between the footer separator and the outline
+  with even clearance. Unfocused frames keep the same empty footer, so focus never resizes
+  an app. When the footer is too narrow, drop whole instructions from the
+  end instead of truncating a key. Keep the floating resize corner clear.
 - Keep four logical pixels of frame-owned padding between the chrome
   and client content on every edge. Use the resulting inner rectangle
   for the client's requested size, placement and clip, including during
@@ -52,6 +62,10 @@ for the analog material.
 5. In Flow, Stage and Default Node, use **Win + Q** with a disposable app
    focused. Verify that only that window receives the close request. With
    App Grid focused, the same chord must not close the app underneath.
+6. Check the footer hints at 100% and 150% on a wide frame, a narrow
+   frame and a group member. Verify that they follow keyboard focus,
+   that the client keeps its size when focus changes, and that a changed
+   close key appears without reopening the window.
 
 See [Node layouts](../flows/view-node-layouts.md#f-view-2) for input routing
 and compatibility behavior; record runtime evidence separately from the spec.

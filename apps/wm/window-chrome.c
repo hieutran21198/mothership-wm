@@ -34,7 +34,7 @@ struct window_chrome {
 	int w,h;
 	double scale;
 	bool focused,float_action,floating,maximized,clipped,small_actions,minimize;
-	char *title;
+	char *title,*hints;
 	struct wlr_box aperture;
 };
 
@@ -172,6 +172,80 @@ static void title(cairo_t *cr,const struct window_chrome *c) {
 	g_object_unref(layout);
 }
 
+// Footer keycaps match the shell guides (see apps/panel/map-guide.c):
+// a 17px chamfered cap with the chord, then its quiet action label.
+enum { KEYCAP_H=17, KEYCAP_CUT=4, KEYCAP_MIN=19, KEYCAP_PAD=12,
+	KEYCAP_LABEL_GAP=6, KEYCAP_ITEM_GAP=14 };
+
+static void ink(cairo_t *cr,unsigned rgb) {
+	cairo_set_source_rgb(cr,((rgb>>16)&255)/255.,((rgb>>8)&255)/255.,(rgb&255)/255.);
+}
+
+static void keycap(cairo_t *cr,double x,double y,double w) {
+	const double i=.5,k=KEYCAP_CUT-i*(2-M_SQRT2);
+	const double l=x+i,r=x+w-i,t=y+i,b=y+KEYCAP_H-i;
+	const struct point p[]={{l+k,t},{r-k,t},{r,t+k},{r,b-k},{r-k,b},{l+k,b},{l,b-k},{l,t+k}};
+	path(cr,p,sizeof(p)/sizeof(p[0]));
+	ink(cr,0x162934);
+	cairo_fill_preserve(cr);
+	ink(cr,0x425d69);
+	cairo_set_line_width(cr,1);
+	cairo_stroke(cr);
+}
+
+static int text_width(PangoLayout *layout,const char *text) {
+	int w;
+	pango_layout_set_text(layout,text,-1);
+	pango_layout_get_pixel_size(layout,&w,NULL);
+	return w;
+}
+
+static void footer_hints(cairo_t *cr,const struct window_chrome *c) {
+	if(!c->hints || !*c->hints) return;
+	const int x0=CUT+8;
+	// Leave the floating resize corner clear of keycaps.
+	const int right=c->w-(c->floating&&!c->maximized?2*WINDOW_CHROME_EDGE:CUT+8);
+	if(right-x0<KEYCAP_MIN) return;
+	gchar *valid=g_utf8_make_valid(c->hints,-1);
+	gchar **items=g_strsplit(valid,"|",8);
+	g_free(valid);
+	PangoLayout *layout=pango_cairo_create_layout(cr);
+	PangoFontDescription *font=pango_font_description_new();
+	pango_font_description_set_family(font,"Chakra Petch,Sans");
+	pango_font_description_set_weight(font,PANGO_WEIGHT_SEMIBOLD);
+	pango_font_description_set_absolute_size(font,10*PANGO_SCALE);
+	pango_layout_set_font_description(layout,font);
+	pango_layout_set_single_paragraph_mode(layout,TRUE);
+	int text_h;
+	pango_layout_set_text(layout,"Ag",-1);
+	pango_layout_get_pixel_size(layout,NULL,&text_h);
+	// Center between the separator and the inner edge of the focused outline.
+	const double y=c->h-WINDOW_CHROME_BOTTOM+floor((WINDOW_CHROME_BOTTOM-3-KEYCAP_H)*.5);
+	int x=x0;
+	// Drop whole instructions from the end rather than clipping a key.
+	for(int i=0;items[i];i++) {
+		char *split=strrchr(items[i],' ');
+		if(!split) continue;
+		*split='\0';
+		const char *chord=items[i],*label=split+1;
+		const int key_w=MAX(KEYCAP_MIN,text_width(layout,chord)+KEYCAP_PAD);
+		const int label_w=text_width(layout,label);
+		if(x+key_w+KEYCAP_LABEL_GAP+label_w>right) break;
+		keycap(cr,x,y,key_w);
+		ink(cr,0xc0d3de);
+		cairo_move_to(cr,x+(key_w-text_width(layout,chord))*.5,y+(KEYCAP_H-text_h)*.5);
+		pango_cairo_show_layout(cr,layout);
+		x+=key_w+KEYCAP_LABEL_GAP;
+		pango_layout_set_text(layout,label,-1);
+		cairo_move_to(cr,x,y+(KEYCAP_H-text_h)*.5);
+		pango_cairo_show_layout(cr,layout);
+		x+=label_w+KEYCAP_ITEM_GAP;
+	}
+	g_strfreev(items);
+	pango_font_description_free(font);
+	g_object_unref(layout);
+}
+
 static void dash_edge(cairo_t *cr,double x,double y,double dx,double dy,double length) {
 	const double dash=FOCUS_DASH;
 	const int count=(int)floor((length-dash)/(2*dash));
@@ -240,9 +314,21 @@ static void render(cairo_t *cr,struct window_chrome *c,int strip) {
 		cairo_move_to(cr,WINDOW_CHROME_EDGE,WINDOW_CHROME_TOP-.5);
 		cairo_line_to(cr,c->w-WINDOW_CHROME_EDGE,WINDOW_CHROME_TOP-.5);
 		cairo_stroke(cr);
+	} else if(strip==BOTTOM) {
+		// The footer mirrors the header band and its separator.
+		const double top=c->h-WINDOW_CHROME_BOTTOM;
+		cairo_rectangle(cr,0,top,c->w,WINDOW_CHROME_BOTTOM);
+		cairo_set_source_rgba(cr,.038,.097,.128,member?.35:.42);
+		cairo_fill(cr);
+		cairo_set_source_rgba(cr,.31,.59,.68,member?.14:.25);
+		cairo_set_line_width(cr,.75);
+		cairo_move_to(cr,WINDOW_CHROME_EDGE,top+.5);
+		cairo_line_to(cr,c->w-WINDOW_CHROME_EDGE,top+.5);
+		cairo_stroke(cr);
 	}
 	cairo_restore(cr);
 	draw_outline(cr,c);
+	if(strip==BOTTOM) footer_hints(cr,c);
 	if(strip!=TOP) return;
 	for(int i=0;i<4;i++) button(cr,control(c,i),i,c->focused,
 		(i==0&&c->floating)||(i==1&&c->maximized));
@@ -328,6 +414,7 @@ void window_chrome_destroy(struct window_chrome *c) {
 	if (!c) return;
 	wlr_scene_node_destroy(&c->tree->node);
 	free(c->title);
+	free(c->hints);
 	free(c);
 }
 
@@ -344,33 +431,45 @@ void window_chrome_clip(struct window_chrome *c,const struct wlr_box *clip) {
 }
 
 void window_chrome_update(struct window_chrome *c,int w,int h,double scale,
-		const char *name,bool focused,bool float_action,bool floating,bool maximized,bool small_actions,bool minimize) {
-	if (!c || w<2*CUT+26 || h<WINDOW_CONTENT_TOP+WINDOW_CONTENT_EDGE+1 || w>16384 || h>16384) return;
+		const char *name,bool focused,bool float_action,bool floating,bool maximized,bool small_actions,bool minimize,
+		const char *hints) {
+	if (!c || w<2*CUT+26 || h<WINDOW_CONTENT_TOP+WINDOW_CONTENT_BOTTOM+1 || w>16384 || h>16384) return;
 	scale=isfinite(scale)?fmax(1,fmin(4,scale)):1;
 	if (!name) name="";
+	if (!hints) hints="";
+	const bool same_hints=c->hints&&strncmp(c->hints,hints,1024)==0;
 	if (c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
 			c->float_action==float_action&&c->floating==floating&&c->maximized==maximized&&
-			c->small_actions==small_actions&&c->minimize==minimize&&c->title&&strncmp(c->title,name,4096)==0) return;
+			c->small_actions==small_actions&&c->minimize==minimize&&c->title&&strncmp(c->title,name,4096)==0&&
+			same_hints) return;
 	struct window_chrome next=*c;
-	next.w=w;next.h=h;next.scale=scale;next.title=strndup(name,4096);
+	next.w=w;next.h=h;next.scale=scale;next.title=strndup(name,4096);next.hints=strndup(hints,1024);
 	next.focused=focused;next.float_action=float_action;next.floating=floating;next.maximized=maximized;
 	next.small_actions=small_actions;next.minimize=minimize;
-	if (!next.title) return;
-	const int top=WINDOW_CONTENT_TOP,edge=WINDOW_CONTENT_EDGE;
-	struct wlr_box boxes[STRIPS]={{0,0,w,top},{0,h-edge,w,edge},
-		{0,top,edge,h-top-edge},{w-edge,top,edge,h-top-edge}};
-	// Focus changes the outline on every strip; title and controls only affect the header.
+	if (!next.title || !next.hints) {
+		free(next.title);
+		free(next.hints);
+		return;
+	}
+	const int top=WINDOW_CONTENT_TOP,bottom=WINDOW_CONTENT_BOTTOM,edge=WINDOW_CONTENT_EDGE;
+	struct wlr_box boxes[STRIPS]={{0,0,w,top},{0,h-bottom,w,bottom},
+		{0,top,edge,h-top-bottom},{w-edge,top,edge,h-top-bottom}};
+	// Focus changes the outline on every strip. Title and controls affect
+	// the header; hints and the floating resize corner affect the footer.
 	int dirty=c->w==w&&c->h==h&&c->scale==scale&&c->focused==focused&&
-		group_member(c)==group_member(&next)?1:STRIPS;
+		group_member(c)==group_member(&next)?
+		(same_hints&&c->floating==floating&&c->maximized==maximized?1:2):STRIPS;
 	struct chrome_pixels *pixels[STRIPS]={0};
 	for (int i=0;i<dirty;i++) {
 		pixels[i]=draw_strip(&next,boxes[i],i);
 		if (pixels[i]) continue;
 		for (int j=0;j<i;j++) wlr_buffer_drop(&pixels[j]->buffer);
 		free(next.title);
+		free(next.hints);
 		return;
 	}
 	free(c->title);
+	free(c->hints);
 	*c=next;
 	for (int i=0;i<dirty;i++) {
 		struct chrome_strip *s=&c->strips[i];

@@ -2,7 +2,8 @@
 #define MOTHERSHIP_SLASH_UI_H
 #include <gtk/gtk.h>
 
-enum slash_view { SLASH_MAP, SLASH_NOTIFICATIONS, SLASH_SETTINGS, SLASH_DISPLAY, SLASH_SHORTCUTS, SLASH_SCREENSHOT, SLASH_MISSIONS };
+enum slash_view { SLASH_MAP, SLASH_NOTIFICATIONS, SLASH_SETTINGS, SLASH_DISPLAY, SLASH_SHORTCUTS, SLASH_SCREENSHOT, SLASH_MISSIONS,
+	SLASH_SYSTEMS, SLASH_SYSTEMS_SOUND, SLASH_SYSTEMS_BLUETOOTH, SLASH_SYSTEMS_SCAN, SLASH_SYSTEMS_MUTE };
 
 GtkWidget *slash_ui_new(void (*close)(void),void (*enter_node)(const char *,gboolean,guint64),
 	void (*open_view)(enum slash_view),void (*layout_changed)(void),void (*delete)(const char *,int));

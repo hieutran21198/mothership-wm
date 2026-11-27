@@ -35,6 +35,10 @@ Design accepted 2026-11-27; each document states what is implemented:
 - [See where the day went](review-mission-log.md).
 - [Read each Node's state from the Center Map](show-ship-status.md).
 
+Design approved 2026-11-27, awaiting native acceptance:
+
+- [Control sound and Bluetooth devices from the shell](control-devices.md).
+
 ## Template
 
 ```markdown

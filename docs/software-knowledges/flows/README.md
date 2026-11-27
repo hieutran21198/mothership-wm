@@ -36,6 +36,10 @@ Design accepted 2026-11-27; each document states what is implemented. See the
 - [Record and review the Mission Log](review-mission-log.md).
 - [Show ship status on the Center Map](show-ship-status.md).
 
+Design approved 2026-11-27, awaiting native acceptance:
+
+- [Control devices from the Systems board](control-devices.md).
+
 ## Template
 
 ```markdown

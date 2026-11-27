@@ -306,7 +306,8 @@ void home_slash_face(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer unused) 
 }
 static gboolean notice_open;
 static gboolean apps_on;
-static int notice_unread,bell_center;
+static int notice_unread,bell_center,systems_center;
+static gboolean systems_open,systems_out_muted,systems_mic_muted;
 
 // Match the approved 24-unit icon references at dock size.
 static void draw_map_mark(cairo_t *cr) {
@@ -466,7 +467,7 @@ static void draw_icon(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer data) {
 	int act=GPOINTER_TO_INT(data);
 	GtkWidget *widget=gtk_widget_get_parent(GTK_WIDGET(a));
 	GtkStateFlags state=gtk_widget_get_state_flags(widget);
-	gboolean selected=(act==HOME_MAP&&map_on)||(act==HOME_APPS&&apps_on)||(act==HOME_HANGAR&&hangar_open)||(act==HOME_NOTIFICATIONS&&notice_open)||(act==HOME_TRAY&&tray_open);
+	gboolean selected=(act==HOME_MAP&&map_on)||(act==HOME_APPS&&apps_on)||(act==HOME_HANGAR&&hangar_open)||(act==HOME_NOTIFICATIONS&&notice_open)||(act==HOME_TRAY&&tray_open)||(act==HOME_AUDIO&&systems_open);
 	gboolean safe=gtk_widget_is_sensitive(widget);
 	gboolean active=selected || (state & (GTK_STATE_FLAG_PRELIGHT|GTK_STATE_FLAG_ACTIVE));
 	mechanical_face(cr,w,h,widget,selected,FALSE);
@@ -501,9 +502,13 @@ static void draw_icon(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer data) {
 		cairo_move_to(cr,-5,7);cairo_line_to(cr,-5,-1);cairo_line_to(cr,5,-1);cairo_line_to(cr,5,7);
 		path(cr,-2,3,2,3);break;
 	case HOME_AUDIO:
-		cairo_move_to(cr,-8,-3);cairo_line_to(cr,-5,-3);cairo_line_to(cr,0,-7);
-		cairo_line_to(cr,0,7);cairo_line_to(cr,-5,3);cairo_line_to(cr,-8,3);cairo_close_path(cr);
-		cairo_new_sub_path(cr);cairo_arc(cr,0,0,5,-.7,.7);cairo_new_sub_path(cr);cairo_arc(cr,0,0,8,-.7,.7);break;
+		// Systems: three control tracks with their knobs at different levels.
+		for(int k=0;k<3;k++) {
+			double x=-5+5*k,knob=(double[]){2,-3,4}[k];
+			path(cr,x,-7,x,knob-1.6);path(cr,x,knob+1.6,x,7);
+			cairo_rectangle(cr,x-2,knob-1.6,4,3.2);
+		}
+		break;
 	case HOME_TRAY: home_tray_glyph(cr);break;
 	case HOME_NOTIFICATIONS:
 		cairo_move_to(cr,-7,4);cairo_curve_to(cr,-4,2,-5,-1,-4,-4);
@@ -516,10 +521,38 @@ static void draw_icon(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer data) {
 	default: break;
 	}
 	cairo_stroke(cr);
+	if(act==HOME_AUDIO && (systems_out_muted || systems_mic_muted)) {
+		// Small struck marks: speaker bottom-right, microphone bottom-left.
+		cairo_set_line_width(cr,1);
+		if(systems_out_muted) {
+			cairo_move_to(cr,10,4);cairo_line_to(cr,11.5,4);cairo_line_to(cr,14,2);cairo_line_to(cr,14,9);
+			cairo_line_to(cr,11.5,7);cairo_line_to(cr,10,7);cairo_close_path(cr);
+			path(cr,9,10,16,1);
+		}
+		if(systems_mic_muted) {
+			cairo_rectangle(cr,-14,1.5,3,5);
+			cairo_move_to(cr,-15.5,5.5);cairo_curve_to(cr,-15.5,9,-9.5,9,-9.5,5.5);path(cr,-12.5,8.5,-12.5,10);
+			path(cr,-16,10,-9,1);
+		}
+		cairo_stroke(cr);
+	}
 	if(act==HOME_NOTIFICATIONS && notice_unread>0) {
 		ink(cr,0x77dce8);cairo_arc(cr,9,-9,2.4,0,2*G_PI);cairo_fill(cr);
 	}
 	cairo_restore(cr);
+}
+
+int home_wing_width(int faces) {
+	return 2*HOME_BUTTON_INSET+faces*HOME_BUTTON_WIDTH+MAX(0,faces-1)*HOME_BUTTON_GAP;
+}
+
+struct home_wing_fit home_wing_fit(int wing,int faces) {
+	if(faces<1 || wing>=home_wing_width(faces))
+		return (struct home_wing_fit){HOME_BUTTON_WIDTH,HOME_BUTTON_GAP,HOME_BUTTON_INSET};
+	// Narrow outputs only: compact faces and gaps equally so every action stays reachable.
+	struct home_wing_fit fit={0,wing>=150?8:wing>=100?5:wing>=66?3:1,wing>=150?13:wing>=100?9:wing>=66?6:3};
+	fit.face=MAX(4,MIN(HOME_BUTTON_WIDTH,(wing-2*fit.inset-(faces-1)*fit.gap)/faces));
+	return fit;
 }
 
 static void place(GtkWidget *child,int x,int y,int w,int h) {
@@ -761,7 +794,7 @@ GtkWidget *home_dock_new(void (*action)(enum home_action),void (*connect)(const 
 	gtk_fixed_put(GTK_FIXED(dock),health_lamp,0,0);
 	gtk_widget_set_visible(health_lamp,FALSE);
 	const char *labels[]={"Map View","App Grid","Command Center","Reload configuration (Home only)",
-		"Node Hangar","Audio output","Lock host session","System Tray","Notification Log"};
+		"Node Hangar","Systems","Lock host session","System Tray","Notification Log"};
 	for(int i=0;i<HOME_ACTIONS;i++){
 		if(i==HOME_CENTER)continue;
 		GtkWidget *ink_widget=gtk_drawing_area_new();
@@ -798,15 +831,15 @@ void home_dock_layout(int output_width,int output_height,int wanted,gboolean map
 	tray_available=tray;
 	gtk_widget_set_visible(buttons[HOME_TRAY],tray);
 	width=w;
-	// Reserve space for up to four controls per wing. Anchor each outer face
-	// to the same inset; spare space belongs toward the telemetry, not
-	// between the outermost button and its chamfered end.
-	wing=MAX(28,MIN(226,MIN((w-48)/2,MAX(194,(w-432)/2))));
-	button_gap=wing>=150?8:wing>=100?5:wing>=66?3:1;
-	int end_pad=wing>=150?13:wing>=100?9:wing>=66?6:3;
-	bw=MAX(4,MIN(44,(wing-2*end_pad-3*button_gap)/4));
-	int right_count=tray?5:4;
-	int right_width=MAX(4,MIN(bw,(wing-2*end_pad-(right_count-1)*button_gap)/right_count));
+	// Both wings fit the fuller side at the fixed face size. Anchor each
+	// outer face to the same inset; spare space belongs to the telemetry.
+	int left_count=0;
+	for(int i=0;i<HOME_HANGAR;i++) left_count+=buttons[i]!=NULL;
+	int faces=MAX(left_count,tray?5:4);
+	wing=MAX(28,MIN(home_wing_width(faces),(w-48)/2));
+	struct home_wing_fit fit=home_wing_fit(wing,faces);
+	button_gap=fit.gap;bw=fit.face;
+	int end_pad=fit.inset,right_width=bw;
 	center_width=MAX(0,w-2*(wing+12));
 	tw=MIN(center_width,HOME_TELEMETRY_WIDTH_MAX);
 	tx=tw>0?(w-tw)/2:wing+12;
@@ -816,15 +849,16 @@ void home_dock_layout(int output_width,int output_height,int wanted,gboolean map
 	place(health_lamp,tx+10,12,HEALTH_LAMP_SIZE,HEALTH_LAMP_SIZE);
 	gtk_widget_set_visible(health_lamp,tw>=HEALTH_MIN_WIDTH);
 	for(int i=0,slot=0;i<HOME_HANGAR;i++) {
-		if(buttons[i]) place(buttons[i],end_pad+slot++*(bw+button_gap),18,bw,36);
+		if(buttons[i]) place(buttons[i],end_pad+slot++*(bw+button_gap),18,bw,HOME_BUTTON_HEIGHT);
 	}
 	for(int i=HOME_NOTIFICATIONS,slot=0;i>=HOME_HANGAR;i--) {
 		if(i==HOME_TRAY && !tray)continue;
 		int x=w-end_pad-right_width-slot++*(right_width+button_gap);
-		place(buttons[i],x,18,right_width,36);
+		place(buttons[i],x,18,right_width,HOME_BUTTON_HEIGHT);
 		if(i==HOME_NOTIFICATIONS)bell_center=x+right_width/2;
 		if(i==HOME_HANGAR)hangar_anchor=x+right_width/2;
 		if(i==HOME_TRAY)tray_center=x+right_width/2;
+		if(i==HOME_AUDIO)systems_center=x+right_width/2;
 	}
 	fit_hangar(output_width);
 	gtk_widget_queue_draw(rail);gtk_widget_queue_draw(telemetry);
@@ -834,6 +868,24 @@ int home_dock_notice_center(void) {return bell_center;}
 GtkWidget *home_dock_notice_button(void) {return buttons[HOME_NOTIFICATIONS];}
 GtkWidget *home_dock_tray_button(void) {return buttons[HOME_TRAY];}
 int home_dock_tray_center(void) {return tray_center;}
+int home_dock_systems_center(void) {return systems_center;}
+GtkWidget *home_dock_systems_button(void) {return buttons[HOME_AUDIO];}
+static void systems_redraw(void) {
+	if(buttons[HOME_AUDIO]) gtk_widget_queue_draw(gtk_button_get_child(GTK_BUTTON(buttons[HOME_AUDIO])));
+}
+void home_dock_systems_open(gboolean open) {
+	if(systems_open==open) return;
+	systems_open=open;
+	if(buttons[HOME_AUDIO]) gtk_accessible_update_state(GTK_ACCESSIBLE(buttons[HOME_AUDIO]),GTK_ACCESSIBLE_STATE_EXPANDED,open,-1);
+	systems_redraw();
+}
+void home_dock_systems_mute(gboolean output,gboolean input) {
+	if(systems_out_muted==output && systems_mic_muted==input) return;
+	systems_out_muted=output;systems_mic_muted=input;
+	if(buttons[HOME_AUDIO]) gtk_accessible_update_property(GTK_ACCESSIBLE(buttons[HOME_AUDIO]),GTK_ACCESSIBLE_PROPERTY_DESCRIPTION,
+		output && input?"Output and microphone muted":output?"Output muted":input?"Microphone muted":"",-1);
+	systems_redraw();
+}
 void home_dock_tray_open(gboolean open) {
 	if(tray_open==open)return;
 	tray_open=open;

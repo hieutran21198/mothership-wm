@@ -11,7 +11,7 @@ void map_guide_draw(cairo_t *,int width,unsigned);
 void app_grid_guide_draw(cairo_t *,int width,gboolean results_focused);
 enum { HOME_GUIDE_CELL_WIDTH=23, HOME_GUIDE_ROW_HEIGHT=22, HOME_GUIDE_INSET=9 };
 // Home keys: A M W / , R N L; W only with the Default Node enabled.
-static inline int home_guide_items(gboolean default_node) { return default_node?8:7; }
+static inline int home_guide_items(gboolean default_node) { return default_node?9:8; }
 int home_guide_height(int width,gboolean default_node);
 void home_guide_draw(cairo_t *,int width,gboolean default_node);
 void slash_guide_draw(cairo_t *,int);

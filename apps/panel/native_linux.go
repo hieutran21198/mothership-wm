@@ -123,6 +123,7 @@ func main() {
 	go func() { defer close(volumeDone); runNodeVolume(ctx, active) }()
 	go sampleHome(ctx)
 	go runComms(ctx, active)
+	go runSystems(ctx)
 	go func() {
 		<-ctx.Done()
 		C.panel_quit()

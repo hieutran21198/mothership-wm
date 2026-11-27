@@ -5,6 +5,12 @@
 enum home_action { HOME_MAP, HOME_APPS, HOME_CENTER, HOME_RELOAD, HOME_HANGAR, HOME_AUDIO, HOME_LOCK, HOME_TRAY, HOME_NOTIFICATIONS, HOME_ACTIONS };
 enum { HOME_WIDTH_DEFAULT=840, HOME_WIDTH_MIN=520, HOME_WIDTH_MAX=1440, HOME_TELEMETRY_WIDTH_MAX=600, HOME_HEIGHT=SHELL_DOCK_HEIGHT, HOME_BOTTOM=SHELL_DOCK_BOTTOM };
 enum { NODE_TELEMETRY_SCREEN_HEIGHT=51, NODE_TELEMETRY_FULL_WIDTH=380 };
+// Home and Node dock buttons share one fixed face. A wing is sized to hold
+// its faces; only an output too narrow for that wing compacts them.
+enum { HOME_BUTTON_WIDTH=44, HOME_BUTTON_HEIGHT=36, HOME_BUTTON_GAP=8, HOME_BUTTON_INSET=13 };
+struct home_wing_fit { int face,gap,inset; };
+int home_wing_width(int faces);
+struct home_wing_fit home_wing_fit(int wing,int faces);
 
 GtkWidget *home_dock_new(void (*action)(enum home_action),void (*connect)(const char *),void (*region_changed)(void));
 GtkWidget *home_dock_hangar(void);
@@ -17,6 +23,10 @@ int home_dock_notice_center(void);
 GtkWidget *home_dock_notice_button(void);
 GtkWidget *home_dock_tray_button(void);
 int home_dock_tray_center(void);
+int home_dock_systems_center(void);
+GtkWidget *home_dock_systems_button(void);
+void home_dock_systems_open(gboolean);
+void home_dock_systems_mute(gboolean output,gboolean input);
 void home_dock_tray_open(gboolean open);
 void home_tray_glyph(cairo_t *);
 void home_dock_notice_open(gboolean);

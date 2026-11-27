@@ -10,9 +10,10 @@
 #include "screenshot.h"
 
 enum slash_kind {
-	MODULE_APPS,MODULE_NODES,MODULE_WINDOWS,MODULE_MAPS,MODULE_MISSIONS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
+	MODULE_APPS,MODULE_NODES,MODULE_WINDOWS,MODULE_MAPS,MODULE_MISSIONS,MODULE_SYSTEMS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
 	COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,COMMAND_LAUNCH,
 	COMMAND_DISPLAY,COMMAND_SHORTCUTS,
+	COMMAND_SYS_SOUND,COMMAND_SYS_BLUETOOTH,COMMAND_SYS_SCAN,COMMAND_SYS_MUTE,
 	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE,RESULT_WINDOW,RESULT_LAUNCH
 };
 static const struct {
@@ -25,7 +26,11 @@ static const struct {
 	{MODULE_NODES,COMMAND_FORCE,"force-delete","nodes force-delete "},
 	{MODULE_NODES,COMMAND_LAUNCH,"launch","nodes launch "},
 	{MODULE_SETTINGS,COMMAND_DISPLAY,"display","settings display"},
-	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"}
+	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"},
+	{MODULE_SYSTEMS,COMMAND_SYS_SOUND,"sound","systems sound"},
+	{MODULE_SYSTEMS,COMMAND_SYS_BLUETOOTH,"bluetooth","systems bluetooth"},
+	{MODULE_SYSTEMS,COMMAND_SYS_SCAN,"scan","systems scan"},
+	{MODULE_SYSTEMS,COMMAND_SYS_MUTE,"mute","systems mute"}
 };
 static const struct {
 	enum slash_kind kind;
@@ -36,6 +41,7 @@ static const struct {
 	{MODULE_WINDOWS,"windows","windows "},
 	{MODULE_MAPS,"maps","maps "},
 	{MODULE_MISSIONS,"missions","missions "},
+	{MODULE_SYSTEMS,"systems","systems "},
 	{MODULE_NOTIFICATIONS,"notifications","notifications "},
 	{MODULE_SETTINGS,"settings","settings "},
 	{MODULE_SCREENSHOT,"screenshot","screenshot "}
@@ -179,6 +185,15 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 		cairo_move_to(cr,-7,-4);cairo_line_to(cr,1,-4);
 		cairo_move_to(cr,-3,0);cairo_line_to(cr,7,0);
 		cairo_move_to(cr,-7,4);cairo_line_to(cr,-1,4);
+	} else if(kind==MODULE_SYSTEMS || kind==COMMAND_SYS_SOUND || kind==COMMAND_SYS_BLUETOOTH ||
+			kind==COMMAND_SYS_SCAN || kind==COMMAND_SYS_MUTE) {
+		// Systems: three control tracks, like the dock button.
+		for(int k=0;k<3;k++) {
+			double x=-5+5*k,knob=k==0?2:k==1?-3:4;
+			cairo_move_to(cr,x,-7);cairo_line_to(cr,x,knob-1.6);
+			cairo_move_to(cr,x,knob+1.6);cairo_line_to(cr,x,7);
+			cairo_rectangle(cr,x-2,knob-1.6,4,3.2);
+		}
 	} else if(kind==MODULE_NOTIFICATIONS) {
 		cairo_move_to(cr,-7,4);cairo_curve_to(cr,-4,2,-5,-1,-4,-4);
 		cairo_curve_to(cr,-3,-8,3,-8,4,-4);cairo_curve_to(cr,5,-1,4,2,7,4);
@@ -283,6 +298,11 @@ static void activation(GtkEntry *input,gpointer data) {
 		close_slash();show_view(SLASH_SCREENSHOT);break;
 	case MODULE_MISSIONS:
 		close_slash();show_view(SLASH_MISSIONS);break;
+	case MODULE_SYSTEMS: case COMMAND_SYS_SOUND: case COMMAND_SYS_BLUETOOTH: case COMMAND_SYS_SCAN: case COMMAND_SYS_MUTE: {
+		enum slash_view view=s->kind==COMMAND_SYS_SOUND?SLASH_SYSTEMS_SOUND:s->kind==COMMAND_SYS_BLUETOOTH?SLASH_SYSTEMS_BLUETOOTH:
+			s->kind==COMMAND_SYS_SCAN?SLASH_SYSTEMS_SCAN:s->kind==COMMAND_SYS_MUTE?SLASH_SYSTEMS_MUTE:SLASH_SYSTEMS;
+		close_slash();show_view(view);break;
+	}
 	case RESULT_APP:
 		if(app_catalog_launch(s->app)) close_slash();
 		break;
@@ -480,6 +500,10 @@ static void refresh(void) {
 	} else if(module_available(MODULE_MISSIONS) && take_token(&query,"missions")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		if(!*term) add(MODULE_MISSIONS,"missions",NULL);
+	} else if(module_available(MODULE_SYSTEMS) && take_token(&query,"systems")) {
+		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
+		if(!*term) add(MODULE_SYSTEMS,"systems",NULL);
+		add_commands(MODULE_SYSTEMS,term);
 	} else if(module_available(MODULE_MAPS) && take_token(&query,"maps")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		if(!*term) add(MODULE_MAPS,"maps",NULL);
