@@ -16,7 +16,7 @@ struct nested_hit {
 	struct wlr_surface *panel_keyboard;
 	void *handle, *decoration;
 	int chrome_action;
-	bool resize, tray, defer_move_focus;
+	bool resize, tray, defer_move_focus, pin;
 	double x, y;
 };
 
@@ -60,6 +60,8 @@ bool nested_seat_set_shortcuts(struct nested_seat *,uint64_t,uint64_t,uint64_t,u
 void nested_seat_move_bind(struct nested_seat *,bool (*move)(void *,struct wlr_surface *,uint32_t));
 // Called on every key, pointer motion, button or scroll; carries no data.
 void nested_seat_activity_bind(struct nested_seat *,void (*activity)(void *));
+// Meta+P on the focused app window toggles the comms pin.
+void nested_seat_pin_bind(struct nested_seat *,bool (*pin)(void *,struct wlr_surface *));
 void nested_seat_shortcut_panel(struct nested_seat *,struct wlr_surface *);
 void nested_seat_screenshot_bind(struct nested_seat *,bool (*open)(void *),void (*abort)(void *),void *);
 void nested_seat_screenshot_modal(struct nested_seat *,struct wlr_surface *);

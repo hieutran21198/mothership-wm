@@ -1,6 +1,6 @@
 # Keep one window in sight across Nodes
 
-**Status:** design accepted 2026-11-27; not implemented.
+**Status:** implemented 2026-11-27; owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27.
 
 The desktop user needs to watch one live window, such as a call, build log
 or player, while working in other Nodes, without moving it into each Node.

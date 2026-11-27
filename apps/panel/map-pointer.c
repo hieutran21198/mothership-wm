@@ -73,6 +73,13 @@ static void window_list_row(void *d,struct mothership_map_pointer_v1 *p,uint32_t
 static void window_list_end(void *d,struct mothership_map_pointer_v1 *p,uint32_t serial) {
 	(void)d;(void)p;slash_ui_window_end(serial);
 }
+static void pin_state(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo,
+		int32_t x,int32_t y,int32_t w,int32_t h,const char *title,const char *app) {
+	(void)d;(void)p;panel_pin_state(((uint64_t)hi<<32)|lo,x,y,w,h,title,app);
+}
+static void pin_activate(void *d,struct mothership_map_pointer_v1 *p,uint32_t hi,uint32_t lo) {
+	(void)d;(void)p;panel_pin_activate(((uint64_t)hi<<32)|lo);
+}
 gboolean panel_request_window_list(uint32_t serial) {
 	if(!pointer || mothership_map_pointer_v1_get_version(pointer)<MOTHERSHIP_MAP_POINTER_V1_WINDOW_LIST_SINCE_VERSION)
 		return FALSE;
@@ -225,6 +232,7 @@ static const struct mothership_map_pointer_v1_listener events={
 	.screenshot_target=screenshot_target,.screenshot_image=screenshot_image,.screenshot_problem=screenshot_problem,
 	.node_switch_step=node_switch_step,.node_switch_finish=node_switch_finish,
 	.window_list_row=window_list_row,.window_list_end=window_list_end,.node_move=node_move,
+	.pin_state=pin_state,.pin_activate=pin_activate,
 };
 
 static void apply_aim(void) {

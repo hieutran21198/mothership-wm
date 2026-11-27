@@ -62,6 +62,7 @@ struct nested_seat {
 	bool (*reorder_window)(void *,struct wlr_surface *,uint32_t);
 	bool (*move_window)(void *,struct wlr_surface *,uint32_t);
 	void (*activity)(void *);
+	bool (*pin_window)(void *,struct wlr_surface *);
 	bool (*render_capture)(void *);
 	bool (*screenshot_open)(void *);
 	void (*screenshot_abort)(void *);
@@ -649,6 +650,17 @@ void nested_seat_move_bind(struct nested_seat *seat,bool (*move)(void *,struct w
 void nested_seat_activity_bind(struct nested_seat *seat,void (*activity)(void *)) {
 	if(seat) seat->activity=activity;
 }
+void nested_seat_pin_bind(struct nested_seat *seat,bool (*pin)(void *,struct wlr_surface *)) {
+	if(seat) seat->pin_window=pin;
+}
+// Exactly one Meta key and this key, nothing else, no latched modifiers.
+static bool meta_alone_chord(const struct nested_seat *seat,uint32_t key) {
+	if(seat->keys_held[KEY_LEFTMETA]==seat->keys_held[KEY_RIGHTMETA] || seat->keyboard.modifiers.latched)
+		return false;
+	for(uint32_t k=0;k<=KEY_MAX;k++)
+		if(k!=key && k!=KEY_LEFTMETA && k!=KEY_RIGHTMETA && seat->keys_held[k]) return false;
+	return true;
+}
 static void note_activity(struct nested_seat *seat) {
 	if(seat->activity) seat->activity(seat->data);
 }
@@ -803,6 +815,16 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 			seat->blocked_count++;
 			return;
 		}
+	}
+	// Meta+P pins or unpins the focused app window.
+	if(key==KEY_P && seat->pin_window && seat->keys_held[key] && !was_held &&
+			meta_alone_chord(seat,key) && seat->selected && !seat->panel_focus &&
+			!seat->moving && !seat->cycle_active && !seat->blocked_count &&
+			seat->child->keyboard_state.focused_surface==seat->selected &&
+			seat->pin_window(seat->data,seat->selected)) {
+		seat->keys_blocked[key]=true;
+		seat->blocked_count++;
+		return;
 	}
 	// Meta+Shift with a Node number moves the focused app window there.
 	bool move_number=key>=seat->node_first_key && key<=seat->node_first_key+8;

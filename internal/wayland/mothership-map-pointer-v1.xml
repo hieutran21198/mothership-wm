@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <protocol name="mothership_map_pointer_v1">
-  <interface name="mothership_map_pointer_v1" version="27">
+  <interface name="mothership_map_pointer_v1" version="28">
     <description summary="nested Map View pointer routing">
       The accepted Command Center surface can enable vertical wheel events
       inside the frame and left-button sequences in the mapped, focused Map View.
@@ -301,6 +301,22 @@
         the assignment; slot 1 returns the window to Inbox.
       </description>
       <arg name="slot" type="uint"/>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+    </event>
+    <event name="pin_state" since="28">
+      <description summary="the comms pin's painted box, or width 0 when hidden">
+        The compositor draws the pinned window's live thumbnail; the shell
+        paints the label strip (the top PIN_HEADER logical px of the box)
+        and the unpin mark at its right end. Title and app ID stay on this
+        shell connection.
+      </description>
+      <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
+      <arg name="x" type="int"/><arg name="y" type="int"/>
+      <arg name="width" type="int"/><arg name="height" type="int"/>
+      <arg name="title" type="string"/><arg name="app_id" type="string"/>
+    </event>
+    <event name="pin_activate" since="28">
+      <description summary="a click on the comms pin asks to connect to its window"/>
       <arg name="id_high" type="uint"/><arg name="id_low" type="uint"/>
     </event>
   </interface>

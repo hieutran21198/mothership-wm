@@ -46,6 +46,13 @@ extern char *panelSaveSilentRunning(int);
 extern char *panelToggleSilentRunning(void);
 extern char *panelToggleSilentNode(char *);
 extern void panelCommsWatch(int);
+extern char *panelPinLabel(uint64_t,char *,char *);
+extern void panelPinActivate(uint64_t);
+// Comms pin label: the WM draws the thumbnail; this paints only its header.
+enum { PIN_HEADER=22 };
+static GtkWindow *pin_layer;
+static GtkWidget *pin_canvas;
+static char *pin_text;
 extern int panelReloadConfig(void);
 extern char *panelSaveHomeSettings(int,int,int,int,int);
 extern void panelShellNotification(char *);
@@ -718,6 +725,50 @@ static void stealth_node(const char *name) {
 	char *err=panelToggleSilentNode((char *)name);
 	if(err) {panel_home_notice(err);free(err);}
 }
+
+static void draw_pin_label(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer unused) {
+	(void)area;(void)unused;
+	if(!pin_text) return;
+	PangoLayout *l=pango_cairo_create_layout(cr);
+	PangoFontDescription *f=shell_font_description(NULL,11,PANGO_WEIGHT_SEMIBOLD);
+	pango_layout_set_font_description(l,f);pango_font_description_free(f);
+	pango_layout_set_text(l,pin_text,-1);
+	pango_layout_set_single_paragraph_mode(l,TRUE);
+	pango_layout_set_width(l,MAX(1,w-38)*PANGO_SCALE);
+	pango_layout_set_ellipsize(l,PANGO_ELLIPSIZE_END);
+	int th;pango_layout_get_pixel_size(l,NULL,&th);
+	cairo_set_source_rgb(cr,.70,.88,.93);
+	cairo_move_to(cr,8,(h-th)*.5);
+	pango_cairo_show_layout(cr,l);
+	g_object_unref(l);
+	// Unpin mark; the WM owns the click on this corner.
+	double cx=w-12,cy=h*.5;
+	cairo_set_source_rgb(cr,.62,.76,.82);
+	cairo_set_line_width(cr,1.4);
+	cairo_move_to(cr,cx-4,cy-4);cairo_line_to(cr,cx+4,cy+4);
+	cairo_move_to(cr,cx+4,cy-4);cairo_line_to(cr,cx-4,cy+4);
+	cairo_stroke(cr);
+	cairo_set_source_rgba(cr,.36,.52,.60,.7);
+	cairo_rectangle(cr,0,h-1,w,1);cairo_fill(cr);
+}
+void panel_pin_state(uint64_t id,int x,int y,int w,int h,const char *title,const char *app) {
+	(void)h;
+	if(!pin_layer) return;
+	if(w<=0) {
+		gtk_widget_set_visible(GTK_WIDGET(pin_layer),FALSE);
+		return;
+	}
+	char *label=panelPinLabel(id,(char *)(title?title:""),(char *)(app?app:""));
+	g_free(pin_text);pin_text=g_strdup(label?label:"");
+	free(label);
+	gtk_layer_set_margin(pin_layer,LEFT_EDGE,x);
+	gtk_layer_set_margin(pin_layer,TOP_EDGE,y);
+	gtk_widget_set_size_request(pin_canvas,w,PIN_HEADER);
+	gtk_widget_set_visible(GTK_WIDGET(pin_layer),TRUE);
+	gtk_widget_queue_draw(pin_canvas);
+}
+void panel_pin_activate(uint64_t id) {panelPinActivate(id);}
+
 
 static gboolean run_gtk_call(gpointer data) {
 	panelGtkCall((guint64)GPOINTER_TO_SIZE(data));
@@ -3058,6 +3109,9 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_overlay_add_overlay(overlay,node_dock);
 	// Leave all dock chrome/input on the original shell surface. A telemetry
 	// tick updates this small paint-only buffer, not the full-screen shell.
+	pin_layer=paint_only_layer("mothership-pin-label","Mothership Pin Label",draw_pin_label,&pin_canvas);
+	gtk_layer_set_anchor(pin_layer,RIGHT_EDGE,FALSE);
+	gtk_layer_set_anchor(pin_layer,BOTTOM_EDGE,FALSE);
 	node_telemetry_layer=paint_only_layer("mothership-node-telemetry","Mothership Node Telemetry",NULL,NULL);
 	gtk_layer_set_anchor(node_telemetry_layer,RIGHT_EDGE,FALSE);
 	gtk_layer_set_anchor(node_telemetry_layer,BOTTOM_EDGE,FALSE);
