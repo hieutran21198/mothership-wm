@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"time"
+
+	"mothership-wm/services/desktopd/internal/domain"
 )
 
 // ErrNoMissionLog reports that this desktopd has no Mission Log store.
@@ -48,17 +50,46 @@ func (s *Service) MissionLog() (MissionLog, error) {
 	return s.missions, nil
 }
 
+// SetIdle follows the WM's coarse idle report. Idle ends the open segment
+// at the last input (quiet ago); the next input resumes the current view.
+func (s *Service) SetIdle(conn *domain.Session, idle bool, quiet time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready || s.active != conn {
+		return false
+	}
+	if s.idle == idle {
+		return true
+	}
+	s.idle = idle
+	if s.missions == nil {
+		return true
+	}
+	if idle {
+		s.missions.End(s.clock().Add(-quiet))
+		return true
+	}
+	s.recordMission(s.selection)
+	return true
+}
+
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 // recordMission follows the acknowledged view: named Nodes and the Default
-// Node count; Home, Overview, the Map and an unknown outcome do not.
+// Node count; Home, Overview, the Map, an unknown outcome and idle do not.
 func (s *Service) recordMission(selection Selection) {
 	if s.missions == nil {
 		return
 	}
-	now := time.Now()
-	if s.now != nil {
-		now = s.now()
-	}
+	now := s.clock()
 	switch {
+	case s.idle:
+		s.missions.End(now)
 	case selection.Kind == SelectionAcknowledged && selection.Domain != "":
 		s.missions.Begin(selection.Domain, false, now)
 	case selection.Kind == SelectionAcknowledged && selection.DefaultNode:

@@ -74,7 +74,11 @@ extern void panelGtkCall(guint64);
 extern void panelSaveLoadout(char *);
 extern void panelClearLoadout(char *);
 extern char *panelLaunchLoadout(char *);
+extern void panelNodeEntered(char *);
+extern int panelLaunchOnEntry(char *);
+extern char *panelSaveLaunchOnEntry(char *,int);
 static GtkWidget *loadout_offer,*loadout_row,*loadout_actions,*loadout_count,*loadout_clear,*loadout_result;
+static GtkWidget *loadout_entry_row,*loadout_entry_off,*loadout_entry_on;
 static int loadout_missing,loadout_total;
 static gboolean loadout_running;
 static GtkWidget *node_actions[4],*node_bell,*node_bell_ink,*node_speaker,*node_tray_button,*node_readout,*node_telemetry_off,*node_telemetry_on;
@@ -732,6 +736,7 @@ static void loadout_sync(void) {
 		gboolean named=named_node_shown();
 		gtk_widget_set_visible(loadout_row,named);
 		gtk_widget_set_visible(loadout_actions,named);
+		gtk_widget_set_visible(loadout_entry_row,named);
 		g_autofree char *count=loadout_total?g_strdup_printf("%d app%s",loadout_total,loadout_total==1?"":"s"):g_strdup("None");
 		gtk_label_set_text(GTK_LABEL(loadout_count),count);
 		gtk_widget_set_sensitive(loadout_clear,loadout_total>0);
@@ -1336,6 +1341,7 @@ static gboolean apply_update(gpointer data) {
 	if(entered_node)notice_log_dismiss(TRUE);
 	notice_context(*current_node?current_node:default_node?"@default":"@home",saved_toast_mode);
 	panelSilentView(*current_node?current_node:default_node?"@default":"@home");
+	panelNodeEntered(*current_node && !default_node?current_node:"");
 	panel_redraw_node_bell();
 	current_mode = g_strdup(u->mode);
 	if(*u->node) {
@@ -2266,6 +2272,8 @@ void panel_open_node_settings(void) {
 	gtk_widget_set_visible(node_guide_error,FALSE);
 	if(silent_input[0]) gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(silent_input[saved_silent_mode]),TRUE);
 	if(loadout_result) gtk_widget_set_visible(loadout_result,FALSE);
+	if(loadout_entry_on && named_node_shown())
+		gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(panelLaunchOnEntry(current_node)?loadout_entry_on:loadout_entry_off),TRUE);
 	loadout_sync();
 	node_stage_settings_sync();
 	gtk_widget_set_visible(node_settings,TRUE);
@@ -2346,6 +2354,18 @@ static void node_save(GtkButton *unused,gpointer data) {
 	int silent_mode=saved_silent_mode;
 	for(int i=0;i<3;i++)
 		if(silent_input[i] && gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(silent_input[i]))) silent_mode=i;
+	if(named_node_shown() && loadout_entry_on) {
+		int entry=gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(loadout_entry_on));
+		if(entry!=panelLaunchOnEntry(current_node)) {
+			err=panelSaveLaunchOnEntry(current_node,entry);
+			if(err) {
+				gtk_label_set_text(GTK_LABEL(node_guide_error),err);
+				gtk_widget_set_visible(node_guide_error,TRUE);
+				free(err);
+				return;
+			}
+		}
+	}
 	if(silent_mode!=saved_silent_mode) {
 		err=panelSaveSilentRunning(silent_mode);
 		if(err) {
@@ -3160,6 +3180,12 @@ static void node_panel_init(GtkOverlay *overlay) {
 	g_signal_connect(loadout_clear,"clicked",G_CALLBACK(loadout_action),GINT_TO_POINTER(1));
 	gtk_box_append(GTK_BOX(loadout_actions),loadout_clear);
 	gtk_box_append(GTK_BOX(body),loadout_actions);
+	loadout_entry_row=gtk_box_new(GTK_ORIENTATION_HORIZONTAL,8);
+	label=gtk_label_new("Launch on entry");
+	gtk_label_set_xalign(GTK_LABEL(label),0);gtk_widget_set_hexpand(label,TRUE);
+	gtk_box_append(GTK_BOX(loadout_entry_row),label);
+	gtk_box_append(GTK_BOX(loadout_entry_row),mechanical_on_off(&loadout_entry_off,&loadout_entry_on,"Launch on entry"));
+	gtk_box_append(GTK_BOX(body),loadout_entry_row);
 	loadout_result=gtk_label_new("");
 	gtk_label_set_wrap(GTK_LABEL(loadout_result),TRUE);
 	gtk_label_set_xalign(GTK_LABEL(loadout_result),0);

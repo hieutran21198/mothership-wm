@@ -1,6 +1,6 @@
 # Record and review the Mission Log
 
-**Status:** implemented 2026-11-27 except lock detection and idle; owner accepted in a native Mothership Dev session (candidate `build-jk5prr29`) on 2026-11-27.
+**Status:** implemented 2026-11-27 (idle added later the same day and owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27); owner accepted in a native Mothership Dev session (candidate `build-jk5prr29`) on 2026-11-27.
 Supports [See where the day went](../goals/review-mission-log.md).
 Design: [Fleet Ops preview, scenes 1 and 6](../system/fleet-ops-preview.html).
 
@@ -11,7 +11,8 @@ after the WM acknowledges it. Last active keeps its existing meaning in
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
 | Open segment | desktopd | On an acknowledged selection of a named Node or the Default Node, open a segment with the Node name (or the Default Node flag) and the start time. A layout change in the same Node keeps the segment. |
-| Close segment | desktopd | Close it on the next acknowledged selection of another view (Home, Overview and the Map close it), an unknown outcome, WM disconnect or desktopd shutdown. Split a segment at local midnight. Drop segments under 5 s. Lock is not observed yet. |
+| Close segment | desktopd | Close it on the next acknowledged selection of another view (Home, Overview and the Map close it), an unknown outcome, WM disconnect or desktopd shutdown. Split a segment at local midnight. Drop segments under 5 s. |
+| Idle | WM → desktopd | After 5 min without key, pointer or scroll input the WM sends `idle <seconds since the last input>` once; the next input sends `active 1`. desktopd ends the open segment at the last input and starts a new one for the current view when input returns. No input data crosses the socket. A locked screen has no input, so it stops counting the same way. |
 | Persist | desktopd | Append closed segments to `$XDG_STATE_HOME/mothership-wm/missions/YYYY-MM-DD.jsonl`. Checkpoint the open segment to `open.json` every 30 s; the next start closes it at that checkpoint. Delete days older than 30 days at start-up. A write failure keeps the segment in memory and is logged once. |
 | Read | Panel → desktopd | [`missions.get`](../../architecture/desktopd-client-ipc.md) returns a day as lanes and `[lane, start, end]` triples plus the open segment. A day too large for one packet joins short gaps within a lane. The overlay extends the live bar locally; it does not poll. Map Detail totals refresh when the acknowledged view changes. |
 | Show | Panel | **L** on focused blank Home or Slash `missions` opens the analog Mission Log above the dock. One lane per Node, longest total first: a diamond (hollow for the Default Node) and name, a 24-hour axis with ticks every three hours, cyan bars, a bright cap on the live segment and a total. Deleted Nodes keep their lane in muted ink as **Name (deleted)**. A/D or Left/Right changes day within 30 days; Esc, L or Q closes; a click outside dismisses it. The Home keyboard guide adds **L** and hides while the log is open. |
@@ -51,11 +52,5 @@ and the files are deleted.
 
 ## Decisions
 
-- **Idle** is a second slice: stop counting after 5 min without input,
-  using a coarse idle begin/end signal from the WM to desktopd with no
-  pointer data. The first slice counts time in view.
-
-## Open questions
-
-- Lock: desktopd does not observe the session lock yet. The Panel's
-  logind check could report a confirmed lock in a later slice.
+- Lock is covered by idle: no input for 5 min ends the segment at the
+  last input. A separate lock signal is not needed for counting.

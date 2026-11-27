@@ -271,6 +271,10 @@ struct nested {
 	bool domain_active, home_active, overview_active, default_node_active;
 	int domain_fd;
 	struct wl_event_source *domain_source;
+	// Coarse idle for the Mission Log: no input for IDLE_SECONDS.
+	struct wl_event_source *idle_timer;
+	int64_t last_input_ms;
+	bool idle_reported;
 	struct wl_listener backend_destroy;
 	struct wl_listener output_destroy;
 	struct wl_listener frame;
@@ -4456,6 +4460,35 @@ static bool render_capture_key(void *data) {
 	return render_debug_toggle(wm->render_debug);
 }
 
+enum { IDLE_SECONDS=300, IDLE_CHECK_MS=30000 };
+static int64_t monotonic_ms(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC,&now);
+	return now.tv_sec*1000LL+now.tv_nsec/1000000;
+}
+// Input only resets a timestamp; nothing about it leaves the WM except the
+// end of an idle period.
+static void seat_activity(void *data) {
+	struct nested *wm=data;
+	wm->last_input_ms=monotonic_ms();
+	if(wm->idle_reported) {
+		wm->idle_reported=false;
+		domain_send(wm,"active",1);
+	}
+}
+// Report idle once, with the seconds since the last input, so desktopd can
+// end a Mission Log segment where the person actually stopped.
+static int idle_check(void *data) {
+	struct nested *wm=data;
+	int64_t quiet=(monotonic_ms()-wm->last_input_ms)/1000;
+	if(!wm->idle_reported && wm->domain_source && quiet>=IDLE_SECONDS) {
+		wm->idle_reported=true;
+		domain_send(wm,"idle",(uint64_t)quiet);
+	}
+	wl_event_source_timer_update(wm->idle_timer,IDLE_CHECK_MS);
+	return 0;
+}
+
 static bool create_input_seat(struct nested *wm,struct wl_display *parent) {
 	wm->seat=nested_seat_create(wm->server,parent,parent?wlr_wl_output_get_surface(wm->output):NULL,
 		hit_view,remember_focus,move_cursor,start_view_move,update_view_move,map_scroll,map_contact,
@@ -4464,6 +4497,10 @@ static bool create_input_seat(struct nested *wm,struct wl_display *parent) {
 	if (!wm->seat) return false;
 	nested_seat_screenshot_bind(wm->seat, screenshot_key, screenshot_abort, wm);
 	nested_seat_move_bind(wm->seat, move_focused_window);
+	nested_seat_activity_bind(wm->seat, seat_activity);
+	wm->last_input_ms=monotonic_ms();
+	wm->idle_timer=wl_event_loop_add_timer(wl_display_get_event_loop(wm->server),idle_check,wm);
+	if(wm->idle_timer) wl_event_source_timer_update(wm->idle_timer,IDLE_CHECK_MS);
 	return true;
 }
 
@@ -4905,6 +4942,10 @@ done:
 	nested_seat_set_render_debug(wm.seat,NULL);
 	render_debug_destroy(wm.render_debug);
 	wm.render_debug=NULL;
+	if (wm.idle_timer != NULL) {
+		wl_event_source_remove(wm.idle_timer);
+		wm.idle_timer=NULL;
+	}
 	domain_disconnect(&wm);
 	if (wm.server != NULL) {
 		wl_display_destroy_clients(wm.server);

@@ -6,6 +6,7 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,25 +15,54 @@ import (
 )
 
 type fakeMissions struct {
+	mu      sync.Mutex
 	begun   []string
 	ended   int
+	endedAt []time.Time
 	cleared bool
 	day     app.MissionDay
 }
 
 func (f *fakeMissions) Begin(node string, def bool, _ time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if def {
 		node = "@default"
 	}
 	f.begun = append(f.begun, node)
 }
-func (f *fakeMissions) End(time.Time) { f.ended++ }
+func (f *fakeMissions) End(at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ended++
+	f.endedAt = append(f.endedAt, at)
+}
+
+// waitFor polls the fake until check holds; WM events arrive on their own
+// connection, so no request on another socket orders after them.
+func (f *fakeMissions) waitFor(t *testing.T, check func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		f.mu.Lock()
+		ok := check()
+		f.mu.Unlock()
+		if ok {
+			return
+		}
+	}
+	t.Fatalf("missions never reached the expected state: begun %v ended %d", f.begun, f.ended)
+}
 func (f *fakeMissions) Day(day string, _ time.Time) (app.MissionDay, error) {
 	d := f.day
 	d.Day = day
 	return d, nil
 }
-func (f *fakeMissions) Clear(time.Time) error { f.cleared = true; return nil }
+func (f *fakeMissions) Clear(time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleared = true
+	return nil
+}
 
 func TestMissionsFollowAcknowledgedViewsAndServeDays(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "desktopd.sock")
@@ -64,19 +94,30 @@ func TestMissionsFollowAcknowledgedViewsAndServeDays(t *testing.T) {
 	apply(3, domainipc.LayoutMethod, `{"domain":"Ops","mode":"stage"}`) // same view
 	apply(4, domainipc.DefaultNodeMethod, "{}")
 	apply(5, domainipc.HomeMethod, "{}")
-	if got := log.begun; len(got) != 3 || got[0] != "Ops" || got[1] != "Ops" || got[2] != "@default" || log.ended != 1 {
-		t.Fatalf("begun %v ended %d", got, log.ended)
-	}
+	log.waitFor(t, func() bool {
+		got := log.begun
+		return len(got) == 3 && got[0] == "Ops" && got[1] == "Ops" && got[2] == "@default" && log.ended == 1
+	})
 
+	// Idle ends at the last input and returning resumes the current view.
+	apply(8, domainipc.FocusMethod, `{"domain":"Ops"}`)
+	send(t, wm, "idle 300")
+	send(t, wm, "idle 330") // repeated report: no second End
+	send(t, wm, "active 1")
+	log.waitFor(t, func() bool { return len(log.begun) == 5 && log.begun[4] == "Ops" && log.ended == 2 })
+	log.mu.Lock()
+	idleEnd := log.endedAt[1]
+	log.mu.Unlock()
+	if quiet := time.Since(idleEnd); quiet < 299*time.Second || quiet > 310*time.Second {
+		t.Fatalf("idle ended %v ago, want about 300s", quiet)
+	}
 	day := decode[domainipc.MissionDay](t, success(t, s.request(6, domainipc.MissionsGetMethod, `{"day":"2026-11-27"}`), 6))
 	if day.Day != "2026-11-27" || len(day.Lanes) != 2 || !day.Lanes[1].DefaultNode ||
 		len(day.Segments) != 2 || day.Segments[1] != [3]int64{1, 300, 400} || day.Open == nil || *day.Open != [3]int64{0, 500, 0} {
 		t.Fatalf("day %+v", day)
 	}
 	success(t, s.request(7, domainipc.MissionsClearMethod, "{}"), 7)
-	if !log.cleared {
-		t.Fatal("clear not forwarded")
-	}
+	log.waitFor(t, func() bool { return log.cleared })
 }
 
 func TestMissionWireMergesGapsOnlyWhenTooLarge(t *testing.T) {

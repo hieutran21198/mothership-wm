@@ -26,6 +26,7 @@ type Service struct {
 	reportPersistence func(error)
 	saveLoadout       func(string, []string) error
 	missions          MissionLog
+	idle              bool
 	active            *domain.Session
 	ready             bool
 	selection         Selection
@@ -105,7 +106,7 @@ func (s *Service) Disconnect(conn *domain.Session) {
 	defer s.mu.Unlock()
 	if s.active == conn {
 		wasReady := s.ready
-		s.active, s.ready = nil, false
+		s.active, s.ready, s.idle = nil, false, false
 		s.recordMission(Selection{Kind: SelectionUnknown})
 		if wasReady {
 			if s.selection.Kind == SelectionAcknowledged {

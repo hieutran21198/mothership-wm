@@ -1056,9 +1056,13 @@ static void sync_route_motion(void) {
 	else if(!route_tick) route_tick=gtk_widget_add_tick_callback(route_layer,move_route,NULL,NULL);
 }
 
+static void sync_comms_tick(void);
 void map_hud_allow_route(gboolean enable) {
 	route_allowed=enable;
 	sync_route_motion();
+	// Comms arcs pause with the route: focus loss or Motion Off. An
+	// occluded surface receives no frames, so its loop stops on its own.
+	sync_comms_tick();
 }
 
 static void reset_route(void) {
@@ -1621,7 +1625,7 @@ static void sync_comms_tick(void) {
 		g_hash_table_iter_init(&it,comms_nodes);
 		while(g_hash_table_iter_next(&it,NULL,&value)) playing|=GPOINTER_TO_INT(value)==1;
 	}
-	gboolean want=playing && annotations && gtk_widget_get_mapped(annotations) && transit_motion();
+	gboolean want=playing && route_allowed && annotations && gtk_widget_get_mapped(annotations) && transit_motion();
 	if(want && !comms_tick) comms_tick=gtk_widget_add_tick_callback(annotations,comms_frame,NULL,NULL);
 	else if(!want && comms_tick) {
 		gtk_widget_remove_tick_callback(annotations,comms_tick);

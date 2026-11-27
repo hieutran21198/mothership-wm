@@ -1,6 +1,6 @@
 # Save and launch a Node loadout
 
-**Status:** implemented 2026-11-27 except Launch on entry; owner accepted in a native Mothership Dev session (candidate `build-xb1Qmf4O`) on 2026-11-27.
+**Status:** implemented 2026-11-27 (Launch on entry added later the same day and owner accepted in a native Mothership Dev session (candidate `build-F0Om9ovi`) on 2026-11-27); owner accepted in a native Mothership Dev session (candidate `build-xb1Qmf4O`) on 2026-11-27.
 Supports [Relaunch a Node's apps from its loadout](../goals/launch-node-loadouts.md).
 Design: [Fleet Ops preview, scene 2](../system/fleet-ops-preview.html).
 
@@ -67,7 +67,9 @@ stored file: it contains only entry IDs and timestamps.
 
 ## Decisions
 
-- **Launch on entry:** an opt-in per-Node toggle that starts the sequence
-  automatically on an empty Node. Default Off. Not implemented yet.
+- **Launch on entry:** an opt-in per-Node **Launch on entry** row in Node
+  Panel Settings, saved as `nodes.<name>.launch_on_entry` in the shared
+  user config (Off removes it). An acknowledged entry into an empty named
+  Node with a loadout starts the sequence once per entry. Default Off.
 - **Enter** in an empty Node is not bound: the empty Node does not give
   the Panel keyboard focus. Use the offer or Slash.

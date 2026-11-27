@@ -61,6 +61,7 @@ struct nested_seat {
 	bool (*close_window)(void *,struct wlr_surface *);
 	bool (*reorder_window)(void *,struct wlr_surface *,uint32_t);
 	bool (*move_window)(void *,struct wlr_surface *,uint32_t);
+	void (*activity)(void *);
 	bool (*render_capture)(void *);
 	bool (*screenshot_open)(void *);
 	void (*screenshot_abort)(void *);
@@ -310,6 +311,8 @@ void nested_seat_forget(struct nested_seat *seat, struct wlr_surface *gone,
 	pointer_focus(seat);
 }
 
+static void note_activity(struct nested_seat *seat);
+
 static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t serial,
 		struct wl_surface *surface, wl_fixed_t x, wl_fixed_t y) {
 	struct nested_seat *seat = data;
@@ -342,6 +345,7 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
 	if (!seat->pointer_inside) {
 		return;
 	}
+	note_activity(seat);
 	seat->x = wl_fixed_to_double(x);
 	seat->y = wl_fixed_to_double(y);
 	seat->move_cursor(seat->data, true, seat->x, seat->y);
@@ -369,6 +373,7 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
 	if (button > KEY_MAX) {
 		return;
 	}
+	note_activity(seat);
 	bool was_held = seat->buttons_held[button];
 	seat->buttons_held[button] = state == WL_POINTER_BUTTON_STATE_PRESSED;
 	uint32_t weapon=button==BTN_LEFT?MOTHERSHIP_MAP_POINTER_V1_WEAPON_NORMAL:
@@ -500,6 +505,7 @@ static void flush_axis(struct nested_seat *seat,unsigned orientation) {
 static void pointer_axis(void *data, struct wl_pointer *pointer,uint32_t time,uint32_t axis,wl_fixed_t value) {
 	struct nested_seat *seat=data;
 	if (axis>=2) return;
+	note_activity(seat);
 	seat->axes[axis].pending=true;
 	seat->axes[axis].time=time;
 	seat->axes[axis].delta+=wl_fixed_to_double(value);
@@ -640,6 +646,12 @@ static bool valid_shortcut_key(uint64_t key) {
 void nested_seat_move_bind(struct nested_seat *seat,bool (*move)(void *,struct wlr_surface *,uint32_t)) {
 	if(seat) seat->move_window=move;
 }
+void nested_seat_activity_bind(struct nested_seat *seat,void (*activity)(void *)) {
+	if(seat) seat->activity=activity;
+}
+static void note_activity(struct nested_seat *seat) {
+	if(seat->activity) seat->activity(seat->data);
+}
 bool nested_seat_set_shortcuts(struct nested_seat *seat,uint64_t close,uint64_t apps,uint64_t settings,uint64_t node) {
 	if(!seat || !valid_shortcut_key(close) || !valid_shortcut_key(apps) || !valid_shortcut_key(settings) ||
 		close==apps || close==settings || apps==settings || (node!=KEY_1 && node!=KEY_F1))return false;
@@ -736,6 +748,7 @@ static void keyboard_key(void *data, struct wl_keyboard *keys, uint32_t serial,
 	if (!seat->keyboard_inside || !seat->has_keymap || key > KEY_MAX) {
 		return;
 	}
+	note_activity(seat);
 	bool was_held = seat->keys_held[key];
 	seat->keys_held[key] = state == WL_KEYBOARD_KEY_STATE_PRESSED;
 	bool home_tap=false,meta=key==KEY_LEFTMETA || key==KEY_RIGHTMETA;
@@ -1082,6 +1095,7 @@ static void local_axis(struct wl_listener *listener,void *data) {
 	struct wlr_pointer_axis_event *e=data;
 	struct nested_seat *seat=dev->seat;
 	if(!seat->pointer_inside || e->orientation>=2) return;
+	note_activity(seat);
 	seat->axis_source=e->source;
 	seat->axes[e->orientation]=(struct pending_axis){true,e->time_msec,e->delta,e->delta_discrete};
 	flush_axis(seat,e->orientation);

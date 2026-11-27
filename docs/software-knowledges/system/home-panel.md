@@ -316,8 +316,8 @@ The left wing's fourth control, **Silent running**, latches with the
 toggled cyan edge while the current Node runs silent. Node Panel Settings
 adds a **Silent running: Off / Notices / Notices + audio** row. See
 [Run silent in a Node](../flows/run-silent.md). In a named Node it also
-shows **Loadout** with the saved count, **Save current apps** and
-**Clear**, and the preview lane can offer **Launch sequence**; see
+shows **Loadout** with the saved count, **Save current apps**, **Clear**
+and **Launch on entry**, and the preview lane can offer **Launch sequence**; see
 [Save and launch a Node loadout](../flows/launch-node-loadout.md).
 
 Node Panel Settings exposes the same **Flow / Stage** layout row in Default

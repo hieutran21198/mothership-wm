@@ -39,6 +39,7 @@ type panelPreferences struct {
 	appPins         []string
 	defaultNode     bool
 	silent          map[string]int // Silent running by Node name or noticeDefault.
+	launchOnEntry   map[string]bool
 }
 
 func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) panelPreferences {
@@ -107,6 +108,7 @@ func loadPanelPreferences(paths panelConfigPaths, warn func(string, ...any)) pan
 	}
 	p.toastMode = loadToastMode(doc, warn)
 	p.silent = loadSilentRunning(doc, warn)
+	p.launchOnEntry = loadLaunchOnEntry(doc, warn)
 	p.appPins = loadAppPins(doc, warn)
 	if home, err := doc.Child("home"); err != nil {
 		warn("home: %v", err)

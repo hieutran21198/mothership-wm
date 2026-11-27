@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/internal/userconfig"
 )
 
 func TestLoadoutResolvesMembersAndSkipsUnknownApps(t *testing.T) {
@@ -52,5 +53,45 @@ func TestMissingEntriesCountsRepeatsInOrder(t *testing.T) {
 	}
 	if appCount(1) != "1 app" || appCount(3) != "3 apps" {
 		t.Fatal("count wording")
+	}
+}
+
+func TestLaunchOnEntryNeedsOptInLoadoutAndEmptyNode(t *testing.T) {
+	path := userconfig.Path(t.TempDir())
+	var p panelPreferences
+	if err := p.saveLaunchOnEntry(path, "Ops", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.saveSilentRunning(path, "Ops", silentNotices); err != nil {
+		t.Fatal(err)
+	}
+	doc, _, _ := userconfig.Read(path)
+	if got := loadLaunchOnEntry(doc, func(string, ...any) {}); !got["Ops"] {
+		t.Fatalf("flag not saved: %v", got)
+	}
+	s := domainipc.Snapshot{NodeProfiles: []domainipc.NodeProfile{{Domain: "Ops", Loadout: []string{"a.desktop"}}, {Domain: "Dev"}}}
+	if !shouldLaunchOnEntry(s, "Ops", p.launchOnEntry) {
+		t.Fatal("empty opted-in Node with a loadout did not launch")
+	}
+	s.Windows = []domainipc.Window{{ID: 1, Domain: "Ops"}}
+	if shouldLaunchOnEntry(s, "Ops", p.launchOnEntry) {
+		t.Fatal("launched into a Node that already has a member")
+	}
+	if shouldLaunchOnEntry(s, "Dev", map[string]bool{"Dev": true}) {
+		t.Fatal("launched without a loadout")
+	}
+	// Turning it off keeps the Node's other keys.
+	if err := p.saveLaunchOnEntry(path, "Ops", false); err != nil {
+		t.Fatal(err)
+	}
+	doc, _, _ = userconfig.Read(path)
+	if got := loadLaunchOnEntry(doc, func(string, ...any) {}); got["Ops"] {
+		t.Fatal("flag survived Off")
+	}
+	if modes := loadSilentRunning(doc, func(string, ...any) {}); modes["Ops"] != silentNotices {
+		t.Fatalf("Off dropped Silent running: %v", modes)
+	}
+	if err := p.saveLaunchOnEntry(path, noticeDefault, true); err == nil {
+		t.Fatal("Default Node accepted Launch on entry")
 	}
 }

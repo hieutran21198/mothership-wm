@@ -146,21 +146,59 @@ func panelClearLoadout(name *C.char) {
 //
 //export panelLaunchLoadout
 func panelLaunchLoadout(name *C.char) *C.char {
-	node := C.GoString(name)
+	if msg := startLoadout(C.GoString(name)); msg != "" {
+		return C.CString(msg)
+	}
+	return nil
+}
+
+// startLoadout runs on the GTK thread and returns a message when it cannot.
+func startLoadout(node string) string {
 	s := notificationSnapshot()
 	loadout := profileLoadout(s, node)
 	if len(loadout) == 0 {
-		return C.CString(node + " has no loadout. Save one in Node Panel Settings.")
+		return node + " has no loadout. Save one in Node Panel Settings."
 	}
 	missing := missingEntries(loadout, currentMembers(s, node))
 	if len(missing) == 0 {
-		return C.CString("Every app in the " + node + " loadout is already open.")
+		return "Every app in the " + node + " loadout is already open."
 	}
 	if _, busy := loadoutRunning.LoadOrStore(node, true); busy {
-		return nil
+		return ""
 	}
 	active.rerender()
 	go runLoadout(node, s.Session, missing)
+	return ""
+}
+
+var enteredNode string // last acknowledged named Node; GTK thread only
+
+// panelNodeEntered runs on the GTK thread for each acknowledged view. An
+// opted-in empty Node with a loadout starts its launch sequence once per
+// entry.
+//
+//export panelNodeEntered
+func panelNodeEntered(name *C.char) {
+	node := C.GoString(name)
+	if node == enteredNode {
+		return
+	}
+	enteredNode = node
+	if shouldLaunchOnEntry(notificationSnapshot(), node, preferences.launchOnEntry) {
+		startLoadout(node)
+	}
+}
+
+//export panelLaunchOnEntry
+func panelLaunchOnEntry(name *C.char) C.int {
+	return C.int(btoi(preferences.launchOnEntry[C.GoString(name)]))
+}
+
+//export panelSaveLaunchOnEntry
+func panelSaveLaunchOnEntry(name *C.char, on C.int) *C.char {
+	if err := preferences.saveLaunchOnEntry(preferencePaths.user, C.GoString(name), on != 0); err != nil {
+		return C.CString("Could not save Launch on entry: " + err.Error())
+	}
 	return nil
 }
 

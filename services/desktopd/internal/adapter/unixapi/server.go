@@ -225,6 +225,11 @@ func (d *desktop) event(w *wmPeer, a []string) bool {
 		return d.service.WindowAddedWithPID(w.session, id, pid)
 	case "map", "unmap":
 		return d.service.WindowMapping(w.session, id, a[0] == "map")
+	case "idle":
+		// id is the seconds since the last input; no input data is sent.
+		return d.service.SetIdle(w.session, true, time.Duration(id)*time.Second)
+	case "active":
+		return id == 1 && d.service.SetIdle(w.session, false, 0)
 	case "close":
 		return d.service.WindowClosed(w.session, id)
 	}

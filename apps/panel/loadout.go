@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 	"sync"
 
 	"mothership-wm/internal/domainipc"
+	"mothership-wm/internal/userconfig"
 )
 
 // A loadout is what to launch, never which windows belong to a Node.
@@ -129,4 +131,94 @@ func appCount(n int) string {
 		return "1 app"
 	}
 	return fmt.Sprintf("%d apps", n)
+}
+
+// loadLaunchOnEntry reads the sparse nodes.<name>.launch_on_entry flags.
+func loadLaunchOnEntry(doc userconfig.Object, warn func(string, ...any)) map[string]bool {
+	out := map[string]bool{}
+	nodes, err := doc.Child("nodes")
+	if err != nil {
+		return out
+	}
+	for name := range nodes {
+		node, err := nodes.Child(name)
+		if err != nil {
+			continue
+		}
+		raw, ok := node["launch_on_entry"]
+		if !ok {
+			continue
+		}
+		var on *bool
+		if json.Unmarshal(raw, &on) != nil || on == nil {
+			warn("nodes.%s.launch_on_entry must be true or false", name)
+			continue
+		}
+		if *on {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// saveLaunchOnEntry stores one named Node's flag; Off removes the key.
+func (p *panelPreferences) saveLaunchOnEntry(path, node string, on bool) error {
+	if node == "" || strings.HasPrefix(node, "@") {
+		return fmt.Errorf("Launch on entry applies to a named Node")
+	}
+	doc, _, err := userconfig.Read(path)
+	if err != nil {
+		return err
+	}
+	nodes, err := doc.Child("nodes")
+	if err != nil {
+		return err
+	}
+	entry, err := nodes.Child(node)
+	if err != nil {
+		return err
+	}
+	if on {
+		if err := entry.Set("launch_on_entry", true); err != nil {
+			return err
+		}
+	} else {
+		delete(entry, "launch_on_entry")
+	}
+	if len(entry) == 0 {
+		delete(nodes, node)
+	} else if err := nodes.Set(node, entry); err != nil {
+		return err
+	}
+	if len(nodes) == 0 {
+		delete(doc, "nodes")
+	} else if err := doc.Set("nodes", nodes); err != nil {
+		return err
+	}
+	if err := userconfig.Write(path, doc); err != nil {
+		return err
+	}
+	if p.launchOnEntry == nil {
+		p.launchOnEntry = map[string]bool{}
+	}
+	if on {
+		p.launchOnEntry[node] = true
+	} else {
+		delete(p.launchOnEntry, node)
+	}
+	return nil
+}
+
+// shouldLaunchOnEntry decides whether an acknowledged entry into node
+// starts its loadout: opted in, a loadout saved, and no live members yet.
+func shouldLaunchOnEntry(s domainipc.Snapshot, node string, enabled map[string]bool) bool {
+	if node == "" || !enabled[node] || len(profileLoadout(s, node)) == 0 {
+		return false
+	}
+	for _, w := range s.Windows {
+		if w.Domain == node {
+			return false
+		}
+	}
+	return true
 }
