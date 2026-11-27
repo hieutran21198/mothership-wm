@@ -25,6 +25,17 @@ Artifact for its operation, payload and errors rather than duplicating them.
 - [Read notifications by Node](show-notifications.md).
 - [Select and export a screenshot](capture-screenshot.md).
 
+Design accepted 2026-11-27; each document states what is implemented. See the
+[Fleet Ops preview](../system/fleet-ops-preview.html):
+
+- [Save and launch a Node loadout](launch-node-loadout.md).
+- [Run silent in a Node](run-silent.md).
+- [Pin a comms window](pin-comms-window.md).
+- [Tractor-beam a window to another Node](tractor-beam-window.md).
+- [Search windows and connect to one](search-windows.md).
+- [Record and review the Mission Log](review-mission-log.md).
+- [Show ship status on the Center Map](show-ship-status.md).
+
 ## Template
 
 ```markdown

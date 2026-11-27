@@ -104,6 +104,15 @@ For visual changes, compare the [original approved assets and review checklist](
   adds a brighter outside silhouette and label; custom Node SVGs retain
   their existing artwork, scaling and independent focus outline. Check
   actual painted contours and retain idle contrast over light and dark wallpaper.
+- Two activity states are approved in addition to idle, unread and
+  selected (see the [Fleet Ops preview, scene 1](fleet-ops-preview.html)
+  and [Show ship status](../flows/show-ship-status.md)). **Comms**: three
+  short arcs ahead of the bow while a member app plays audio; static with
+  Motion Off, struck through when the Node is muted. **Cloaked**: Silent
+  running dashes the hull outline and draws the planes at about 50%
+  opacity. Neither adds an idle ring or glow, hit target or size change.
+  Labels, the unread badge and the selected silhouette keep full contrast.
+  Not yet implemented.
 - Use the same [shell typeface and role weights](../../../internal/shellfonts/fonts/chakra-petch/README.md)
   across Mothership-owned text; external applications keep their own fonts.
   Mothership, numbered Node names and unnumbered Node names share the
