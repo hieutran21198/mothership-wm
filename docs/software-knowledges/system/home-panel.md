@@ -137,20 +137,22 @@ the wheel or move the selection with the arrow keys.
 
 - An empty prompt lists `apps`, `nodes`, `maps`, `notifications` and
   `settings`. Complete a module to show its available commands.
-- `apps open <query>` uses the installed catalog and the App Grid's
-  launch rules. `apps <query>` remains a search shorthand. Neither form
-  runs arbitrary shell text.
+- `apps <query>` searches the installed catalog and launches with the App
+  Grid's launch rules; `apps` alone lists the catalog. It never runs
+  arbitrary shell text.
 - `nodes connect <name>` focuses an existing named Node. `nodes new
   <name>` creates and enters a Node. `nodes delete <name>` and `nodes
   force-delete <name>` show confirmation before submission and report the
   service result. Force delete moves open windows to Default Node.
-- `maps open` opens Center Map. `notifications open` opens the Home
-  Notification Log. `settings open`, `settings display` and
+- A module with one action has no `open` sub-command: `maps` opens
+  Center Map, `notifications` the Notification Log and `screenshot` the
+  capture tool. `settings`, `settings display` and
   `settings shortcuts` open the same panes as their Home controls without
   changing or saving a setting. Display controls require a native session;
   nested Display shows this restriction and keeps controls disabled.
-- Click or Tab completes only. Enter on a module or incomplete command
-  fills the next stage. Enter on an app or Node result launches or connects;
+- Click or Tab completes only. Enter on `maps`, `notifications`,
+  `screenshot` or `settings` opens it; Enter on `apps`, `nodes` or an
+  incomplete command fills the next stage. Enter on an app or Node result launches or connects;
   Enter on a selected view command opens it. While Connect or New is in
   progress, keep the command visible and ignore repeated submissions.
   Close after the acknowledged Node selection. On failure, show the
@@ -322,17 +324,8 @@ open Node Panel Settings from the focused app. Plain comma remains app
 input in a Node. Use the same paired mechanical **Off / On** controls
 as Home for Keyboard guide and Telemetry.
 
-The Node ID stands at the right edge inside the recessed display, between
-the preview lane and the mechanical Volume and notification buttons. Show
-one upright ship glyph above the Node name on one line. Place the assigned
-shortcut digit inside the glyph: **Mothership** uses **1**; a Node without a
-slot has no digit. Draw the name in uppercase Black Ops One without changing
-the Node name. Ellipsize within the bay and expose the full name
-to assistive technology. The bay does not receive input. It shares the
-Telemetry height and borrows width from previews, not from Telemetry,
-the physical controls, or app content. Shrink the bay to 36 logical px
-before hiding it on narrow outputs so one preview and its overflow button
-can still fit. Keep the readouts vertically centered without a name row.
+The recessed display shows no Node name or ship glyph; the preview lane
+runs to the mechanical Volume and notification buttons. Keep the readouts vertically centered without a name row.
 
 Telemetry in Node Panel Settings defaults off and is saved under
 `node_panel.show_telemetry`. The readout shares the Home sampler.

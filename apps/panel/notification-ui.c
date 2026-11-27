@@ -1,6 +1,7 @@
 //go:build linux && cgo && panel
 
 #include "notification-ui.h"
+#include <math.h>
 #include "home-panel.h"
 #include "analog-glass.h"
 #include "analog-button.h"
@@ -384,7 +385,49 @@ void notice_init(GtkOverlay *root,void (*region)(void)) {
 	gtk_widget_set_visible(dismiss_toast,FALSE);
 }
 GtkWidget *notice_log_widget(void) { return log_pane; }
-int notice_log_visible(void) { return log_pane && gtk_widget_get_visible(log_pane); }
+// Open is the logical state; the pane may still be painting its exit fade.
+static gboolean log_open;
+static guint log_tick;
+static double log_from,log_to;
+static gint64 log_started;
+int notice_log_visible(void) { return log_pane && log_open; }
+
+static gboolean log_animations(void) {
+	gboolean enabled=TRUE;
+	g_object_get(gtk_widget_get_settings(log_pane),"gtk-enable-animations",&enabled,NULL);
+	return enabled;
+}
+static void finish_log_fade(void) {
+	gtk_widget_set_opacity(log_pane,log_to);
+	if(!log_open) gtk_widget_set_visible(log_pane,FALSE);
+}
+static gboolean log_fade_frame(GtkWidget *widget,GdkFrameClock *clock,gpointer data) {
+	(void)widget;(void)data;
+	const double duration=(log_open?180000.:140000.)*fabs(log_to-log_from);
+	double t=duration>0?CLAMP((gdk_frame_clock_get_frame_time(clock)-log_started)/duration,0.,1.):1.;
+	if(t>=1. || !log_animations()) {
+		log_tick=0;
+		finish_log_fade();
+		return G_SOURCE_REMOVE;
+	}
+	double eased=t*t*(3.-2.*t);
+	gtk_widget_set_opacity(log_pane,log_from+(log_to-log_from)*eased);
+	return G_SOURCE_CONTINUE;
+}
+// Fade only; the pane does not slide or scale. Reversal starts from the
+// current opacity.
+static void animate_log(gboolean instant) {
+	if(log_tick) gtk_widget_remove_tick_callback(log_pane,log_tick);
+	log_tick=0;
+	log_from=gtk_widget_get_opacity(log_pane);
+	log_to=log_open?1.:0.;
+	if(instant || !log_animations() || !gtk_widget_get_mapped(log_pane) || log_from==log_to) {
+		finish_log_fade();
+		return;
+	}
+	log_started=g_get_monotonic_time();
+	log_tick=gtk_widget_add_tick_callback(log_pane,log_fade_frame,NULL,NULL);
+}
 void notice_unread_count(int count) { home_dock_notice_count(count); }
 GtkWidget *notice_close_target(void) { return dismiss_toast && gtk_widget_get_visible(dismiss_toast)?dismiss_toast:NULL; }
 void notice_layout(int w,int h,int bell,int gap) {
@@ -407,11 +450,15 @@ void notice_log_toggle_for(const char *source,const char *name) {
 	}
 	gtk_widget_set_visible(combo,!scoped);
 	gtk_widget_set_halign(log_actions,scoped?GTK_ALIGN_END:GTK_ALIGN_FILL);
+	if(!gtk_widget_get_visible(log_pane)) gtk_widget_set_opacity(log_pane,0.);
+	log_open=TRUE;
+	gtk_widget_set_sensitive(log_pane,TRUE);
 	gtk_widget_set_visible(log_pane,TRUE);
 	opening_log=TRUE;
 	panelRefreshNotificationLog();
 	opening_log=FALSE;
 	home_dock_notice_open(TRUE);on_region();
+	animate_log(FALSE);
 }
 void notice_log_toggle(void) {notice_log_toggle_for(NULL,NULL);}
 int notice_source_unread(const char *source) {
@@ -424,15 +471,21 @@ void notice_set_source_count(const char *source,int count) {
 	if(notice_log_visible())filter(GTK_DROP_DOWN(combo),NULL,NULL);
 	panel_redraw_node_bell();
 }
-gboolean notice_log_close(void) {
-	if (!log_pane || !gtk_widget_get_visible(log_pane)) return FALSE;
+gboolean notice_log_dismiss(gboolean instant) {
+	if (!log_pane || !log_open) return FALSE;
+	log_open=FALSE;
 	hide_log_error();
 	g_hash_table_remove_all(expanded_rows);
 	g_clear_pointer(&locked_source,g_free);
 	g_clear_pointer(&locked_label,g_free);
 	held_actions=0;
-	gtk_widget_set_visible(log_pane,FALSE);home_dock_notice_open(FALSE);on_region();return TRUE;
+	// The exit is paint only: release keyboard and pointer routing now.
+	gtk_widget_set_sensitive(log_pane,FALSE);
+	home_dock_notice_open(FALSE);on_region();
+	animate_log(instant);
+	return TRUE;
 }
+gboolean notice_log_close(void) {return notice_log_dismiss(FALSE);}
 
 static char *selected,*selected_name;
 void notice_log_begin(void) {

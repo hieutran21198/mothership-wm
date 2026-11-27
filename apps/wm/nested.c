@@ -300,7 +300,7 @@ struct xdg_view {
 	uint64_t epoch, focused_at, home_focused_at;
 	uint64_t node_order, home_order;
 	int reorder_x, reorder_y;
-	bool mapped, assigned, minimized;
+	bool mapped, assigned, minimized, focus_on_show;
 	int slot;
 	struct wl_list link;
 	struct wl_listener map, unmap, commit, configure, destroy, tree_destroy, app_id, title;
@@ -578,6 +578,7 @@ static bool is_flow(struct nested *);
 static bool is_stage(struct nested *);
 static struct xdg_view *find_view(struct nested *,uint64_t);
 static void strip_focus_view(struct nested *,struct xdg_view *);
+static void focus_shown_view(struct nested *);
 static void strip_reveal_window(struct nested *,struct xdg_view *);
 static void group_frame(struct nested *,struct timespec);
 static void flow_reorder_finish(struct nested *);
@@ -2990,6 +2991,7 @@ static void refresh_home(struct nested *wm) {
 	if(wm->drag && wm->drag->slot<0)wm->drag=NULL;
 	refresh_blank_shell(wm);
 	nested_seat_refresh(wm->seat);
+	focus_shown_view(wm);
 }
 
 static uint64_t domain_number(char *token) {
@@ -3120,6 +3122,7 @@ static void refresh_named(struct nested *wm, const struct domain_member members[
 		wm->drag = NULL;
 	}
 	nested_seat_refresh(wm->seat);
+	focus_shown_view(wm);
 }
 
 static void strip_focus_view(struct nested *wm,struct xdg_view *v) {
@@ -3157,6 +3160,19 @@ static void strip_focus_view(struct nested *wm,struct xdg_view *v) {
 		for(int j=0;j<n;j++) if(anchors[j].width>0)
 			tray_flight_start(wm,restoring[j],j,true,anchors[j]);
 	wlr_output_schedule_frame(wm->output);
+}
+
+// A newly mapped window takes keyboard focus the first time it appears in
+// the live view. A view switch drops the claim: a window that landed in a
+// hidden Inbox doesn't steal focus later.
+static void focus_shown_view(struct nested *wm) {
+	for(int i=0;i<wm->visible_count;i++) {
+		struct xdg_view *v=wm->slots[i];
+		if(!v->focus_on_show || !v->mapped || v->minimized) continue;
+		v->focus_on_show=false;
+		strip_focus_view(wm,v);
+		return;
+	}
 }
 
 static bool group_can_join(struct nested *wm,struct xdg_view *source,struct xdg_view *target) {
@@ -3767,6 +3783,8 @@ static void home_key_tap(void *data) {
 
 static void select_projection(struct nested *wm, bool keep_panel) {
 	wm->drag = NULL;
+	struct xdg_view *v;
+	wl_list_for_each(v,&wm->views,link) v->focus_on_show=false;
 	position_panel(wm->panel);
 	nested_seat_switch(wm->seat, view_target(wm), keep_panel);
 	refresh_blank_shell(wm);
@@ -4097,6 +4115,7 @@ static void on_view_map(struct wl_listener *listener, void *data) {
 	struct xdg_view *view = wl_container_of(listener, view, map);
 	struct nested *wm = view->wm;
 	view->mapped = true;
+	view->focus_on_show = wm->domain_active;
 	if (wm->home_active) {
 		refresh_home(wm);
 	} else if (named_view(wm)) {
@@ -4150,6 +4169,7 @@ static void on_view_unmap(struct wl_listener *listener, void *data) {
 	owned_preview_clear(&view->preview_copy);
 	view->minimized=false;
 	view->mapped = false;
+	view->focus_on_show = false;
 	remove_view(view);
 	if (!view->wm->cleaning) {
 		domain_send(view->wm, "unmap", view->id);

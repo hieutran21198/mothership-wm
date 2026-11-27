@@ -145,45 +145,28 @@ static void text_at(cairo_t *cr,PangoLayout *l,double x,double y,const char *s,
 	pango_layout_set_text(l,s,-1);
 	ink(cr,color);cairo_move_to(cr,x,y);pango_cairo_show_layout(cr,l);
 }
+static void text_aligned(cairo_t *cr,PangoLayout *l,double x,double y,const char *s,
+		int size,PangoWeight weight,unsigned color,double anchor) {
+	PangoFontDescription *d=shell_font_description(NULL,size,weight);
+	pango_layout_set_font_description(l,d);pango_font_description_free(d);
+	pango_layout_set_text(l,s,-1);
+	int width=0;pango_layout_get_pixel_size(l,&width,NULL);
+	ink(cr,color);cairo_move_to(cr,x-width*anchor,y);pango_cairo_show_layout(cr,l);
+}
+static void text_right(cairo_t *cr,PangoLayout *l,double x,double y,const char *s,
+		int size,PangoWeight weight,unsigned color) {
+	text_aligned(cr,l,x,y,s,size,weight,color,1);
+}
+static void text_center(cairo_t *cr,PangoLayout *l,double x,double y,const char *s,
+		int size,PangoWeight weight,unsigned color) {
+	text_aligned(cr,l,x,y,s,size,weight,color,.5);
+}
 static void fill(cairo_t *cr,double x,double y,double w,double h,unsigned rgb) {
 	if(w<=0||h<=0) return;
 	ink(cr,rgb);cairo_rectangle(cr,x,y,w,h);cairo_fill(cr);
 }
 static void path(cairo_t *cr,double x,double y,double x2,double y2) {
 	cairo_move_to(cr,x,y);cairo_line_to(cr,x2,y2);
-}
-void home_node_identity_face(cairo_t *cr,int w,int h,const char *name,int slot,gboolean mothership) {
-	if(w<36 || h<40 || !name || !*name) return;
-	const double cx=w/2., cy=19.;
-	fill(cr,0,6,1,h-12,0x2b4150);
-	const struct fleet_point *ship=mothership?fleet_mothership:fleet_node;
-	size_t count=mothership?FLEET_COUNT(fleet_mothership):FLEET_COUNT(fleet_node);
-	cairo_move_to(cr,cx+ship[0].x,cy+ship[0].y);
-	for(size_t i=1;i<count;i++) cairo_line_to(cr,cx+ship[i].x,cy+ship[i].y);
-	cairo_close_path(cr);
-	ink(cr,0x142a34);cairo_fill_preserve(cr);
-	ink(cr,0x9ddde6);cairo_set_line_width(cr,1.15);cairo_stroke(cr);
-	PangoLayout *layout=pango_cairo_create_layout(cr);
-	pango_layout_set_alignment(layout,PANGO_ALIGN_CENTER);
-	if(slot>=1 && slot<=9) {
-		char digit[]={ (char)('0'+slot),0 };
-		pango_layout_set_width(layout,w*PANGO_SCALE);
-		text_at(cr,layout,0,cy-4,digit,8,PANGO_WEIGHT_BOLD,0xe2f7fb);
-	}
-	pango_layout_set_width(layout,(w-8)*PANGO_SCALE);
-	pango_layout_set_single_paragraph_mode(layout,TRUE);
-	pango_layout_set_ellipsize(layout,PANGO_ELLIPSIZE_END);
-	PangoFontDescription *font=shell_font_description(SHELL_DISPLAY_FALLBACK,11,PANGO_WEIGHT_NORMAL);
-	pango_layout_set_font_description(layout,font);
-	pango_font_description_free(font);
-	g_autofree char *display_name=g_utf8_strup(name,-1);
-	pango_layout_set_text(layout,display_name,-1);
-	int text_height=0;
-	pango_layout_get_pixel_size(layout,NULL,&text_height);
-	ink(cr,0xd5e9f0);
-	cairo_move_to(cr,4,h-4-text_height);
-	pango_cairo_show_layout(cr,layout);
-	g_object_unref(layout);
 }
 static void history(cairo_t *cr,const double *v,int n,double x,double y,double w,double h,double peak,unsigned color) {
 	if(n<2) return;
@@ -275,41 +258,46 @@ static void paint_telemetry(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer u
 		text_at(cr,l,w-40,28,date_label,9,PANGO_WEIGHT_MEDIUM,label);
 		g_object_unref(l);return;
 	}
-	double inner=w-28-health_span,clock=57,space=inner-clock;
-	double cw=space*.29,rw=space*.30,nw=space-cw-rw;
-	double x=14+health_span,y=6;
-	if(health_span) fill(cr,x-9,9,1,32,0x2b4150);
+	// Every column keeps the same gutter on both sides of its divider and
+	// fills its content width, so the readouts sit on one even rhythm.
+	const double gutter=12,edge=14,clock=58,y=6;
+	double lead=health_span?edge+health_span-9:0;
+	if(health_span) fill(cr,lead,9,1,32,0x2b4150);
+	double x=health_span?lead+1+gutter:edge,right=w-edge;
+	double space=MAX(30.,right-x-clock-3*(2*gutter+1));
+	double cw=floor(space*.29),rw=floor(space*.30),nw=space-cw-rw;
 	text_at(cr,l,x,y,"CPU",9,PANGO_WEIGHT_SEMIBOLD,label);
 	if(cpu>=0) g_snprintf(buf,sizeof buf,"%d%%",cpu);else g_strlcpy(buf,"—",sizeof buf);
-	text_at(cr,l,x+cw-29,y,buf,9,PANGO_WEIGHT_MEDIUM,value);
-	double pitch=ncpu?MIN(13.,(cw-11)/ncpu):0;
-	if(pitch>=1.) for(int i=0;i<ncpu;i++) {
-		double bx=x+i*pitch,bw=MAX(1.,pitch-2.),by=23;
+	text_right(cr,l,x+cw,y,buf,9,PANGO_WEIGHT_MEDIUM,value);
+	double pitch=ncpu?(cw+2)/ncpu:0;
+	if(pitch>=3.) for(int i=0;i<ncpu;i++) {
+		double bx=x+i*pitch,bw=pitch-2,by=23;
 		fill(cr,bx,by,bw,16,0x29414c);
 		if(cores[i]>=0) {
 			double amount=16*cores[i]/100.;
 			fill(cr,bx,by+16-amount,bw,amount,signal);
 		}
 	}
-	x+=cw;fill(cr,x,9,1,32,0x2b4150);x+=11;
+	x+=cw+gutter;fill(cr,x,9,1,32,0x2b4150);x+=1+gutter;
 	text_at(cr,l,x,y,"RAM",9,PANGO_WEIGHT_SEMIBOLD,label);
 	if(ram_total>0) g_snprintf(buf,sizeof buf,"%.1f / %.0f GiB",ram_used,ram_total);else g_strlcpy(buf,"—",sizeof buf);
 	text_at(cr,l,x,18,buf,10,PANGO_WEIGHT_SEMIBOLD,value);
-	fill(cr,x,35,rw-20,4,0x29414c);
-	if(ram_total>0) fill(cr,x,35,(rw-20)*ram_used/ram_total,4,signal);
-	x+=rw-11;fill(cr,x,9,1,32,0x2b4150);x+=11;
+	fill(cr,x,35,rw,4,0x29414c);
+	if(ram_total>0) fill(cr,x,35,rw*ram_used/ram_total,4,signal);
+	x+=rw+gutter;fill(cr,x,9,1,32,0x2b4150);x+=1+gutter;
 	text_at(cr,l,x,y,"NET",9,PANGO_WEIGHT_SEMIBOLD,label);
 	if(network_known) {
 		double peak=.1;
 		for(int i=0;i<nnet;i++) peak=MAX(peak,MAX(rx_history[i],tx_history[i]));
-		history(cr,rx_history,nnet,x,19,nw-21,7,peak,signal);
-		history(cr,tx_history,nnet,x,19,nw-21,7,peak,0xa59375);
+		history(cr,rx_history,nnet,x,19,nw,7,peak,signal);
+		history(cr,tx_history,nnet,x,19,nw,7,peak,0xa59375);
 		g_snprintf(buf,sizeof buf,"↓%.1f  ↑%.1f Mb/s",down,up);
 	} else g_strlcpy(buf,"—",sizeof buf);
 	text_at(cr,l,x,29,buf,9,PANGO_WEIGHT_MEDIUM,value);
-	x+=nw-11;fill(cr,x,9,1,32,0x2b4150);x+=7;
-	text_at(cr,l,x,7,clock_label,14,PANGO_WEIGHT_BOLD,value);
-	text_at(cr,l,x+4,26,date_label,9,PANGO_WEIGHT_MEDIUM,label);
+	x+=nw+gutter;fill(cr,x,9,1,32,0x2b4150);x+=1+gutter;
+	double mid=(x+right)/2;
+	text_center(cr,l,mid,7,clock_label,14,PANGO_WEIGHT_BOLD,value);
+	text_center(cr,l,mid,26,date_label,9,PANGO_WEIGHT_MEDIUM,label);
 	g_object_unref(l);
 }
 void home_slash_face(GtkDrawingArea *a,cairo_t *cr,int w,int h,gpointer unused) {

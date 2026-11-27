@@ -187,7 +187,9 @@ static void draw_outline(cairo_t *cr,const struct window_chrome *c) {
 	const bool member=group_member(c);
 	const double cut=member?6:CUT;
 	const double arm=member?12:CORNER_ARM;
-	const double dt=1.1;
+	// Keep the whole stroke inside the 12px chrome edge.
+	const double line=c->focused?2.25:1.5;
+	const double dt=line/2+.6;
 	for(int y=0;y<2;y++) for(int x=0;x<2;x++) {
 		cairo_save(cr);
 		cairo_translate(cr,x?c->w-dt:dt,y?c->h-dt:dt);
@@ -200,7 +202,7 @@ static void draw_outline(cairo_t *cr,const struct window_chrome *c) {
 	}
 	cairo_set_line_join(cr,CAIRO_LINE_JOIN_MITER);
 	cairo_set_line_cap(cr,CAIRO_LINE_CAP_BUTT);
-	cairo_set_line_width(cr,1.05);
+	cairo_set_line_width(cr,line);
 	const double alpha=c->focused?(member?.61:.96):(member?.30:.48);
 	cairo_set_source_rgba(cr,c->focused?.32:.35,c->focused?.90:.70,.92,alpha);
 	cairo_stroke(cr);

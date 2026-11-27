@@ -61,6 +61,8 @@ a command to replace or recolor actual app artwork.
   X11-only apps still require XWayland, which the native session does not
   provide. This launch environment does not isolate app files or profiles.
   A uniquely matched new window joins the Node that requested it. A
+  new window takes keyboard focus the first time it appears in the shown
+  view; one that lands in a hidden Node or Inbox does not. A
   launch marker follows a new process through wrappers, even when it
   detaches. Never move an older window or match by app name alone. An
   existing instance that does not carry the marker needs an explicit

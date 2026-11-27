@@ -53,11 +53,8 @@ static GtkWidget *form, *normal, *overview_form, *entry_button;
 static GtkWidget *home_settings_body,*display_settings_body,*shortcuts_body;
 static GtkWidget *dock, *home_settings, *width_input, *cursor_size_input, *width_note, *video_off, *video_on, *home_guide_off, *home_guide_on;
 static GtkWidget *home_guide;
-static GtkWidget *node_dock,*node_rail,*node_hover,*node_keys,*node_tag,*node_settings,*node_guide_off,*node_guide_on,*node_guide_error;
+static GtkWidget *node_dock,*node_rail,*node_hover,*node_keys,*node_settings,*node_guide_off,*node_guide_on,*node_guide_error;
 static GtkWindow *node_telemetry_layer;
-static char *node_tag_name;
-static int node_tag_slot;
-static gboolean node_tag_mothership;
 static GtkWidget *node_actions[3],*node_bell,*node_bell_ink,*node_speaker,*node_tray_button,*node_readout,*node_telemetry_off,*node_telemetry_on;
 static GtkWidget *window_picker,*picker_grid,*picker_button,*picker_button_label;
 enum { PICKER_TILE_CAP=8, PICKER_GAP=8, PICKER_INSET=12 };
@@ -278,7 +275,7 @@ static gboolean set_input_region(gpointer data) {
 		cairo_region_union_rectangle(region,&outside);
 	}
 	GtkWidget *hangar=home_dock_hangar();
-	GtkWidget *part[]={dock,node_dock,node_settings,slash_box,entry_button,form,notice_log_widget(),notice_close_target(),node_volume_widget(),
+	GtkWidget *part[]={dock,node_dock,node_settings,slash_box,entry_button,form,notice_log_visible()?notice_log_widget():NULL,notice_close_target(),node_volume_widget(),
 		hangar && gtk_widget_get_can_target(hangar)?hangar:NULL};
 	for(size_t i=0;i<G_N_ELEMENTS(part);i++) {
 		GtkWidget *w=part[i];
@@ -1143,8 +1140,8 @@ static gboolean apply_update(gpointer data) {
 	g_free(current_node);
 	g_free(current_mode);
 	current_node = g_strdup(u->node);
-	if(node_log_keys && g_strcmp0(u->node,"")==0 && !default_node)notice_log_close();
-	if(entered_node)notice_log_close();
+	if(node_log_keys && g_strcmp0(u->node,"")==0 && !default_node)notice_log_dismiss(TRUE);
+	if(entered_node)notice_log_dismiss(TRUE);
 	notice_context(*current_node?current_node:default_node?"@default":"@home",saved_toast_mode);
 	panel_redraw_node_bell();
 	current_mode = g_strdup(u->mode);
@@ -1642,7 +1639,7 @@ static void update_dock(void) {
 	}
 	notice_layout(output_width,output_height,in_node?node_bell_center:
 		(output_width-fit_home())/2+home_dock_notice_center(),HOME_HEIGHT+HOME_BOTTOM+16);
-	if((!visible && !in_node) || map_visible || expanded || slash_open || app_grid_open) notice_log_close();
+	if((!visible && !in_node) || map_visible || expanded || slash_open || app_grid_open) notice_log_dismiss(TRUE);
 	if(tray_keys && (map_visible || expanded || app_grid_open || slash_open ||
 		(in_node ? system_tray_trigger()!=node_tray_button || gtk_widget_get_visible(node_settings) ||
 			g_strcmp0(tray_node,node_notice_source())!=0 :
@@ -2368,33 +2365,6 @@ static void open_node_notice(GtkButton *button,gpointer unused) {
 	notice_log_toggle_for(source,default_node?"Default Node":source);
 }
 
-static void draw_node_tag(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
-	(void)area;(void)data;
-	home_node_identity_face(cr,w,h,node_tag_name,node_tag_slot,node_tag_mothership);
-}
-
-static void update_node_tag(int x,int width,gboolean shown) {
-	const char *name=default_node?"Mothership":current_node?current_node:"";
-	int slot=default_node?1:0;
-	if(!default_node && *name) {
-		for(int i=2;i<=9;i++) if(g_strcmp0(map_hud_shortcut(i),name)==0) {slot=i;break;}
-	}
-	if(g_strcmp0(node_tag_name,name)!=0 || node_tag_slot!=slot || node_tag_mothership!=default_node) {
-		g_free(node_tag_name);
-		node_tag_name=g_strdup(name);
-		node_tag_slot=slot;
-		node_tag_mothership=default_node;
-		g_autofree char *label=slot?g_strdup_printf("%s, Node shortcut %d",name,slot):g_strdup(name);
-		gtk_accessible_update_property(GTK_ACCESSIBLE(node_tag),GTK_ACCESSIBLE_PROPERTY_LABEL,label,-1);
-		gtk_widget_queue_draw(node_tag);
-	}
-	if(shown) {
-		gtk_fixed_move(GTK_FIXED(node_dock),node_tag,x,4);
-		gtk_widget_set_size_request(node_tag,width,NODE_TELEMETRY_SCREEN_HEIGHT);
-	}
-	gtk_widget_set_visible(node_tag,shown);
-}
-
 static void node_panel_update(void) {
 	if(!node_dock)return;
 	gboolean shown=desktop_ready && !overview && (default_node || (current_node && *current_node)) &&
@@ -2463,15 +2433,9 @@ static void node_panel_update(void) {
 		MIN(MAX((inner-gap)/2,NODE_TELEMETRY_FULL_WIDTH),inner-gap-min_preview)):0;
 	int start=wing+inset+(telemetry_visible?readout+gap:0);
 	int tray_space=MAX(1,inner-(telemetry_visible?readout+gap:0));
-	// Borrow width only from the preview lane, never from Telemetry or the shell.
-	const int tag_gap=8,min_tag=36,max_tag=84,min_lane=SHELL_PREVIEW_PITCH+PICKER_BUTTON_SIZE+4;
-	int tag_width=MIN(max_tag,tray_space-min_lane-tag_gap);
-	if(tag_width<min_tag) tag_width=0;
-	update_node_tag(wing+tray-inset-tag_width,tag_width,tray_available && tag_width>0);
-	int tray_usable=tray_space-(tag_width?tag_width+tag_gap:0);
 	gboolean reserve_button=previews && !log_open && node_window_count>1 &&
-		(int)node_window_count*SHELL_PREVIEW_PITCH-6>tray_usable;
-	int strip=MAX(1,tray_usable-(reserve_button?PICKER_BUTTON_SIZE+4:0));
+		(int)node_window_count*SHELL_PREVIEW_PITCH-6>tray_space;
+	int strip=MAX(1,tray_space-(reserve_button?PICKER_BUTTON_SIZE+4:0));
 	int hidden=node_window_overflow>=0?node_window_overflow:MAX(0,(int)node_window_count-strip/SHELL_PREVIEW_PITCH);
 	gboolean list_available=reserve_button && hidden>0;
 	if(list_available) {
@@ -2822,11 +2786,6 @@ static void node_panel_init(GtkOverlay *overlay) {
 	gtk_widget_set_halign(node_keys,GTK_ALIGN_START);gtk_widget_set_valign(node_keys,GTK_ALIGN_CENTER);
 	gtk_widget_set_can_target(node_keys,FALSE);gtk_widget_set_visible(node_keys,FALSE);
 	gtk_overlay_add_overlay(GTK_OVERLAY(annotations),node_keys);
-	node_tag=gtk_drawing_area_new();
-	gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(node_tag),draw_node_tag,NULL,NULL);
-	gtk_widget_set_can_target(node_tag,FALSE);
-	gtk_widget_set_visible(node_tag,FALSE);
-	gtk_fixed_put(GTK_FIXED(node_dock),node_tag,0,4);
 	wallpaper_add_guide(annotations);
 	node_settings=gtk_overlay_new();
 	gtk_widget_set_halign(node_settings,GTK_ALIGN_CENTER);gtk_widget_set_valign(node_settings,GTK_ALIGN_END);

@@ -13,6 +13,8 @@ void notice_log_toggle_for(const char *,const char *);
 int notice_source_unread(const char *);
 void notice_set_source_count(const char *,int);
 gboolean notice_log_close(void);
+// Instant skips the exit fade when another shell view takes over.
+gboolean notice_log_dismiss(gboolean instant);
 void notice_layout(int width,int height,int bell_center,int dock_gap);
 void notice_log_begin(void);
 void notice_log_group(const char *source,const char *label,int unread);

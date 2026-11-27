@@ -8,7 +8,7 @@ current visual target. See the [shell design system](shell-design.md)
 for the analog material.
 
 - Show four short 45° corner marks over a dark translucent bezel. For the
-  focused app, brighten the corners and add short cyan dashes along the
+  focused app, brighten and thicken the corners and add short cyan dashes along the
   straight edges. Center the dashes on each edge and leave a gap at each
   corner arm. Focus keeps the frame geometry and app size fixed. Group
   members use shorter, quieter marks so the group shell stays legible.

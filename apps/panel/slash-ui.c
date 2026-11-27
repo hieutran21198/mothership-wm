@@ -10,25 +10,20 @@
 
 enum slash_kind {
 	MODULE_APPS,MODULE_NODES,MODULE_MAPS,MODULE_NOTIFICATIONS,MODULE_SETTINGS,MODULE_SCREENSHOT,
-	COMMAND_OPEN_APP,COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,
-	COMMAND_OPEN_MAP,COMMAND_OPEN_NOTIFICATIONS,COMMAND_OPEN_SETTINGS,COMMAND_DISPLAY,COMMAND_SHORTCUTS,COMMAND_SCREENSHOT,
+	COMMAND_CONNECT,COMMAND_NEW,COMMAND_DELETE,COMMAND_FORCE,
+	COMMAND_DISPLAY,COMMAND_SHORTCUTS,
 	RESULT_APP,RESULT_NODE,RESULT_DELETE,RESULT_FORCE
 };
 static const struct {
 	enum slash_kind module,kind;
 	const char *token,*complete;
 } commands[]={
-	{MODULE_APPS,COMMAND_OPEN_APP,"open","apps open "},
 	{MODULE_NODES,COMMAND_CONNECT,"connect","nodes connect "},
 	{MODULE_NODES,COMMAND_NEW,"new","nodes new "},
 	{MODULE_NODES,COMMAND_DELETE,"delete","nodes delete "},
 	{MODULE_NODES,COMMAND_FORCE,"force-delete","nodes force-delete "},
-	{MODULE_MAPS,COMMAND_OPEN_MAP,"open","maps open"},
-	{MODULE_NOTIFICATIONS,COMMAND_OPEN_NOTIFICATIONS,"open","notifications open"},
-	{MODULE_SETTINGS,COMMAND_OPEN_SETTINGS,"open","settings open"},
 	{MODULE_SETTINGS,COMMAND_DISPLAY,"display","settings display"},
-	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"},
-	{MODULE_SCREENSHOT,COMMAND_SCREENSHOT,"open","screenshot open"}
+	{MODULE_SETTINGS,COMMAND_SHORTCUTS,"shortcuts","settings shortcuts"}
 };
 static const struct {
 	enum slash_kind kind;
@@ -116,10 +111,10 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 	cairo_set_line_width(cr,1.45);
 	cairo_set_line_join(cr,CAIRO_LINE_JOIN_ROUND);
 	cairo_set_line_cap(cr,CAIRO_LINE_CAP_ROUND);
-	if(kind==MODULE_APPS || kind==COMMAND_OPEN_APP) {
+	if(kind==MODULE_APPS) {
 		cairo_translate(cr,-12,-12);
 		home_apps_glyph(cr);
-	} else if(kind==MODULE_MAPS || kind==COMMAND_OPEN_MAP) {
+	} else if(kind==MODULE_MAPS) {
 		cairo_translate(cr,-12,-12);
 		home_map_glyph(cr);
 	} else if(kind==MODULE_NODES || kind==RESULT_NODE || kind==RESULT_DELETE || kind==RESULT_FORCE) {
@@ -127,17 +122,17 @@ static void glyph(GtkDrawingArea *area,cairo_t *cr,int w,int h,gpointer data) {
 		cairo_move_to(cr,fleet_node[0].x,fleet_node[0].y);
 		for(unsigned i=1;i<FLEET_COUNT(fleet_node);i++) cairo_line_to(cr,fleet_node[i].x,fleet_node[i].y);
 		cairo_close_path(cr);cairo_move_to(cr,0,-4);cairo_line_to(cr,0,3);
-	} else if(kind==MODULE_NOTIFICATIONS || kind==COMMAND_OPEN_NOTIFICATIONS) {
+	} else if(kind==MODULE_NOTIFICATIONS) {
 		cairo_move_to(cr,-7,4);cairo_curve_to(cr,-4,2,-5,-1,-4,-4);
 		cairo_curve_to(cr,-3,-8,3,-8,4,-4);cairo_curve_to(cr,5,-1,4,2,7,4);
 		cairo_close_path(cr);cairo_new_sub_path(cr);cairo_arc(cr,0,4,2,0,G_PI);
-	} else if(kind==MODULE_SCREENSHOT || kind==COMMAND_SCREENSHOT) {
+	} else if(kind==MODULE_SCREENSHOT) {
 		for(int x=-1;x<=1;x+=2) for(int y=-1;y<=1;y+=2) {
 			cairo_move_to(cr,3*x,6*y);
 			cairo_line_to(cr,7*x,6*y);
 			cairo_line_to(cr,7*x,2*y);
 		}
-	} else if(kind==MODULE_SETTINGS || kind==COMMAND_OPEN_SETTINGS ||
+	} else if(kind==MODULE_SETTINGS ||
 			kind==COMMAND_DISPLAY || kind==COMMAND_SHORTCUTS) {
 		for(int i=-5;i<=5;i+=5) {
 			int x=i?-2:2;
@@ -176,7 +171,7 @@ static void complete(void) {
 	case RESULT_DELETE: value=g_strdup_printf("nodes delete %s",s->name);break;
 	case RESULT_FORCE: value=g_strdup_printf("nodes force-delete %s",s->name);break;
 	case RESULT_APP:
-		value=g_strdup_printf("apps open %s",s->name);
+		value=g_strdup_printf("apps %s",s->name);
 		filled_app=g_strdup(g_app_info_get_id(G_APP_INFO(s->app)));
 		break;
 	case RESULT_NODE:
@@ -213,14 +208,15 @@ static void activation(GtkEntry *input,gpointer data) {
 	if(chosen<0 || (guint)chosen>=results->len) return;
 	struct suggestion *s=g_ptr_array_index(results,chosen);
 	switch(s->kind) {
-	case COMMAND_OPEN_MAP: case COMMAND_OPEN_NOTIFICATIONS: case COMMAND_OPEN_SETTINGS:
+	// A module with one action runs it; no "open" sub-command.
+	case MODULE_MAPS: case MODULE_NOTIFICATIONS: case MODULE_SETTINGS:
 	case COMMAND_DISPLAY: case COMMAND_SHORTCUTS: {
-		enum slash_view view=s->kind==COMMAND_OPEN_MAP?SLASH_MAP:
-			s->kind==COMMAND_OPEN_NOTIFICATIONS?SLASH_NOTIFICATIONS:
+		enum slash_view view=s->kind==MODULE_MAPS?SLASH_MAP:
+			s->kind==MODULE_NOTIFICATIONS?SLASH_NOTIFICATIONS:
 			s->kind==COMMAND_DISPLAY?SLASH_DISPLAY:s->kind==COMMAND_SHORTCUTS?SLASH_SHORTCUTS:SLASH_SETTINGS;
 		close_slash();show_view(view);break;
 	}
-	case COMMAND_SCREENSHOT:
+	case MODULE_SCREENSHOT:
 		close_slash();show_view(SLASH_SCREENSHOT);break;
 	case RESULT_APP:
 		if(app_catalog_launch(s->app)) close_slash();
@@ -339,10 +335,8 @@ static void refresh(void) {
 		hint=prompt;
 	} else if(take_token(&query,"apps")) {
 		hint="No matching apps.";
-		gboolean explicit_open=take_token(&query,"open");
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
-		if(!explicit_open) add_commands(MODULE_APPS,term);
-		for(guint i=0;(explicit_open || *term) && i<catalog->len;i++) {
+		for(guint i=0;i<catalog->len;i++) {
 			GDesktopAppInfo *a=g_ptr_array_index(catalog,i);
 			if(!matches_app(a,term)) continue;
 			const char *name=g_app_info_get_display_name(G_APP_INFO(a));
@@ -377,16 +371,17 @@ static void refresh(void) {
 		}
 	} else if(module_available(MODULE_MAPS) && take_token(&query,"maps")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
-		add_commands(MODULE_MAPS,term);
+		if(!*term) add(MODULE_MAPS,"maps",NULL);
 	} else if(take_token(&query,"notifications")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
-		add_commands(MODULE_NOTIFICATIONS,term);
+		if(!*term) add(MODULE_NOTIFICATIONS,"notifications",NULL);
 	} else if(take_token(&query,"settings")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
+		if(!*term) add(MODULE_SETTINGS,"settings",NULL);
 		add_commands(MODULE_SETTINGS,term);
 	} else if(module_available(MODULE_SCREENSHOT) && take_token(&query,"screenshot")) {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
-		add_commands(MODULE_SCREENSHOT,term);
+		if(!*term) add(MODULE_SCREENSHOT,"screenshot",NULL);
 	} else {
 		g_autofree char *term=g_utf8_casefold(g_strchomp(query),-1);
 		for(guint i=0;i<G_N_ELEMENTS(modules);i++)

@@ -28,7 +28,6 @@ void home_dock_sample(int,const int *,int,double,double,double,double,gboolean,i
 void home_apps_glyph(cairo_t *);
 void home_map_glyph(cairo_t *);
 void home_mechanical_button(GtkWidget *,gboolean primary);
-void home_node_identity_face(cairo_t *,int width,int height,const char *,int slot,gboolean mothership);
 void home_node_dock_face(cairo_t *,int w,int tray_x,int tray_width);
 GtkWidget *home_node_telemetry_new(void);
 #endif

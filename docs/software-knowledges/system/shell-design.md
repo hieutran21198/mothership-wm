@@ -22,7 +22,7 @@ shape or palette for each piece.
 | **Space / clearance** | Cut a recess only for a named receiving component. Size and position the pocket and occupant together, with a common orientation and axis as appropriate. Make the occupant visibly use its pocket. Keep positive, visually even clearance between independent contours so they never touch, join, or overlap. Preserve usable viewport space and readable controls. |
 
 Use Black Ops One for shell screen and module titles and the displayed Node
-identity (Map marker, detail heading and Node bay). Use Chakra Petch for
+identity (Map marker and detail heading). Use Chakra Petch for
 body text, controls, shortcuts, telemetry, notification content and window
 titles. Keep custom Map label fonts configurable.
 

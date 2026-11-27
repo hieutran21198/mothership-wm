@@ -8,7 +8,7 @@ reference is the `Print` entry point and the three capture modes.
 
 | Step | Executor | Operation and outcome |
 | --- | --- | --- |
-| Open | WM and Panel | **Win + Shift + S** and **Print Screen** open the tool from an app or shell view. If the parent compositor handles either shortcut, use **Screenshot** in Command Center or enter `screenshot open` in Slash. The Panel dismisses the invoking menu before the WM takes the snapshot. |
+| Open | WM and Panel | **Win + Shift + S** and **Print Screen** open the tool from an app or shell view. If the parent compositor handles either shortcut, use **Screenshot** in Command Center or enter `screenshot` in Slash. The Panel dismisses the invoking menu before the WM takes the snapshot. |
 | Show | WM and Panel | The WM snapshots the composed output before the snipping controls appear, with the pointer left out of the image. The Panel opens a temporary overlay above the current view. The WM routes input to it while it is active. |
 | Select | Panel and WM | Start in **Area**. Drag, move, or resize a rectangle and show its final width and height in image pixels. In **Window**, outline the topmost visible window under the pointer and select it with a click. In **Display**, select the whole output. |
 | Export | WM and Panel | Area and Display use the frozen frame. For Window, the WM renders the selected window and its Mothership frame at confirmation. **Copy** offers the PNG to the session clipboard. **Save PNG** commits a uniquely named file under Screenshots in the XDG Pictures folder. |

@@ -38,6 +38,11 @@ entries. Replacements for the same live sender/ID update the existing entry.
   behind it. The separate toast dismiss button keeps its own action.
   Align the panel's horizontal center to the bell where the viewport allows,
   clamping to keep it readable. Leave a 16 logical px gap above the dock.
+  Fade the log in over 180 ms and out over 140 ms like the
+  [App Grid](../system/app-grid.md), without sliding or scaling it. Release
+  its input at the start of the exit; a fast reopen starts from the current
+  opacity. Skip the fade when animations are off or another shell view or
+  Node change takes over.
   **All** shows separate groups, newest first in each group. Filter by Node,
   Default Node, Home or From the Void on Home. Inside a Node, the bell or
   **Meta + N** opens the same log locked to that Node without a filter
